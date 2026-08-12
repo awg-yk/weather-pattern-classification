@@ -19,14 +19,19 @@
 |---|---|
 | `winter_pressure_pattern` | 西高東低（冬型の気圧配置） |
 | `nankigan_low` | 南岸低気圧 |
+| `japan_sea_low` | 日本海低気圧 |
 | `futatsudama_low` | 二つ玉低気圧 |
-| `baiu_front` | 梅雨前線 |
 | `typhoon` | 台風 |
 | `migratory_high` | 移動性高気圧 |
 | `zonal_high` | 帯状高気圧（春・秋の高気圧） |
 | `summer_pressure_pattern` | 南高北低（夏型の気圧配置） |
 | `cold_front_passage` | 寒冷前線通過 |
 | `stationary_front` | 停滞前線 |
+
+季節を区別しないため梅雨前線は対象外とし、代わりに日本海側から接近する
+低気圧のパターンを独立したラベルとして追加している。1枚の天気図に複数の
+パターンが同時に当てはまることがあるため、マルチラベル分類として扱う
+（詳細は「ラベリング」の節を参照）。
 
 `src/labels.py` で管理し、精度・データ量を見ながら統廃合します。
 
@@ -151,6 +156,29 @@ APIキーを `~/.cdsapirc` に設定した上で `scripts/download_era5.py` を�
 ```bash
 python src/train.py --data-dir data/processed --labels data/labels.csv --epochs 30
 ```
+
+## モデルの判断根拠を可視化する(Grad-CAM)
+
+CNNは「H/Lの文字」「前線の色」「等圧線の形」を人間のように記号として理解しているわけではなく、
+ラベルと統計的に相関する画素パターンを学習しているだけである。実際に画像のどこに注目して
+予測しているかを確認するため、Grad-CAMで可視化できる。
+
+```python
+import sys
+sys.path.append("/content/weather-pattern-classification")
+from scripts.gradcam import show_gradcam
+
+show_gradcam(
+    image_path="/path/to/some_chart.png",
+    weights_path="/content/drive/MyDrive/weather-pattern-classification-data/weights/model.pt",
+    top_k=3,                 # 確信度が高い上位k個のラベルを可視化
+    apply_preprocess=True,   # 生のJMA画像(枠・スタンプ付き)ならTrue、前処理済みならFalse
+)
+```
+
+確信度が高い上位ラベルごとに、モデルが注目した領域がヒートマップで重ねて表示される。
+H/Lの記号や前線・等圧線のあたりに反応が集中していれば信頼できる判断をしている可能性が高く、
+逆に無関係な枠線や余白に反応している場合は、前処理やデータの見直しが必要というサインになる。
 
 ## 進捗
 
