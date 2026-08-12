@@ -7,10 +7,13 @@
 
 import io
 import os
+from pathlib import Path
 
 import torch
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
@@ -18,6 +21,7 @@ from src.model import build_model
 from src.train import get_transforms
 
 WEIGHTS_PATH = os.environ.get("MODEL_WEIGHTS", "weights/model.pt")
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
 app = FastAPI(title="Weather Pattern Classification API")
 app.add_middleware(
@@ -26,6 +30,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ColabのポートフォワーディングだとオリジンがCORSで面倒なため、
+# フロントエンドも同じFastAPIプロセスから配信する(相対パスでfetchできる)
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+
+@app.get("/")
+def serve_frontend():
+    return FileResponse(str(FRONTEND_DIR / "index.html"))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 transform = get_transforms(train=False)

@@ -21,7 +21,7 @@
   <div id="result"></div>
 
   <script>
-    const API_URL = "http://localhost:8000/predict";
+    const API_URL = "/predict";  // 同じFastAPIプロセスから配信されるため相対パスでOK
 
     const fileInput = document.getElementById("fileInput");
     const preview = document.getElementById("preview");
