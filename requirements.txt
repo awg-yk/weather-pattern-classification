@@ -11,6 +11,7 @@ netCDF4
 cdsapi
 requests
 beautifulsoup4
+pdf2image
 fastapi
 uvicorn[standard]
 python-multipart

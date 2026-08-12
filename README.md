@@ -63,11 +63,34 @@ pip install -r requirements.txt
 
 ## データ収集について
 
-### 気象庁の天気図を使う場合
-気象庁の実況天気図・過去の天気図は利用規約を確認の上、`scripts/collect_jma.py` で
-日付を指定してダウンロードします。パターンラベルは付いていないため、
-`data/labels.csv` に手作業でラベルを追記していく運用になります
-（過去の顕著な事例をまとめた気象庁・気象庁ライブラリの資料を参考にすると効率的です）。
+### 気象庁の天気図を使う場合（メインデータソース）
+気象庁「保存用天気図」(日本域天気図 JSMAP) をPDFでダウンロードし、PNGに変換します。
+
+```
+https://www.data.jma.go.jp/yoho/data/wxchart/archive/{yyyy}_{mm}/PDFDATA/JSMAP/Js_{yyyymmddHH}.pdf
+```
+
+このシリーズは配色が統一されています（海岸線・経緯度線=赤茶色、等圧線=黒、
+温暖前線=赤、寒冷前線=青、閉塞前線=ピンク）。前線種別の識別に色情報がそのまま
+使えるため、グレースケール化せずカラーのまま学習データとして利用します。
+
+PDF→PNG変換に `poppler-utils` が必要です。
+
+```bash
+# Debian/Ubuntu
+sudo apt-get install poppler-utils
+# Mac
+brew install poppler
+```
+
+```bash
+python scripts/collect_jma.py --start 2026-01-01 --end 2026-04-30 --out data/raw/jma
+```
+
+利用規約を確認の上、許可された範囲・頻度で利用してください。
+パターンラベルは付いていないため、`data/labels.csv` に手作業でラベルを追記していく
+運用になります（ERA5による自動ラベルを下書きとして使い、実画像で仕上げに人手検証・
+ファインチューニングする2段階方式を推奨）。
 
 ### ERA5を使う場合
 [Copernicus Climate Data Store](https://cds.climate.copernicus.eu/) のアカウントを作成し、
