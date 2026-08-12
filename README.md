@@ -87,6 +87,13 @@ brew install poppler
 python scripts/collect_jma.py --start 2026-01-01 --end 2026-04-30 --out data/raw/jma
 ```
 
+ダウンロード後、`scripts/preprocess_jma.py` で余白の自動クロップと右下の日時スタンプの
+マスク処理を行う（スタンプの文字自体をモデルが学習してしまうのを防ぐため）。
+
+```bash
+python scripts/preprocess_jma.py --in-dir data/raw/jma/png --out-dir data/processed/jma
+```
+
 利用規約を確認の上、許可された範囲・頻度で利用してください。
 パターンラベルは付いていないため、`data/labels.csv` に手作業でラベルを追記していく
 運用になります（ERA5による自動ラベルを下書きとして使い、実画像で仕上げに人手検証・
