@@ -29,6 +29,29 @@ def get_transforms(train: bool):
     return transforms.Compose(ops)
 
 
+def compute_pos_weight(train_subset, num_classes: int, cap: float = 20.0) -> torch.Tensor:
+    """クラス不均衡対策のpos_weightを、学習用サブセットのラベル分布から算出する。
+
+    出現頻度が低いラベルほど「陽性を見逃した時の損失」を大きくすることで、
+    モデルが安全策で陰性ばかり予測するのを防ぐ。(負例数/正例数)で計算し、
+    極端に少ないクラスで値が発散しないようcapで上限を設ける。
+    画像を読み込まず、ラベルのDataFrameだけを見て計算する。
+    """
+    base_dataset = train_subset.dataset
+    rows = base_dataset.df.iloc[train_subset.indices]
+
+    pos_counts = torch.zeros(num_classes)
+    for label in LABELS:
+        idx = LABELS.index(label)
+        pos_counts[idx] = rows["parsed_labels"].apply(lambda ls, l=label: l in ls).sum()
+
+    total = len(rows)
+    neg_counts = total - pos_counts
+    pos_counts = pos_counts.clamp(min=1.0)
+    weight = (neg_counts / pos_counts).clamp(max=cap)
+    return weight
+
+
 def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshold: float = 0.5):
     """マルチラベル学習: labelsは各クラス0/1のmulti-hotベクトル、BCEで学習する。
 
@@ -93,7 +116,10 @@ def main():
         freeze_backbone=args.freeze_backbone,
         dropout=args.dropout,
     ).to(device)
-    criterion = nn.BCEWithLogitsLoss()
+
+    pos_weight = compute_pos_weight(train_ds, num_classes=len(LABELS)).to(device)
+    print("pos_weight:", {label: round(w, 2) for label, w in zip(LABELS, pos_weight.tolist())})
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(
         (p for p in model.parameters() if p.requires_grad),
         lr=args.lr,
