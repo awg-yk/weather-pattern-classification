@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
+from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
 from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
 from src.model import build_model
 from src.train import get_transforms
@@ -72,6 +73,13 @@ async def predict(file: UploadFile = File(...)):
 
     content = await file.read()
     image = Image.open(io.BytesIO(content)).convert("RGB")
+
+    # 学習データと同じ前処理(余白クロップ・日時スタンプ消し)をかけてからモデルに渡す。
+    # これをしないと、気象庁の生のPDF変換画像(外枠・座標グリッド・日時スタンプ付き)と
+    # 学習時の画像とで見た目が違いすぎて精度が大きく落ちる。
+    image = autocrop_to_content(image)
+    image = mask_stamp_box(image, DEFAULT_STAMP_BOX)
+
     tensor = transform(image).unsqueeze(0).to(device)
 
     with torch.no_grad():
