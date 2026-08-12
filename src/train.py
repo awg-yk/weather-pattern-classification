@@ -25,9 +25,14 @@ def get_transforms(train: bool):
     return transforms.Compose(ops)
 
 
-def run_epoch(model, loader, criterion, optimizer, device, train: bool):
+def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshold: float = 0.5):
+    """マルチラベル学習: labelsは各クラス0/1のmulti-hotベクトル、BCEで学習する。
+
+    精度は「画像ごとに正解ラベル集合と予測ラベル集合が完全一致した割合」
+    (subset accuracy)を指標として使う。
+    """
     model.train() if train else model.eval()
-    total_loss, correct, total = 0.0, 0, 0
+    total_loss, exact_match, total = 0.0, 0, 0
 
     with torch.set_grad_enabled(train):
         for images, labels in tqdm(loader, leave=False):
@@ -41,11 +46,12 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool):
                 loss.backward()
                 optimizer.step()
 
+            preds = (torch.sigmoid(outputs) > threshold).float()
+            exact_match += (preds == labels).all(dim=1).sum().item()
             total_loss += loss.item() * images.size(0)
-            correct += (outputs.argmax(dim=1) == labels).sum().item()
             total += images.size(0)
 
-    return total_loss / total, correct / total
+    return total_loss / total, exact_match / total
 
 
 def main():
@@ -71,7 +77,7 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
 
     model = build_model(num_classes=len(LABELS)).to(device)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     best_val_acc = 0.0

@@ -45,7 +45,7 @@ import src.labels
 import scripts.label_tool
 importlib.reload(src.labels)
 importlib.reload(scripts.label_tool)
-from scripts.label_tool import run_labeling_session
+from scripts.label_tool import run_labeling_session  # noqa: F401 (run_review_sessionも同モジュールにあります)
 
 run_labeling_session(
     images_dir=str(processed_dir),
@@ -53,6 +53,11 @@ run_labeling_session(
 )
 
 print(
-    "\n最初の1クリック後、別セルで次を実行して保存されているか必ず確認してください:\n"
-    f'  !tail -3 "{labels_csv}"'
+    "\nチェックボックスで複数選択→「決定」ボタンで進みます。\n"
+    "最初の1回目の後、別セルで次を実行して保存されているか必ず確認してください:\n"
+    f'  !tail -3 "{labels_csv}"\n\n'
+    "少数ラベルの見直し(追加タグ付け)をしたい場合は、別セルで:\n"
+    "  from scripts.label_tool import run_review_session\n"
+    "  run_review_session(images_dir=str(processed_dir), labels_csv=str(labels_csv),\n"
+    "                      filter_labels=['japan_sea_low', 'nankigan_low'])"
 )

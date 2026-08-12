@@ -96,16 +96,20 @@ python scripts/preprocess_jma.py --in-dir data/raw/jma/png --out-dir data/proces
 
 利用規約を確認の上、許可された範囲・頻度で利用してください。
 
-### ラベリング
+### ラベリング（マルチラベル対応）
 
 パターンラベルは付いていないため、`scripts/label_tool.py` を使ってColab上で
-1枚ずつボタンクリックでラベル付けする。
+チェックボックスでラベル付けする。1枚の天気図に複数のパターンが同時に
+当てはまることがある（例: 西高東低かつ日本海低気圧）ため、複数選択に対応している。
+`data/labels.csv` の label列にはパイプ区切りで保存される
+(例: `winter_pressure_pattern|japan_sea_low`)。
 
 ```python
 import sys
 sys.path.append("/content/weather-pattern-classification")
-from scripts.label_tool import run_labeling_session
+from scripts.label_tool import run_labeling_session, run_review_session
 
+# 1) 未ラベルの新しい画像にラベルを付ける
 run_labeling_session(
     images_dir="data/processed/jma",
     labels_csv="data/labels.csv",
@@ -114,10 +118,26 @@ run_labeling_session(
 
 - `data/labels.csv` に追記していく形式なので、途中で中断しても再開時にラベル済みの
   画像は自動でスキップされる
+- チェックボックスで複数選択後「決定」ボタンで次の画像に進む
 - 「戻る」ボタンで直前の1件を取り消せる
 - 判断に迷う画像は「わからない/該当なし」で `unclassified` として記録し、後でまとめて見直す
 - ラベル付け作業もColabのランタイムが切れると`data/labels.csv`が消えるため、
   こまめにGoogle Driveへコピーするか、`labels_csv`引数を直接Drive上のパスにする
+
+少数派のラベル（例: `futatsudama_low`）を増やしたい場合は、新規収集の代わりに
+既にラベル済みの近いパターンの画像を見直して追加タグを付けることもできる。
+
+```python
+# 2) 既にラベル済みの画像を見直して、追加のタグを付け足す
+run_review_session(
+    images_dir="data/processed/jma",
+    labels_csv="data/labels.csv",
+    filter_labels=["japan_sea_low", "nankigan_low"],  # この中のどれかが付いている画像だけ対象
+)
+```
+
+`filter_labels`を省略すると全件が見直し対象になる。チェックボックスには現在のラベルが
+反映された状態で表示され、「保存して次へ」で上書き、「変更せず次へ」でスキップできる。
 
 ### ERA5を使う場合
 [Copernicus Climate Data Store](https://cds.climate.copernicus.eu/) のアカウントを作成し、

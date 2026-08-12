@@ -63,14 +63,16 @@ async def predict(file: UploadFile = File(...)):
 
     with torch.no_grad():
         logits = model(tensor)
-        probs = torch.softmax(logits, dim=1)[0]
+        probs = torch.sigmoid(logits)[0]
 
-    top_idx = int(torch.argmax(probs).item())
-    top_label = INDEX_TO_LABEL[top_idx]
+    # マルチラベル: しきい値を超えたラベルをすべて「該当する」として返す
+    threshold = 0.5
+    labels_above_threshold = [
+        INDEX_TO_LABEL[i] for i, p in enumerate(probs) if p.item() > threshold
+    ]
     return {
-        "label": top_label,
-        "label_ja": LABEL_JA[top_label],
-        "confidence": float(probs[top_idx]),
+        "labels": labels_above_threshold,
+        "labels_ja": [LABEL_JA[l] for l in labels_above_threshold],
         "all_probabilities": {
             INDEX_TO_LABEL[i]: float(p) for i, p in enumerate(probs)
         },
