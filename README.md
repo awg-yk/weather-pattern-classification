@@ -95,9 +95,29 @@ python scripts/preprocess_jma.py --in-dir data/raw/jma/png --out-dir data/proces
 ```
 
 利用規約を確認の上、許可された範囲・頻度で利用してください。
-パターンラベルは付いていないため、`data/labels.csv` に手作業でラベルを追記していく
-運用になります（ERA5による自動ラベルを下書きとして使い、実画像で仕上げに人手検証・
-ファインチューニングする2段階方式を推奨）。
+
+### ラベリング
+
+パターンラベルは付いていないため、`scripts/label_tool.py` を使ってColab上で
+1枚ずつボタンクリックでラベル付けする。
+
+```python
+import sys
+sys.path.append("/content/weather-pattern-classification")
+from scripts.label_tool import run_labeling_session
+
+run_labeling_session(
+    images_dir="data/processed/jma",
+    labels_csv="data/labels.csv",
+)
+```
+
+- `data/labels.csv` に追記していく形式なので、途中で中断しても再開時にラベル済みの
+  画像は自動でスキップされる
+- 「戻る」ボタンで直前の1件を取り消せる
+- 判断に迷う画像は「わからない/該当なし」で `unclassified` として記録し、後でまとめて見直す
+- ラベル付け作業もColabのランタイムが切れると`data/labels.csv`が消えるため、
+  こまめにGoogle Driveへコピーするか、`labels_csv`引数を直接Drive上のパスにする
 
 ### ERA5を使う場合
 [Copernicus Climate Data Store](https://cds.climate.copernicus.eu/) のアカウントを作成し、
