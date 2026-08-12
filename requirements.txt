@@ -1,0 +1,17 @@
+torch>=2.2
+torchvision>=0.17
+numpy
+pandas
+pillow
+scikit-learn
+matplotlib
+cartopy
+xarray
+netCDF4
+cdsapi
+requests
+beautifulsoup4
+fastapi
+uvicorn[standard]
+python-multipart
+tqdm

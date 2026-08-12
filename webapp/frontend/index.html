@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>天気図パターン分類</title>
+<style>
+  body { font-family: sans-serif; max-width: 480px; margin: 40px auto; padding: 0 16px; }
+  #preview { max-width: 100%; margin-top: 12px; border: 1px solid #ccc; }
+  #result { margin-top: 16px; white-space: pre-wrap; }
+  button { margin-top: 12px; padding: 8px 16px; }
+</style>
+</head>
+<body>
+  <h1>天気図パターン分類</h1>
+  <p>天気図の画像をアップロードすると、AIが気圧配置パターンを推定します。</p>
+
+  <input type="file" id="fileInput" accept="image/*">
+  <button id="predictBtn">分類する</button>
+
+  <img id="preview" style="display:none">
+  <div id="result"></div>
+
+  <script>
+    const API_URL = "http://localhost:8000/predict";
+
+    const fileInput = document.getElementById("fileInput");
+    const preview = document.getElementById("preview");
+    const resultEl = document.getElementById("result");
+
+    fileInput.addEventListener("change", () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      preview.src = URL.createObjectURL(file);
+      preview.style.display = "block";
+      resultEl.textContent = "";
+    });
+
+    document.getElementById("predictBtn").addEventListener("click", async () => {
+      const file = fileInput.files[0];
+      if (!file) {
+        resultEl.textContent = "画像を選択してください。";
+        return;
+      }
+
+      resultEl.textContent = "分類中...";
+      const formData = new FormData();
+      formData.append("file", file);
+
+      try {
+        const res = await fetch(API_URL, { method: "POST", body: formData });
+        if (!res.ok) {
+          const err = await res.json();
+          resultEl.textContent = `エラー: ${err.detail || res.statusText}`;
+          return;
+        }
+        const data = await res.json();
+        const sorted = Object.entries(data.all_probabilities).sort((a, b) => b[1] - a[1]);
+        resultEl.textContent =
+          `予測: ${data.label} (確信度 ${(data.confidence * 100).toFixed(1)}%)\n\n` +
+          sorted.map(([label, p]) => `${label}: ${(p * 100).toFixed(1)}%`).join("\n");
+      } catch (e) {
+        resultEl.textContent = `通信エラー: ${e}`;
+      }
+    });
+  </script>
+</body>
+</html>

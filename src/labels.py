@@ -1,0 +1,17 @@
+"""分類ラベルの定義。データが増えたらここを更新する。"""
+
+LABELS = [
+    "winter_pressure_pattern",   # 西高東低（冬型）
+    "nankigan_low",              # 南岸低気圧
+    "futatsudama_low",           # 二つ玉低気圧
+    "baiu_front",                # 梅雨前線
+    "typhoon",                   # 台風
+    "migratory_high",            # 移動性高気圧
+    "zonal_high",                # 帯状高気圧
+    "summer_pressure_pattern",   # 南高北低（夏型）
+    "cold_front_passage",        # 寒冷前線通過
+    "stationary_front",          # 停滞前線
+]
+
+LABEL_TO_INDEX = {label: i for i, label in enumerate(LABELS)}
+INDEX_TO_LABEL = {i: label for i, label in enumerate(LABELS)}
