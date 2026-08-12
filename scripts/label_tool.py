@@ -24,9 +24,10 @@ from IPython.display import display, clear_output
 import ipywidgets as widgets
 from PIL import Image
 
-from src.labels import LABELS
+from src.labels import LABELS, LABEL_JA
 
 SKIP_LABEL = "unclassified"
+SKIP_LABEL_JA = "わからない/該当なし"
 
 
 def _load_labeled_filenames(labels_csv: Path) -> set:
@@ -107,13 +108,13 @@ def run_labeling_session(images_dir: str, labels_csv: str, source: str = "jma_ma
         show_current()
 
     label_buttons = [
-        widgets.Button(description=label, layout=widgets.Layout(width="220px"))
+        widgets.Button(description=LABEL_JA[label], layout=widgets.Layout(width="220px"))
         for label in LABELS
     ]
     for btn, label in zip(label_buttons, LABELS):
         btn.on_click(on_label_click(label))
 
-    skip_button = widgets.Button(description="わからない/該当なし", button_style="warning")
+    skip_button = widgets.Button(description=SKIP_LABEL_JA, button_style="warning")
     skip_button.on_click(on_label_click(SKIP_LABEL))
 
     back_button = widgets.Button(description="戻る", button_style="danger")

@@ -13,7 +13,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
-from src.labels import INDEX_TO_LABEL, LABELS
+from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
 from src.model import build_model
 from src.train import get_transforms
 
@@ -66,8 +66,15 @@ async def predict(file: UploadFile = File(...)):
         probs = torch.softmax(logits, dim=1)[0]
 
     top_idx = int(torch.argmax(probs).item())
+    top_label = INDEX_TO_LABEL[top_idx]
     return {
-        "label": INDEX_TO_LABEL[top_idx],
+        "label": top_label,
+        "label_ja": LABEL_JA[top_label],
         "confidence": float(probs[top_idx]),
-        "all_probabilities": {INDEX_TO_LABEL[i]: float(p) for i, p in enumerate(probs)},
+        "all_probabilities": {
+            INDEX_TO_LABEL[i]: float(p) for i, p in enumerate(probs)
+        },
+        "all_probabilities_ja": {
+            LABEL_JA[INDEX_TO_LABEL[i]]: float(p) for i, p in enumerate(probs)
+        },
     }

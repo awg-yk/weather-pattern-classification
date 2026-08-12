@@ -54,9 +54,9 @@
           return;
         }
         const data = await res.json();
-        const sorted = Object.entries(data.all_probabilities).sort((a, b) => b[1] - a[1]);
+        const sorted = Object.entries(data.all_probabilities_ja).sort((a, b) => b[1] - a[1]);
         resultEl.textContent =
-          `予測: ${data.label} (確信度 ${(data.confidence * 100).toFixed(1)}%)\n\n` +
+          `予測: ${data.label_ja} (確信度 ${(data.confidence * 100).toFixed(1)}%)\n\n` +
           sorted.map(([label, p]) => `${label}: ${(p * 100).toFixed(1)}%`).join("\n");
       } catch (e) {
         resultEl.textContent = `通信エラー: ${e}`;
