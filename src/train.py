@@ -97,6 +97,12 @@ def main():
         help="特徴抽出部を凍結し分類ヘッドのみ学習する(データが少ない場合の過学習対策)",
     )
     parser.add_argument("--patience", type=int, default=8, help="val_lossがこの回数改善しなければ早期終了")
+    parser.add_argument(
+        "--pos-weight-cap",
+        type=float,
+        default=8.0,
+        help="クラス不均衡対策のpos_weightの上限。大きいほど少数ラベルのrecallを稼ぐ代わりにprecisionが下がりやすい",
+    )
     parser.add_argument("--out", default="weights/model.pt")
     args = parser.parse_args()
 
@@ -117,7 +123,7 @@ def main():
         dropout=args.dropout,
     ).to(device)
 
-    pos_weight = compute_pos_weight(train_ds, num_classes=len(LABELS)).to(device)
+    pos_weight = compute_pos_weight(train_ds, num_classes=len(LABELS), cap=args.pos_weight_cap).to(device)
     print("pos_weight:", {label: round(w, 2) for label, w in zip(LABELS, pos_weight.tolist())})
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = optim.Adam(
