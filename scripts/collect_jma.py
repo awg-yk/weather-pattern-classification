@@ -4,8 +4,9 @@
 URLパターン(確認済み・2026年4月時点):
     https://www.data.jma.go.jp/yoho/data/wxchart/archive/{yyyy}_{mm}/PDFDATA/JSMAP/Js_{yyyymmddHH}.pdf
 
-観測時刻は 00, 06, 12, 18 (UTC) 等、天気図が発表されている時刻のみ存在する。
-存在しない組み合わせは404になるため、失敗はスキップして続行する。
+観測時刻は動作確認の結果、00Z・12Z (日本時間9時・21時) のみ存在することを確認済み
+(06Z・18Z は404)。他の時刻を試したい場合は --hours で指定できるが、存在しない
+組み合わせは404になるため失敗はスキップして続行する。
 
 このシリーズは配色が統一されている(海岸線・経緯度線=赤茶色、等圧線=黒、
 温暖前線=赤、寒冷前線=青、閉塞前線=ピンク)ため、カラーのまま学習データとして使える。
@@ -33,7 +34,7 @@ from pdf2image import convert_from_path
 
 BASE_URL = "https://www.data.jma.go.jp/yoho/data/wxchart/archive/{yyyy}_{mm}/PDFDATA/JSMAP/Js_{yyyymmddhh}.pdf"
 REQUEST_INTERVAL_SEC = 2.0
-HOURS_UTC = [0, 6, 12, 18]
+HOURS_UTC = [0, 12]  # 動作確認済み(日本時間9時・21時の地上天気図)
 
 
 def daterange(start: date, end: date):
