@@ -3,8 +3,8 @@
 LABELS = [
     "winter_pressure_pattern",   # 西高東低（冬型）
     "nankigan_low",              # 南岸低気圧
+    "japan_sea_low",             # 日本海低気圧
     "futatsudama_low",           # 二つ玉低気圧
-    "baiu_front",                # 梅雨前線
     "typhoon",                   # 台風
     "migratory_high",            # 移動性高気圧
     "zonal_high",                # 帯状高気圧
@@ -20,8 +20,8 @@ INDEX_TO_LABEL = {i: label for i, label in enumerate(LABELS)}
 LABEL_JA = {
     "winter_pressure_pattern": "西高東低（冬型）",
     "nankigan_low": "南岸低気圧",
+    "japan_sea_low": "日本海低気圧",
     "futatsudama_low": "二つ玉低気圧",
-    "baiu_front": "梅雨前線",
     "typhoon": "台風",
     "migratory_high": "移動性高気圧",
     "zonal_high": "帯状高気圧",
