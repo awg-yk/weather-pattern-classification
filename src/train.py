@@ -66,6 +66,14 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--val-ratio", type=float, default=0.2)
+    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument(
+        "--freeze-backbone",
+        action="store_true",
+        help="特徴抽出部を凍結し分類ヘッドのみ学習する(データが少ない場合の過学習対策)",
+    )
+    parser.add_argument("--patience", type=int, default=8, help="val_lossがこの回数改善しなければ早期終了")
     parser.add_argument("--out", default="weights/model.pt")
     args = parser.parse_args()
 
@@ -80,11 +88,22 @@ def main():
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)
 
-    model = build_model(num_classes=len(LABELS)).to(device)
+    model = build_model(
+        num_classes=len(LABELS),
+        freeze_backbone=args.freeze_backbone,
+        dropout=args.dropout,
+    ).to(device)
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(
+        (p for p in model.parameters() if p.requires_grad),
+        lr=args.lr,
+        weight_decay=args.weight_decay,
+    )
 
-    best_val_acc = 0.0
+    # 過学習の判定・モデル保存はval_lossを基準にする(小さな検証セットでは
+    # 「完全一致率」は数枚のブレで大きく上下しやすく、あてにならないため)
+    best_val_loss = float("inf")
+    epochs_without_improvement = 0
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -98,10 +117,16 @@ def main():
             f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
         )
 
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), out_path)
-            print(f"  saved best model to {out_path} (val_acc={val_acc:.4f})")
+            print(f"  saved best model to {out_path} (val_loss={val_loss:.4f})")
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= args.patience:
+                print(f"  val_lossが{args.patience}エポック改善しなかったため早期終了します")
+                break
 
 
 if __name__ == "__main__":
