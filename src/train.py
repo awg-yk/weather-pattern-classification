@@ -15,9 +15,13 @@ IMAGE_SIZE = 224
 
 
 def get_transforms(train: bool):
+    # 天気図は左右反転すると「西高東低」が「東高西低」になるなど地理的な意味が
+    # 壊れるため、水平反転は使わない。代わりに軽い明るさ/コントラストの変動と
+    # 小さな回転・平行移動でデータ量の少なさを補う。
     ops = [transforms.Resize((IMAGE_SIZE, IMAGE_SIZE))]
     if train:
-        ops.append(transforms.RandomHorizontalFlip())
+        ops.append(transforms.ColorJitter(brightness=0.1, contrast=0.1))
+        ops.append(transforms.RandomAffine(degrees=3, translate=(0.02, 0.02)))
     ops += [
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
