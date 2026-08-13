@@ -5,6 +5,7 @@ data/raw/
 data/processed/
 *.pt
 *.pth
+!weights/model.pt
 .cdsapirc
 .env
 .DS_Store

@@ -8,6 +8,21 @@
 上のバッジからColabノートブックを開けば、データ収集〜ラベリング〜学習〜Grad-CAM可視化〜
 Web推論デモまでを順番に実行できます。
 
+## すぐに分類だけ試したい場合
+
+学習済みモデル(`weights/model.pt`)をリポジトリに同梱しているので、学習不要ですぐに使える。
+
+```bash
+git clone -b claude/weather-chart-classification-4b6in1 https://github.com/awg-yk/weather-pattern-classification.git
+cd weather-pattern-classification
+pip install -r requirements.txt
+
+python scripts/predict.py path/to/天気図画像.png
+```
+
+気象庁の生のPDF変換画像(枠・座標グリッド・日時スタンプ付き)であれば自動で前処理される。
+既に前処理済みの画像を渡す場合は `--no-preprocess` を付ける。
+
 ## 全体方針
 
 1. **データ収集**: 気象庁の地上天気図画像、またはERA5再解析データ（海面気圧など）を収集
