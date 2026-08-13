@@ -176,6 +176,44 @@ def explain_top_predictions(
     return display_image, top_overlays, ranked
 
 
+def explain_predictions_above_threshold(
+    image_path: str, weights_path: str, threshold: float = 0.5, apply_preprocess: bool = True
+):
+    """確信度がthresholdを超えたラベルすべてについてヒートマップ画像を作る。
+
+    件数は固定せず、しきい値を超えた分だけ動的に変わる(0件になることもある)。
+    (前処理後の元画像, [(ラベル, 確信度, ヒートマップ画像), ...しきい値超え・確信度降順],
+     [(ラベル, 確信度), ...全ラベル確信度降順]) を返す。
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = _load_model(weights_path, device)
+    gradcam = GradCAM(model)
+
+    raw_image = Image.open(image_path).convert("RGB")
+    display_image = raw_image
+    if apply_preprocess:
+        display_image = autocrop_to_content(display_image)
+        display_image = mask_stamp_box(display_image, DEFAULT_STAMP_BOX)
+
+    transform = get_transforms(train=False)
+    input_tensor = transform(display_image).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        probs = torch.sigmoid(model(input_tensor))[0].cpu()
+    sorted_indices = torch.argsort(probs, descending=True).tolist()
+    ranked = [(INDEX_TO_LABEL[i], probs[i].item()) for i in sorted_indices]
+
+    overlays = []
+    for idx in sorted_indices:
+        if probs[idx].item() <= threshold:
+            break
+        cam = gradcam.generate(input_tensor, idx)
+        overlay = _overlay_heatmap(display_image, cam)
+        overlays.append((INDEX_TO_LABEL[idx], probs[idx].item(), overlay))
+
+    return display_image, overlays, ranked
+
+
 def show_gradcam(
     image_path: str,
     weights_path: str,
