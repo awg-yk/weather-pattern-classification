@@ -114,7 +114,16 @@ def fetch_ndl_chart(year: int, month: int, day: int, hour: int = 0, cache_dir: s
 
     pdf_url = day_urls[key]
     pdf_path = pdf_dir / f"{key}.pdf"
-    resp = requests.get(pdf_url, timeout=30)
+    # PDF本体は素のrequestsだと401になることがあるため、通常のブラウザアクセスに
+    # 近いヘッダー(User-Agent・Referer)を付けて再試行する
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Referer": f"https://dl.ndl.go.jp/pid/{pid}",
+    }
+    resp = requests.get(pdf_url, headers=headers, timeout=30)
     resp.raise_for_status()
     pdf_path.write_bytes(resp.content)
 
