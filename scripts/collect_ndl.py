@@ -6,9 +6,10 @@
     1. NDLサーチのSRU検索API(https://ndlsearch.ndl.go.jp/api/sru)で、
        「天気図 {和暦}年{月}月　日本域地上天気図」というタイトルを検索し、
        その月の資料のpid(永続的識別子)を取得する。
-    2. https://dl.ndl.go.jp/pid/{pid} のページ(サーバー側で完全なHTMLが
-       返ってくる)から、各日のPDFへの直リンクURLを抽出する
-       (ファイル名は気象庁と同じ "JS_YYYYMMDDHH.pdf" 形式)。
+    2. https://dl.ndl.go.jp/api/item/search/info:ndljp/pid/{pid} というJSON API
+       (デジタルコレクションのビューアが内部で使っているAPI)から、その月に含まれる
+       各日のPDFファイル情報を取得する(ファイル名は気象庁と同じ
+       "JS_YYYYMMDDHH.pdf" 形式)。
     3. 該当日のPDFをダウンロードしてPNGに変換する。
 
 NDLのデジタル化資料は1日1回(00Z)のみで、気象庁の最近のアーカイブのような
@@ -27,11 +28,11 @@ import re
 from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup
 
 from scripts.collect_jma import pdf_to_png
 
 SRU_ENDPOINT = "https://ndlsearch.ndl.go.jp/api/sru"
+ITEM_API_ENDPOINT = "https://dl.ndl.go.jp/api/item/search/info:ndljp/pid/{pid}"
 DEFAULT_CACHE_DIR = Path("data/raw/ndl_fetch")
 
 
@@ -74,20 +75,19 @@ def resolve_ndl_pid(year: int, month: int) -> int:
 
 
 def get_ndl_day_urls(pid: int) -> dict:
-    """該当pidのアイテムページから、"JS_YYYYMMDDHH" -> PDFの直リンクURL の対応表を作る。"""
-    resp = requests.get(f"https://dl.ndl.go.jp/pid/{pid}", timeout=30)
+    """該当pidのアイテムAPIから、"JS_YYYYMMDDHH" -> PDFの直リンクURL の対応表を作る。"""
+    resp = requests.get(ITEM_API_ENDPOINT.format(pid=pid), timeout=30)
     resp.raise_for_status()
+    data = resp.json()
 
-    soup = BeautifulSoup(resp.text, "html.parser")
     mapping = {}
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if "dl.ndl.go.jp/contents" not in href:
-            continue
-        text = a.get_text(strip=True)
-        m = re.match(r"(JS_\d{10})\.pdf", text)
-        if m:
-            mapping[m.group(1)] = href
+    for bundle in data.get("item", {}).get("contentsBundles") or []:
+        for content in bundle.get("contents") or []:
+            sort_key = content.get("sortKey", "")
+            m = re.match(r"(JS_\d{10})\.pdf", sort_key)
+            path = content.get("publicPath") or content.get("path")
+            if m and path:
+                mapping[m.group(1)] = f"https://dl.ndl.go.jp/{path}"
     return mapping
 
 
