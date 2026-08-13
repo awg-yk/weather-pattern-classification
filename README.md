@@ -7,6 +7,13 @@
 
 学習済みモデル(`weights/model.pt`)をリポジトリに同梱しているので、学習不要ですぐに使える。
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/claude/weather-chart-classification-4b6in1/notebooks/predict.ipynb)
+
+上のバッジからColabノートブックを開けば、画像をアップロードするだけで分類結果と
+判断根拠(Grad-CAMのヒートマップ)が表示される。
+
+手元の環境で使いたい場合はコマンドラインでも同じことができる。
+
 ```bash
 git clone -b claude/weather-chart-classification-4b6in1 https://github.com/awg-yk/weather-pattern-classification.git
 cd weather-pattern-classification
@@ -20,10 +27,8 @@ python scripts/predict.py path/to/天気図画像.png
 
 ## データ収集〜学習を一から試す場合
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/claude/weather-chart-classification-4b6in1/notebooks/weather_pattern_classification.ipynb)
-
-上のバッジからColabノートブックを開けば、データ収集〜ラベリング〜学習〜Grad-CAM可視化〜
-Web推論デモまでを順番に実行できる。
+手順は`notebooks/weather_pattern_classification.ipynb`にまとめてある
+(データ収集・前処理・ラベリング・学習・評価・Grad-CAM・Web推論デモ)。
 
 ## 全体方針
 
