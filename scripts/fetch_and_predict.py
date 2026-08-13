@@ -24,6 +24,12 @@ from scripts.collect_jma import build_url, download_pdf, pdf_to_png
 
 DEFAULT_CACHE_DIR = Path("data/raw/jma_fetch")
 
+# 動作確認により判明した気象庁JSMAPアーカイブの実際の範囲(2026年8月時点)。
+# 「直近1年分のみ」ではなく、この開始日以降が固定的に蓄積されている模様。
+# これより古い日付は非公開(2000年〜2022年9月分は国立国会図書館デジタルコレクション
+# https://dl.ndl.go.jp/pid/12896309 を別途参照する必要がある)。
+EARLIEST_KNOWN_DATE = date(2022, 10, 1)
+
 
 def chart_exists(target_date: date, hour: int) -> bool:
     """ダウンロードはせず、その日付・時刻の天気図が実際に存在するかだけ確認する。"""
@@ -76,10 +82,18 @@ def fetch_chart(date_str: str, hour: int = 0, cache_dir: str = str(DEFAULT_CACHE
     pdf_path = pdf_dir / f"Js_{ts}.pdf"
     url = build_url(target_date, hour)
     if not download_pdf(url, pdf_path):
+        hint = ""
+        if target_date < EARLIEST_KNOWN_DATE:
+            hint = (
+                f"\n{EARLIEST_KNOWN_DATE.isoformat()}より前の日付は気象庁アーカイブには"
+                "存在しません。国立国会図書館デジタルコレクション"
+                "(https://dl.ndl.go.jp/pid/12896309)を参照してください。"
+            )
         raise FileNotFoundError(
             f"天気図が見つかりません(404): {url}\n"
             "JSMAPは00Z・12Z(日本時間9時・21時)のみ存在します。"
-            "また直近1年より古い/新しい日付は非公開の可能性があります。"
+            f"また{EARLIEST_KNOWN_DATE.isoformat()}より古い日付、"
+            "またはまだ公開されていない新しい日付は404になります。" + hint
         )
 
     pdf_to_png(pdf_path, png_path)
