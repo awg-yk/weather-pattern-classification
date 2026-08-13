@@ -10,6 +10,9 @@
 
     # 確信度上位3件について、モデルが注目した箇所をヒートマップ画像として保存する
     python scripts/predict.py path/to/chart.png --save-gradcam out_dir/
+
+    # 画像を用意する代わりに、気象庁アーカイブから日付指定で直接取得して分類する
+    python scripts/predict.py --date 2025-01-01 --hour 0
 """
 
 import argparse
@@ -28,7 +31,9 @@ DEFAULT_WEIGHTS = Path(__file__).resolve().parent.parent / "weights" / "model.pt
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("image", help="分類したい天気図画像のパス")
+    parser.add_argument("image", nargs="?", help="分類したい天気図画像のパス(--dateを使う場合は不要)")
+    parser.add_argument("--date", help="YYYY-MM-DD形式。指定すると気象庁アーカイブから直接取得する")
+    parser.add_argument("--hour", type=int, default=0, choices=[0, 12], help="--date指定時のUTC時刻(0または12)")
     parser.add_argument("--weights", default=str(DEFAULT_WEIGHTS), help="モデルの重みファイル")
     parser.add_argument("--threshold", type=float, default=0.5, help="このしきい値を超えたラベルを表示")
     parser.add_argument(
@@ -43,6 +48,14 @@ def main():
     )
     parser.add_argument("--top-k", type=int, default=3, help="--save-gradcam で保存する件数")
     args = parser.parse_args()
+
+    if args.date:
+        from scripts.fetch_and_predict import fetch_chart
+
+        args.image = str(fetch_chart(args.date, hour=args.hour))
+        print(f"取得: {args.image}\n")
+    elif not args.image:
+        parser.error("画像パスまたは --date のどちらかを指定してください")
 
     if args.save_gradcam:
         from scripts.gradcam import explain_top_predictions

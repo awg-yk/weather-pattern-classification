@@ -9,8 +9,9 @@
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/claude/weather-chart-classification-4b6in1/notebooks/predict.ipynb)
 
-上のバッジからColabノートブックを開けば、画像をアップロードするだけで分類結果と
-判断根拠(Grad-CAMのヒートマップ)が表示される。
+上のバッジからColabノートブックを開けば、①画像をアップロードする、②日付を指定して
+気象庁アーカイブから直接取得する、のどちらかの方法で分類結果と判断根拠(Grad-CAMの
+ヒートマップ)が表示される。
 
 手元の環境で使いたい場合はコマンドラインでも同じことができる。
 
@@ -19,11 +20,16 @@ git clone -b claude/weather-chart-classification-4b6in1 https://github.com/awg-y
 cd weather-pattern-classification
 pip install -r requirements.txt
 
+# 画像を渡す場合
 python scripts/predict.py path/to/天気図画像.png
+
+# 日付を指定して気象庁アーカイブから直接取得する場合(画像不要)
+python scripts/predict.py --date 2025-01-01 --hour 0
 ```
 
 気象庁の生のPDF変換画像(枠・座標グリッド・日時スタンプ付き)であれば自動で前処理される。
 既に前処理済みの画像を渡す場合は `--no-preprocess` を付ける。
+`--date`はJSMAPアーカイブの仕様上、`--hour`は`0`(日本時間9時)か`12`(日本時間21時)のみ有効。
 
 ## データ収集〜学習を一から試す場合
 
