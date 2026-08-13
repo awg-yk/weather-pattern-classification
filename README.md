@@ -3,12 +3,7 @@
 機械学習（CNN）を用いて天気図を気圧配置パターンごとに自動分類するプロジェクトです。
 最終的にはWebサイト上でアップロードした天気図画像（またはERA5由来の気圧場）を分類できるようにします。
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/claude/weather-chart-classification-4b6in1/notebooks/weather_pattern_classification.ipynb)
-
-上のバッジからColabノートブックを開けば、データ収集〜ラベリング〜学習〜Grad-CAM可視化〜
-Web推論デモまでを順番に実行できます。
-
-## すぐに分類だけ試したい場合
+## すぐに使う
 
 学習済みモデル(`weights/model.pt`)をリポジトリに同梱しているので、学習不要ですぐに使える。
 
@@ -22,6 +17,13 @@ python scripts/predict.py path/to/天気図画像.png
 
 気象庁の生のPDF変換画像(枠・座標グリッド・日時スタンプ付き)であれば自動で前処理される。
 既に前処理済みの画像を渡す場合は `--no-preprocess` を付ける。
+
+## データ収集〜学習を一から試す場合
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/claude/weather-chart-classification-4b6in1/notebooks/weather_pattern_classification.ipynb)
+
+上のバッジからColabノートブックを開けば、データ収集〜ラベリング〜学習〜Grad-CAM可視化〜
+Web推論デモまでを順番に実行できる。
 
 ## 全体方針
 
