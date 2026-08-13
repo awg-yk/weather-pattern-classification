@@ -33,6 +33,18 @@ EARLIEST_KNOWN_DATE = date(2022, 10, 1)
 
 def chart_exists(target_date: date, hour: int) -> bool:
     """ダウンロードはせず、その日付・時刻の天気図が実際に存在するかだけ確認する。"""
+    if target_date < EARLIEST_KNOWN_DATE:
+        from scripts.collect_ndl import get_ndl_day_urls, resolve_ndl_pid
+
+        if hour != 0:
+            return False
+        try:
+            pid = resolve_ndl_pid(target_date.year, target_date.month)
+            key = f"JS_{target_date.strftime('%Y%m%d')}{hour:02d}"
+            return key in get_ndl_day_urls(pid)
+        except (requests.RequestException, FileNotFoundError):
+            return False
+
     url = build_url(target_date, hour)
     try:
         resp = requests.head(url, timeout=15, allow_redirects=True)
@@ -64,10 +76,21 @@ def find_latest_available_date(hour: int = 0, search_back_days: int = 150) -> da
 def fetch_chart(date_str: str, hour: int = 0, cache_dir: str = str(DEFAULT_CACHE_DIR)) -> Path:
     """指定した日付・時刻の天気図PDFをダウンロードしてPNGに変換し、そのパスを返す。
 
-    既にダウンロード済みならキャッシュを再利用する。存在しない日付・時刻の場合は
-    FileNotFoundErrorを送出する(JSMAPは00Z・12Zのみ存在。他の時刻は404になりやすい)。
+    2022-10-01以降は気象庁JSMAPアーカイブ、それより古い日付は国立国会図書館
+    デジタルコレクション(NDL)から自動で取得する(NDL側は00Zのみ存在)。
+    既にダウンロード済みならキャッシュを再利用する。
     """
     target_date = date.fromisoformat(date_str)
+
+    if target_date < EARLIEST_KNOWN_DATE:
+        from scripts.collect_ndl import fetch_ndl_chart
+
+        if hour != 0:
+            raise ValueError("NDL側のデータは00Zのみ存在します(--hour 0 を指定してください)")
+        return fetch_ndl_chart(
+            target_date.year, target_date.month, target_date.day, hour=0, cache_dir=cache_dir
+        )
+
     cache_dir = Path(cache_dir)
     pdf_dir = cache_dir / "pdf"
     png_dir = cache_dir / "png"
@@ -82,18 +105,10 @@ def fetch_chart(date_str: str, hour: int = 0, cache_dir: str = str(DEFAULT_CACHE
     pdf_path = pdf_dir / f"Js_{ts}.pdf"
     url = build_url(target_date, hour)
     if not download_pdf(url, pdf_path):
-        hint = ""
-        if target_date < EARLIEST_KNOWN_DATE:
-            hint = (
-                f"\n{EARLIEST_KNOWN_DATE.isoformat()}より前の日付は気象庁アーカイブには"
-                "存在しません。国立国会図書館デジタルコレクション"
-                "(https://dl.ndl.go.jp/pid/12896309)を参照してください。"
-            )
         raise FileNotFoundError(
             f"天気図が見つかりません(404): {url}\n"
             "JSMAPは00Z・12Z(日本時間9時・21時)のみ存在します。"
-            f"また{EARLIEST_KNOWN_DATE.isoformat()}より古い日付、"
-            "またはまだ公開されていない新しい日付は404になります。" + hint
+            "またまだ公開されていない新しい日付は404になります。"
         )
 
     pdf_to_png(pdf_path, png_path)
