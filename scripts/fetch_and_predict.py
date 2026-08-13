@@ -15,12 +15,44 @@ Colabのノートブックセルで以下のように使う:
 """
 
 import argparse
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
+
+import requests
 
 from scripts.collect_jma import build_url, download_pdf, pdf_to_png
 
 DEFAULT_CACHE_DIR = Path("data/raw/jma_fetch")
+
+
+def chart_exists(target_date: date, hour: int) -> bool:
+    """ダウンロードはせず、その日付・時刻の天気図が実際に存在するかだけ確認する。"""
+    url = build_url(target_date, hour)
+    try:
+        resp = requests.head(url, timeout=15, allow_redirects=True)
+        if resp.status_code == 200:
+            return True
+        if resp.status_code == 405:  # HEAD未対応のサーバー向けフォールバック
+            resp = requests.get(url, timeout=15, stream=True)
+            resp.close()
+            return resp.status_code == 200
+        return False
+    except requests.RequestException:
+        return False
+
+
+def find_latest_available_date(hour: int = 0, search_back_days: int = 150) -> date | None:
+    """今日から遡って、実際に存在する最新の日付を探す(アーカイブは公開まで
+    約3ヶ月のタイムラグがあるため、'今日'を指定しても404になることが多い)。
+
+    見つからなければNoneを返す。
+    """
+    d = date.today()
+    for _ in range(search_back_days):
+        if chart_exists(d, hour):
+            return d
+        d -= timedelta(days=1)
+    return None
 
 
 def fetch_chart(date_str: str, hour: int = 0, cache_dir: str = str(DEFAULT_CACHE_DIR)) -> Path:
