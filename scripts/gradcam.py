@@ -115,7 +115,7 @@ class GradCAM:
 
 
 def _load_model(weights_path: str, device: torch.device) -> torch.nn.Module:
-    model = build_model(num_classes=len(LABELS))
+    model = build_model(num_classes=len(LABELS), pretrained=False)
     model.load_state_dict(torch.load(weights_path, map_location=device))
     model.to(device)
     model.eval()

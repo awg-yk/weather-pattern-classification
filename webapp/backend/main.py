@@ -54,7 +54,7 @@ def load_model():
         # モデル未学習の段階でもAPIサーバー自体は起動できるようにしておく
         print(f"warning: weights not found at {WEIGHTS_PATH}. /predict will fail until trained.")
         return
-    m = build_model(num_classes=len(LABELS))
+    m = build_model(num_classes=len(LABELS), pretrained=False)
     m.load_state_dict(torch.load(WEIGHTS_PATH, map_location=device))
     m.eval()
     m.to(device)

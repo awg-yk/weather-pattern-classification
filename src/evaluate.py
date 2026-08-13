@@ -24,7 +24,7 @@ def main():
     dataset = WeatherMapDataset(args.data_dir, args.labels, transform=get_transforms(train=False))
     loader = DataLoader(dataset, batch_size=args.batch_size)
 
-    model = build_model(num_classes=len(LABELS)).to(device)
+    model = build_model(num_classes=len(LABELS), pretrained=False).to(device)
     model.load_state_dict(torch.load(args.weights, map_location=device))
     model.eval()
 

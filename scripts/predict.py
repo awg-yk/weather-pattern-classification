@@ -36,7 +36,9 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_model(num_classes=len(LABELS))
+    # pretrained=False: どうせ直後に自前の学習済み重みで上書きするので、
+    # ImageNet事前学習済み重みのダウンロードは不要(ネット接続なしでも動かせる)
+    model = build_model(num_classes=len(LABELS), pretrained=False)
     model.load_state_dict(torch.load(args.weights, map_location=device))
     model.to(device)
     model.eval()
