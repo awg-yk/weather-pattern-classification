@@ -184,6 +184,10 @@ APIキーを `~/.cdsapirc` に設定した上で `scripts/download_era5.py` を�
 python src/train.py --data-dir data/processed --labels data/labels.csv --epochs 30
 ```
 
+**注意**: `--out`を省略すると毎回`weights/model.pt`に上書き保存される。過去のチェックポイントを
+残したい場合は、再学習のたびに `--out weights/model_YYYYMMDD.pt` のように日付やバージョンを
+含めたファイル名を指定すること。上書きしてしまうと、その時点の重みは復元できない。
+
 ## モデルの判断根拠を可視化する(Grad-CAM)
 
 CNNは「H/Lの文字」「前線の色」「等圧線の形」を人間のように記号として理解しているわけではなく、
