@@ -19,6 +19,7 @@ Colabのノートブックセルで以下のように使う:
     )
 """
 
+import subprocess
 from pathlib import Path
 
 import matplotlib
@@ -26,19 +27,47 @@ import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Colabなど日本語フォントが未設定の環境だとタイトルが豆腐(□)になるため、
-# システムにあるCJK対応フォントを探して明示的に設定する。
-# (事前に `apt-get install -y fonts-noto-cjk` が必要)
-for _font_name in ("Noto Sans CJK JP", "Noto Sans JP", "IPAexGothic", "TakaoGothic"):
-    if any(_font_name in f.name for f in fm.fontManager.ttflist):
-        matplotlib.rcParams["font.family"] = _font_name
-        break
-else:
+
+def _register_cjk_font() -> bool:
+    """OSのfontconfigから直接CJKフォントファイルを探して matplotlib に登録する。
+
+    matplotlibは起動時にフォント一覧をキャッシュしているため、実行中に
+    `apt-get install fonts-noto-cjk` してもキャッシュが更新されず
+    ttflistに反映されないことがある。fc-list(fontconfig)はOS側の情報を
+    直接見るので、その場でインストールしたフォントもすぐ拾える。
+    """
+    try:
+        result = subprocess.run(
+            ["fc-list", ":lang=ja", "file"], capture_output=True, text=True, timeout=10
+        )
+        font_paths = [line.split(":")[0].strip() for line in result.stdout.splitlines() if line.strip()]
+    except Exception:
+        font_paths = []
+
+    for path in font_paths:
+        try:
+            fm.fontManager.addfont(path)
+        except Exception:
+            continue
+
+    if not font_paths:
+        return False
+
+    try:
+        font_name = fm.FontProperties(fname=font_paths[0]).get_name()
+        matplotlib.rcParams["font.family"] = font_name
+        return True
+    except Exception:
+        return False
+
+
+if not _register_cjk_font():
     print(
         "警告: 日本語フォントが見つかりませんでした。"
-        "`!apt-get -qq install -y fonts-noto-cjk` を実行してから"
-        "ランタイムを再起動してください。"
+        "`!apt-get -qq install -y fonts-noto-cjk` を実行してから、"
+        "このセルを再実行(ランタイム再起動は不要)してください。"
     )
+
 import torch
 import torch.nn.functional as F
 from PIL import Image
