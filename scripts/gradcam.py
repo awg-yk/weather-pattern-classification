@@ -140,11 +140,14 @@ def _overlay_heatmap(base_image: Image.Image, cam: np.ndarray, max_alpha: float 
     return Image.fromarray(overlay.clip(0, 255).astype(np.uint8))
 
 
-def explain_top_prediction(image_path: str, weights_path: str, apply_preprocess: bool = True):
-    """最も確信度が高いラベルについてだけヒートマップ画像を作り、
+def explain_top_predictions(
+    image_path: str, weights_path: str, top_k: int = 3, apply_preprocess: bool = True
+):
+    """確信度が高い上位top_k件についてヒートマップ画像を作り、
 
-    (前処理後の元画像, 最上位ラベルのヒートマップ画像, [(ラベル, 確信度), ...確信度降順]) を返す。
-    predict.ipynbのように「1位だけ画像、残りはテキストでよい」という用途向け。
+    (前処理後の元画像, [(ラベル, 確信度, ヒートマップ画像), ...上位top_k件],
+     [(ラベル, 確信度), ...全ラベル確信度降順]) を返す。
+    predict.ipynbのように「上位k件だけ画像、残りはテキストでよい」という用途向け。
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = _load_model(weights_path, device)
@@ -164,11 +167,13 @@ def explain_top_prediction(image_path: str, weights_path: str, apply_preprocess:
     sorted_indices = torch.argsort(probs, descending=True).tolist()
     ranked = [(INDEX_TO_LABEL[i], probs[i].item()) for i in sorted_indices]
 
-    top_idx = sorted_indices[0]
-    cam = gradcam.generate(input_tensor, top_idx)
-    top_overlay = _overlay_heatmap(display_image, cam)
+    top_overlays = []
+    for idx in sorted_indices[:top_k]:
+        cam = gradcam.generate(input_tensor, idx)
+        overlay = _overlay_heatmap(display_image, cam)
+        top_overlays.append((INDEX_TO_LABEL[idx], probs[idx].item(), overlay))
 
-    return display_image, top_overlay, ranked
+    return display_image, top_overlays, ranked
 
 
 def show_gradcam(
