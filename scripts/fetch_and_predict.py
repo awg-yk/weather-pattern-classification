@@ -30,10 +30,19 @@ DEFAULT_CACHE_DIR = Path("data/raw/jma_fetch")
 # https://dl.ndl.go.jp/pid/12896309 を別途参照する必要がある)。
 EARLIEST_KNOWN_DATE = date(2022, 10, 1)
 
+# scripts/collect_ndl.py でNDL側のpid・ファイル一覧の取得までは動作するが、
+# 実際のPDF本体のダウンロードが401 Unauthorizedになる問題が未解決のため、
+# 一旦無効化している(ブラウザで直接URLを開いても401になることを確認済み)。
+# 直リンクURLではなく専用の認証フロー・トークンが必要な可能性がある。
+ENABLE_NDL = False
+
 
 def chart_exists(target_date: date, hour: int) -> bool:
     """ダウンロードはせず、その日付・時刻の天気図が実際に存在するかだけ確認する。"""
     if target_date < EARLIEST_KNOWN_DATE:
+        if not ENABLE_NDL:
+            return False
+
         from scripts.collect_ndl import get_ndl_day_urls, resolve_ndl_pid
 
         if hour != 0:
@@ -83,6 +92,13 @@ def fetch_chart(date_str: str, hour: int = 0, cache_dir: str = str(DEFAULT_CACHE
     target_date = date.fromisoformat(date_str)
 
     if target_date < EARLIEST_KNOWN_DATE:
+        if not ENABLE_NDL:
+            raise FileNotFoundError(
+                f"{EARLIEST_KNOWN_DATE.isoformat()}より古い日付は現時点では取得できません"
+                "(国立国会図書館デジタルコレクション経由の取得はPDFダウンロードが"
+                "401 Unauthorizedになる問題が未解決のため、一旦無効化しています)。"
+            )
+
         from scripts.collect_ndl import fetch_ndl_chart
 
         if hour != 0:
