@@ -122,14 +122,53 @@ def _load_model(weights_path: str, device: torch.device) -> torch.nn.Module:
     return model
 
 
-def _overlay_heatmap(base_image: Image.Image, cam: np.ndarray, alpha: float = 0.45) -> Image.Image:
-    cam_resized = np.array(Image.fromarray((cam * 255).astype(np.uint8)).resize(base_image.size, Image.BILINEAR))
-    heatmap = plt.cm.jet(cam_resized / 255.0)[:, :, :3]  # RGBA -> RGB
-    heatmap = (heatmap * 255).astype(np.uint8)
+def _overlay_heatmap(base_image: Image.Image, cam: np.ndarray, max_alpha: float = 0.6) -> Image.Image:
+    """CAMの強さに応じて透明度を変えながら重ねる。
 
+    一律の透明度で塗ると、H/Lの記号や気圧の数値のような細かい文字が
+    色に埋もれて読めなくなる。注目度がほぼ0の場所は元の線画をそのまま残し、
+    注目度が高い場所だけ強く色を乗せることで、文字の判読性を保つ。
+    """
+    cam_img = Image.fromarray((cam * 255).astype(np.uint8)).resize(base_image.size, Image.BILINEAR)
+    cam_resized = np.array(cam_img).astype(np.float32) / 255.0  # (H, W), 0-1
+
+    heatmap = plt.cm.jet(cam_resized)[:, :, :3] * 255.0  # (H, W, 3)
     base_arr = np.array(base_image.convert("RGB")).astype(np.float32)
-    overlay = (1 - alpha) * base_arr + alpha * heatmap.astype(np.float32)
+
+    alpha_map = (cam_resized * max_alpha)[:, :, None]  # (H, W, 1), 場所ごとの透明度
+    overlay = (1 - alpha_map) * base_arr + alpha_map * heatmap
     return Image.fromarray(overlay.clip(0, 255).astype(np.uint8))
+
+
+def explain_top_prediction(image_path: str, weights_path: str, apply_preprocess: bool = True):
+    """最も確信度が高いラベルについてだけヒートマップ画像を作り、
+
+    (前処理後の元画像, 最上位ラベルのヒートマップ画像, [(ラベル, 確信度), ...確信度降順]) を返す。
+    predict.ipynbのように「1位だけ画像、残りはテキストでよい」という用途向け。
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = _load_model(weights_path, device)
+    gradcam = GradCAM(model)
+
+    raw_image = Image.open(image_path).convert("RGB")
+    display_image = raw_image
+    if apply_preprocess:
+        display_image = autocrop_to_content(display_image)
+        display_image = mask_stamp_box(display_image, DEFAULT_STAMP_BOX)
+
+    transform = get_transforms(train=False)
+    input_tensor = transform(display_image).unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        probs = torch.sigmoid(model(input_tensor))[0].cpu()
+    sorted_indices = torch.argsort(probs, descending=True).tolist()
+    ranked = [(INDEX_TO_LABEL[i], probs[i].item()) for i in sorted_indices]
+
+    top_idx = sorted_indices[0]
+    cam = gradcam.generate(input_tensor, top_idx)
+    top_overlay = _overlay_heatmap(display_image, cam)
+
+    return display_image, top_overlay, ranked
 
 
 def show_gradcam(
