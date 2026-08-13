@@ -21,8 +21,24 @@ Colabのノートブックセルで以下のように使う:
 
 from pathlib import Path
 
+import matplotlib
+import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
+
+# Colabなど日本語フォントが未設定の環境だとタイトルが豆腐(□)になるため、
+# システムにあるCJK対応フォントを探して明示的に設定する。
+# (事前に `apt-get install -y fonts-noto-cjk` が必要)
+for _font_name in ("Noto Sans CJK JP", "Noto Sans JP", "IPAexGothic", "TakaoGothic"):
+    if any(_font_name in f.name for f in fm.fontManager.ttflist):
+        matplotlib.rcParams["font.family"] = _font_name
+        break
+else:
+    print(
+        "警告: 日本語フォントが見つかりませんでした。"
+        "`!apt-get -qq install -y fonts-noto-cjk` を実行してから"
+        "ランタイムを再起動してください。"
+    )
 import torch
 import torch.nn.functional as F
 from PIL import Image
