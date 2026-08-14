@@ -6,7 +6,8 @@ LABELS = [
     "japan_sea_low",             # 日本海低気圧
     "futatsudama_low",           # 二つ玉低気圧
     "typhoon",                   # 台風
-    "migratory_high",            # 移動性高気圧（帯状高気圧を統合）
+    "migratory_high",            # 移動性高気圧
+    "zonal_high",                # 帯状高気圧
     "summer_pressure_pattern",   # 南高北低（夏型）
     "cold_front_passage",        # 寒冷前線通過
     "stationary_front",          # 停滞前線
@@ -23,6 +24,7 @@ LABEL_JA = {
     "futatsudama_low": "二つ玉低気圧",
     "typhoon": "台風",
     "migratory_high": "移動性高気圧",
+    "zonal_high": "帯状高気圧",
     "summer_pressure_pattern": "南高北低（夏型）",
     "cold_front_passage": "寒冷前線通過",
     "stationary_front": "停滞前線",

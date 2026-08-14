@@ -75,7 +75,8 @@ python scripts/preprocess_jma.py --in-dir data/raw/ndl_manual/png --out-dir data
 | `japan_sea_low` | 日本海低気圧 |
 | `futatsudama_low` | 二つ玉低気圧 |
 | `typhoon` | 台風 |
-| `migratory_high` | 移動性高気圧（帯状高気圧を統合） |
+| `migratory_high` | 移動性高気圧 |
+| `zonal_high` | 帯状高気圧（春・秋の高気圧） |
 | `summer_pressure_pattern` | 南高北低（夏型の気圧配置） |
 | `cold_front_passage` | 寒冷前線通過 |
 | `stationary_front` | 停滞前線 |
@@ -94,9 +95,11 @@ python scripts/preprocess_jma.py --in-dir data/raw/ndl_manual/png --out-dir data
 python scripts/merge_labels.py --labels data/labels.csv --from zonal_high --to migratory_high
 ```
 
-自動でバックアップ(`.bak`)が作られる。ラベル数(クラス数)が変わるため、
-モデルの出力層のサイズが変わり、**既存の学習済みモデルは使えなくなる。
-統合後は再学習が必要**。
+自動でバックアップ(`.bak`)が作られる。**ラベル数(クラス数)が変わるとモデルの
+出力層のサイズも変わるため、`labels.py`の変更と再学習は必ずセットで行うこと。**
+`labels.py`だけ先に変更すると、まだ再学習していない既存の`weights/model.pt`
+(元のクラス数のまま)と食い違い、`predict.py`やWeb UIがサイズ不一致エラーで
+動かなくなる。
 
 ## ディレクトリ構成
 
