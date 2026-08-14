@@ -38,18 +38,9 @@ python scripts/predict.py --date 2025-01-01 --hour 0
 ブラウザで直リンクURLを直接開いても401になることを確認済みで、単純なCookie/Referer
 の問題ではなく、NDL側の何らかの認証フローが必要とみられる。
 
-そのため、この期間分は**NDLのサイト上で手動でダウンロード**する運用にする。
-`https://dl.ndl.go.jp/pid/12896309` から月ごとの巻号ページを開き、「一括ダウンロード」で
-その月のPDF一式(ZIP)を取得・展開したら、以下でまとめてPNG変換できる。
-
-```bash
-python scripts/import_manual_pdfs.py --in-dir ~/Downloads/tenkizu_2000 --out-dir data/raw/ndl_manual/png
-python scripts/preprocess_jma.py --in-dir data/raw/ndl_manual/png --out-dir data/processed/ndl_manual
-```
-
-`import_manual_pdfs.py`はフォルダを再帰的に探索するので、ZIPをそのまま展開した
-サブフォルダ構成でも問題ない。変換後は他のJMA画像と同様に`data/processed`配下に
-まとめて、ラベリング・学習に使える。
+そのため、この期間分はNDLのサイト上で手動でダウンロードし、PDF→PNG変換は
+別リポジトリで行う運用にしている。変換後のPNGを`data/processed`配下に置けば、
+他のJMA画像と同様にラベリング・学習に使える。
 
 ## データ収集〜学習を一から試す場合
 
