@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 data/raw/
 data/processed/
+!data/raw/ndl_manual/
+!data/raw/ndl_manual/**
 *.pt
 *.pth
 !weights/model.pt
