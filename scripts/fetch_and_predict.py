@@ -1,5 +1,5 @@
 """
-日付(と時刻)を指定するだけで、気象庁の天気図PDFをダウンロード・変換し、
+日付(と時刻)を指定するだけで、天気図をダウンロード・変換し、
 そのまま分類まで行うヘルパー。画像を手元に用意する必要がない。
 
 Colabのノートブックセルで以下のように使う:
@@ -21,38 +21,28 @@ from pathlib import Path
 import requests
 
 from scripts.collect_jma import build_url, download_pdf, pdf_to_png
+from scripts.fetch_manual_chart import (
+    MANUAL_ARCHIVE_START_DATE,
+    fetch_manual_chart,
+    manual_chart_exists,
+)
 
 DEFAULT_CACHE_DIR = Path("data/raw/jma_fetch")
 
 # 動作確認により判明した気象庁JSMAPアーカイブの実際の範囲(2026年8月時点)。
 # 「直近1年分のみ」ではなく、この開始日以降が固定的に蓄積されている模様。
-# これより古い日付は非公開(2000年〜2022年9月分は国立国会図書館デジタルコレクション
-# https://dl.ndl.go.jp/pid/12896309 を別途参照する必要がある)。
+# これより古い日付は、2000年〜2022年9月分に限りjpeg-dataブランチの手動アーカイブ
+# (国立国会図書館デジタルコレクション https://dl.ndl.go.jp/pid/12896309 から
+# 手動で収集・変換したJPEG)から取得する。
 EARLIEST_KNOWN_DATE = date(2022, 10, 1)
-
-# scripts/collect_ndl.py でNDL側のpid・ファイル一覧の取得までは動作するが、
-# 実際のPDF本体のダウンロードが401 Unauthorizedになる問題が未解決のため、
-# 一旦無効化している(ブラウザで直接URLを開いても401になることを確認済み)。
-# 直リンクURLではなく専用の認証フロー・トークンが必要な可能性がある。
-ENABLE_NDL = False
 
 
 def chart_exists(target_date: date, hour: int) -> bool:
     """ダウンロードはせず、その日付・時刻の天気図が実際に存在するかだけ確認する。"""
     if target_date < EARLIEST_KNOWN_DATE:
-        if not ENABLE_NDL:
+        if target_date < MANUAL_ARCHIVE_START_DATE:
             return False
-
-        from scripts.collect_ndl import get_ndl_day_urls, resolve_ndl_pid
-
-        if hour != 0:
-            return False
-        try:
-            pid = resolve_ndl_pid(target_date.year, target_date.month)
-            key = f"JS_{target_date.strftime('%Y%m%d')}{hour:02d}"
-            return key in get_ndl_day_urls(pid)
-        except (requests.RequestException, FileNotFoundError):
-            return False
+        return manual_chart_exists(target_date, hour)
 
     url = build_url(target_date, hour)
     try:
@@ -83,29 +73,21 @@ def find_latest_available_date(hour: int = 0, search_back_days: int = 150) -> da
 
 
 def fetch_chart(date_str: str, hour: int = 0, cache_dir: str = str(DEFAULT_CACHE_DIR)) -> Path:
-    """指定した日付・時刻の天気図PDFをダウンロードしてPNGに変換し、そのパスを返す。
+    """指定した日付・時刻の天気図をダウンロード(またはJPEGアーカイブから取得)し、
+    そのパスを返す。
 
-    2022-10-01以降は気象庁JSMAPアーカイブ、それより古い日付は国立国会図書館
-    デジタルコレクション(NDL)から自動で取得する(NDL側は00Zのみ存在)。
+    2022-10-01以降は気象庁JSMAPアーカイブから、2000-01-01〜2022-09-30は
+    jpeg-dataブランチの手動アーカイブ(0Z・12Zのみ)から取得する。
     既にダウンロード済みならキャッシュを再利用する。
     """
     target_date = date.fromisoformat(date_str)
 
     if target_date < EARLIEST_KNOWN_DATE:
-        if not ENABLE_NDL:
+        if target_date < MANUAL_ARCHIVE_START_DATE:
             raise FileNotFoundError(
-                f"{EARLIEST_KNOWN_DATE.isoformat()}より古い日付は現時点では取得できません"
-                "(国立国会図書館デジタルコレクション経由の取得はPDFダウンロードが"
-                "401 Unauthorizedになる問題が未解決のため、一旦無効化しています)。"
+                f"{MANUAL_ARCHIVE_START_DATE.isoformat()}より古い日付は現時点では取得できません。"
             )
-
-        from scripts.collect_ndl import fetch_ndl_chart
-
-        if hour != 0:
-            raise ValueError("NDL側のデータは00Zのみ存在します(--hour 0 を指定してください)")
-        return fetch_ndl_chart(
-            target_date.year, target_date.month, target_date.day, hour=0, cache_dir=cache_dir
-        )
+        return fetch_manual_chart(target_date, hour=hour, cache_dir=cache_dir)
 
     cache_dir = Path(cache_dir)
     pdf_dir = cache_dir / "pdf"
