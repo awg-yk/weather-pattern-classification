@@ -67,11 +67,11 @@ python scripts/predict.py --date 2025-01-01 --hour 0
 | `japan_sea_low` | 日本海低気圧 |
 | `futatsudama_low` | 二つ玉低気圧 |
 | `typhoon` | 台風 |
-| `migratory_high` | 移動性高気圧 |
-| `zonal_high` | 帯状高気圧（春・秋の高気圧） |
+| `migratory_high` | 移動性高気圧（帯状高気圧`zonal_high`を統合） |
 | `summer_pressure_pattern` | 南高北低（夏型の気圧配置） |
 | `cold_front_passage` | 寒冷前線通過 |
 | `stationary_front` | 停滞前線 |
+| `okhotsk_high` | オホーツク海高気圧 |
 
 季節を区別しないため梅雨前線は対象外とし、代わりに日本海側から接近する
 低気圧のパターンを独立したラベルとして追加している。1枚の天気図に複数の
