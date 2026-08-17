@@ -19,18 +19,33 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageOps
+from scipy import ndimage
 
 # 右下の日時スタンプのおおよその位置 (left, top, right, bottom) を画像サイズに対する割合で指定
 DEFAULT_STAMP_BOX = (0.65, 0.92, 1.0, 1.0)
 
 
 def autocrop_to_content(image: Image.Image, white_threshold: int = 250) -> Image.Image:
-    """画像周囲の白い余白を除去し、図郭(枠)ぎりぎりまでクロップする。"""
+    """画像周囲の白い余白を除去し、図郭(枠)ぎりぎりまでクロップする。
+
+    2000〜2002年頃の国立国会図書館デジタルコレクション由来のJPEGには、図郭の外側に
+    ビューアの灰色のページ送りボタン(右に2つ・左に1つ)が写り込んでいることがある。
+    単純な非白領域のバウンディングボックスだとこのボタンまで含めてクロップしてしまう
+    ため、非白領域を連結成分に分解し、最大の連結成分(図郭+等圧線+文字などが繋がった
+    本体)のバウンディングボックスのみを使う。ボタンは図郭から離れた孤立した連結成分
+    になるため、自然に除外される。
+    """
     gray = ImageOps.grayscale(image)
     arr = np.array(gray)
     non_white_mask = arr < white_threshold
     if not non_white_mask.any():
         return image
+
+    labeled, num_components = ndimage.label(non_white_mask, structure=np.ones((3, 3)))
+    if num_components > 1:
+        component_sizes = ndimage.sum(non_white_mask, labeled, range(1, num_components + 1))
+        largest_component = np.argmax(component_sizes) + 1
+        non_white_mask = labeled == largest_component
 
     rows = np.where(non_white_mask.any(axis=1))[0]
     cols = np.where(non_white_mask.any(axis=0))[0]
