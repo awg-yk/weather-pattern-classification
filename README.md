@@ -7,7 +7,7 @@
 
 学習済みモデル(`weights/model.pt`)をリポジトリに同梱しているので、学習不要ですぐに使える。
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/claude/weather-chart-classification-4b6in1/notebooks/predict.ipynb)
+<a href="https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/main/notebooks/predict.ipynb" target="_blank" rel="noopener noreferrer"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 
 上のバッジからColabノートブックを開けば、①画像をアップロードする、②日付を指定して
 気象庁アーカイブから直接取得する、のどちらかの方法で分類結果と判断根拠(Grad-CAMの
@@ -16,7 +16,7 @@
 手元の環境で使いたい場合はコマンドラインでも同じことができる。
 
 ```bash
-git clone -b claude/weather-chart-classification-4b6in1 https://github.com/awg-yk/weather-pattern-classification.git
+git clone https://github.com/awg-yk/weather-pattern-classification.git
 cd weather-pattern-classification
 pip install -r requirements.txt
 
@@ -38,9 +38,10 @@ python scripts/predict.py --date 2025-01-01 --hour 0
 ブラウザで直リンクURLを直接開いても401になることを確認済みで、単純なCookie/Referer
 の問題ではなく、NDL側の何らかの認証フローが必要とみられる。
 
-そのため、この期間分はNDLのサイト上で手動でダウンロードし、PDF→PNG変換は
-別リポジトリで行う運用にしている。変換後のPNGを`data/processed`配下に置けば、
-他のJMA画像と同様にラベリング・学習に使える。
+そのため、この期間分はNDLのサイト上で手動でダウンロードし、PDF→PNG→JPEG変換は
+別リポジトリで行う運用にしている。変換済みのJPEGは
+[weather-pattern-classification-data](https://github.com/awg-yk/weather-pattern-classification-data)
+にあり、`scripts/fetch_manual_chart.py`が日付指定で個別に取得する。
 
 ## データ収集〜学習を一から試す場合
 
