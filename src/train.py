@@ -26,6 +26,9 @@ def get_transforms(train: bool):
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ]
+    if train:
+        # 等圧線・前線の一部が欠けても分類できるよう、局所的な遮蔽への頑健性を上げる
+        ops.append(transforms.RandomErasing(p=0.3, scale=(0.02, 0.08)))
     return transforms.Compose(ops)
 
 
@@ -131,6 +134,8 @@ def main():
         lr=args.lr,
         weight_decay=args.weight_decay,
     )
+    # 学習率を徐々に下げることで、終盤の細かい収束と汎化性能を安定させる
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     # 過学習の判定・モデル保存はval_lossを基準にする(小さな検証セットでは
     # 「完全一致率」は数枚のブレで大きく上下しやすく、あてにならないため)
@@ -142,11 +147,13 @@ def main():
     for epoch in range(1, args.epochs + 1):
         train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, device, train=True)
         val_loss, val_acc = run_epoch(model, val_loader, criterion, optimizer, device, train=False)
+        scheduler.step()
 
         print(
             f"epoch {epoch}/{args.epochs} "
             f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f}"
+            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} "
+            f"lr={scheduler.get_last_lr()[0]:.2e}"
         )
 
         if val_loss < best_val_loss:
