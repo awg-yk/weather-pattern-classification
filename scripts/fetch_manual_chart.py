@@ -1,6 +1,6 @@
 """
 2000年〜2022年9月分の天気図(国立国会図書館デジタルコレクションから手動で収集し、
-JPEGに変換したもの)を、GitHubの `jpeg-data` ブランチから直接取得するヘルパー。
+JPEGに変換したもの)を、専用データリポジトリから直接取得するヘルパー。
 
 ファイルは data/raw/ndl_manual/jpg/{prefix}_{YYYYMMDDHH}_page001.jpg という名前で、
 prefixは "Js" または "JS"(収集時期によって表記揺れがあるため両方試す)。
@@ -12,8 +12,8 @@ from pathlib import Path
 import requests
 
 RAW_BASE_URL = (
-    "https://raw.githubusercontent.com/awg-yk/weather-pattern-classification/"
-    "jpeg-data/data/raw/ndl_manual/jpg"
+    "https://raw.githubusercontent.com/awg-yk/weather-pattern-classification-data/"
+    "main/data/raw/ndl_manual/jpg"
 )
 
 MANUAL_ARCHIVE_START_DATE = date(2000, 1, 1)
@@ -46,8 +46,8 @@ def manual_chart_exists(target_date: date, hour: int) -> bool:
 def fetch_manual_chart(
     target_date: date, hour: int = 0, cache_dir: str = str(DEFAULT_CACHE_DIR)
 ) -> Path:
-    """GitHub上の手動アーカイブ(jpeg-dataブランチ)から天気図JPEGを取得し、
-    ローカルにキャッシュしてそのパスを返す。"""
+    """専用データリポジトリから天気図JPEGを取得し、ローカルにキャッシュして
+    そのパスを返す。"""
     if hour not in (0, 12):
         raise ValueError("hourは0か12を指定してください")
 
