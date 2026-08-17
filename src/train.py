@@ -3,7 +3,7 @@ from pathlib import Path
 
 import torch
 from torch import nn, optim
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset, random_split
 from torchvision import transforms
 from tqdm import tqdm
 
@@ -107,15 +107,44 @@ def main():
         help="クラス不均衡対策のpos_weightの上限。大きいほど少数ラベルのrecallを稼ぐ代わりにprecisionが下がりやすい",
     )
     parser.add_argument("--out", default="weights/model.pt")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="train/val分割の乱数シード。学習件数を変えて比較する際はこれを固定して"
+        "検証セットを揃えること(--train-limitと併用する場合に特に重要)",
+    )
+    parser.add_argument(
+        "--train-limit",
+        type=int,
+        default=None,
+        help="学習に使う件数を制限する(検証セットのサイズは変えない)。"
+        "学習件数と性能の関係を調べる実験用。例: 100, 300, 600 ...",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    generator = torch.Generator().manual_seed(args.seed)
     full_dataset = WeatherMapDataset(args.data_dir, args.labels, transform=get_transforms(train=True))
     val_size = int(len(full_dataset) * args.val_ratio)
     train_size = len(full_dataset) - val_size
-    train_ds, val_ds = random_split(full_dataset, [train_size, val_size])
+    train_ds, val_ds = random_split(full_dataset, [train_size, val_size], generator=generator)
     val_ds.dataset.transform = get_transforms(train=False)
+
+    if args.train_limit is not None:
+        if args.train_limit > len(train_ds):
+            raise ValueError(
+                f"--train-limit={args.train_limit} が学習用データ件数({len(train_ds)})を超えています"
+            )
+        # --seedを揃えれば同じ検証セットのまま学習サブセットだけ縮小できる。
+        # compute_pos_weight()はtrain_ds.dataset(元のWeatherMapDataset)を
+        # 前提にしているため、Subsetを二重に重ねず単一階層のSubsetに作り直す。
+        limit_generator = torch.Generator().manual_seed(args.seed)
+        picked = torch.randperm(len(train_ds), generator=limit_generator)[: args.train_limit].tolist()
+        limited_indices = [train_ds.indices[i] for i in picked]
+        train_ds = Subset(train_ds.dataset, limited_indices)
+        print(f"--train-limit指定: 学習データを{args.train_limit}件に制限します")
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size)

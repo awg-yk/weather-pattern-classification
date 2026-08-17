@@ -11,6 +11,7 @@ LABELS = [
     "summer_pressure_pattern",   # 南高北低（夏型）
     "cold_front_passage",        # 寒冷前線通過
     "stationary_front",          # 停滞前線
+    "okhotsk_high",              # オホーツク海高気圧
 ]
 
 LABEL_TO_INDEX = {label: i for i, label in enumerate(LABELS)}
@@ -28,4 +29,5 @@ LABEL_JA = {
     "summer_pressure_pattern": "南高北低（夏型）",
     "cold_front_passage": "寒冷前線通過",
     "stationary_front": "停滞前線",
+    "okhotsk_high": "オホーツク海高気圧",
 }
