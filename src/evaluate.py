@@ -16,6 +16,7 @@ def main():
     parser.add_argument("--labels", required=True)
     parser.add_argument("--weights", required=True)
     parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--threshold", type=float, default=0.5)
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,7 +24,7 @@ def main():
     dataset = WeatherMapDataset(args.data_dir, args.labels, transform=get_transforms(train=False))
     loader = DataLoader(dataset, batch_size=args.batch_size)
 
-    model = build_model(num_classes=len(LABELS)).to(device)
+    model = build_model(num_classes=len(LABELS), pretrained=False).to(device)
     model.load_state_dict(torch.load(args.weights, map_location=device))
     model.eval()
 
@@ -32,11 +33,14 @@ def main():
         for images, labels in loader:
             images = images.to(device)
             outputs = model(images)
-            preds = outputs.argmax(dim=1).cpu()
-            all_preds.extend(preds.tolist())
-            all_labels.extend(labels.tolist())
+            preds = (torch.sigmoid(outputs) > args.threshold).float().cpu()
+            all_preds.append(preds)
+            all_labels.append(labels)
 
-    print(classification_report(all_labels, all_preds, target_names=LABELS))
+    all_preds = torch.cat(all_preds).numpy()
+    all_labels = torch.cat(all_labels).numpy()
+
+    print(classification_report(all_labels, all_preds, target_names=LABELS, zero_division=0))
 
 
 if __name__ == "__main__":

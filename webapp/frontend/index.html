@@ -21,7 +21,7 @@
   <div id="result"></div>
 
   <script>
-    const API_URL = "http://localhost:8000/predict";
+    const API_URL = "/predict";  // 同じFastAPIプロセスから配信されるため相対パスでOK
 
     const fileInput = document.getElementById("fileInput");
     const preview = document.getElementById("preview");
@@ -54,9 +54,10 @@
           return;
         }
         const data = await res.json();
-        const sorted = Object.entries(data.all_probabilities).sort((a, b) => b[1] - a[1]);
+        const sorted = Object.entries(data.all_probabilities_ja).sort((a, b) => b[1] - a[1]);
+        const predictedText = data.labels_ja.length > 0 ? data.labels_ja.join(" / ") : "該当なし";
         resultEl.textContent =
-          `予測: ${data.label} (確信度 ${(data.confidence * 100).toFixed(1)}%)\n\n` +
+          `予測: ${predictedText}\n\n` +
           sorted.map(([label, p]) => `${label}: ${(p * 100).toFixed(1)}%`).join("\n");
       } catch (e) {
         resultEl.textContent = `通信エラー: ${e}`;
