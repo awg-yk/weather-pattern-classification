@@ -18,7 +18,7 @@ from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
 from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
-from src.model import build_model
+from src.model import build_model, load_checkpoint
 from src.train import get_transforms
 
 WEIGHTS_PATH = os.environ.get("MODEL_WEIGHTS", "weights/model.pt")
@@ -42,22 +42,25 @@ def serve_frontend():
     return FileResponse(str(FRONTEND_DIR / "index.html"))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-transform = get_transforms(train=False)
 
 model = None
+# 前処理は重みに記録された入力サイズに合わせる。重みを読むまで確定しないため、
+# 起動時のload_model()で差し替える(未学習時のフォールバックとして既定値を入れておく)。
+transform = get_transforms(train=False)
 
 
 @app.on_event("startup")
 def load_model():
-    global model
+    global model, transform
     if not os.path.exists(WEIGHTS_PATH):
         # モデル未学習の段階でもAPIサーバー自体は起動できるようにしておく
         print(f"warning: weights not found at {WEIGHTS_PATH}. /predict will fail until trained.")
         return
     m = build_model(num_classes=len(LABELS), pretrained=False)
-    m.load_state_dict(torch.load(WEIGHTS_PATH, map_location=device))
+    meta = load_checkpoint(WEIGHTS_PATH, m, map_location=device)
     m.eval()
     m.to(device)
+    transform = get_transforms(train=False, image_size=meta["image_size"])
     model = m
 
 

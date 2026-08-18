@@ -212,8 +212,22 @@ APIキーを `~/.cdsapirc` に設定した上で `scripts/download_era5.py` を�
 ## 学習
 
 ```bash
-python src/train.py --data-dir data/processed --labels data/labels.csv --epochs 30
+python -m src.train --data-dir data/processed --labels data/labels.csv --epochs 30
 ```
+
+主なオプション:
+
+| オプション | 既定 | 説明 |
+|---|---|---|
+| `--image-size` | 224 | 入力解像度。天気図は等圧線・前線記号が細かく224では潰れやすい。384程度まで上げると精度が改善しうるが、VRAMを解像度の2乗で消費するので`--batch-size`を併せて下げること |
+| `--select-metric` | `macro_f1` | ベストモデルの保存・早期終了の判定指標。`val_loss`は改善が早く止まりF1のピークを取り逃すことが実測で確認されているため既定はmacro F1。過去の実験を再現する場合のみ`val_loss`を指定する |
+| `--seed` | 42 | train/val分割と乱数の固定。件数を変えて比較する際は必ず揃えること |
+| `--train-limit` | なし | 学習に使う件数を制限する(検証セットは変えない)。学習件数と性能の関係を調べる実験用 |
+
+学習した重みには入力解像度とラベル一覧が同梱される。`predict.py`・`evaluate.py`・Grad-CAM・
+Web UIはこれを読んで前処理を自動的に合わせるため、`--image-size`を変えても推論側の指定は不要。
+(EfficientNetは適応的プーリングを使うため、サイズが食い違ってもエラーにならず「黙って精度が
+落ちる」。それを防ぐための仕組み。)
 
 **注意**: `--out`を省略すると毎回`weights/model.pt`に上書き保存される。過去のチェックポイントを
 残したい場合は、再学習のたびに `--out weights/model_YYYYMMDD.pt` のように日付やバージョンを

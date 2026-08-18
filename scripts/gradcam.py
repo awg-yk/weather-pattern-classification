@@ -74,7 +74,7 @@ from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
 from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
-from src.model import build_model
+from src.model import build_model, load_checkpoint
 from src.train import get_transforms
 
 
@@ -114,12 +114,13 @@ class GradCAM:
         return cam
 
 
-def _load_model(weights_path: str, device: torch.device) -> torch.nn.Module:
+def _load_model(weights_path: str, device: torch.device):
+    """モデルと、その重みが前提とする入力サイズなどのメタデータを返す。"""
     model = build_model(num_classes=len(LABELS), pretrained=False)
-    model.load_state_dict(torch.load(weights_path, map_location=device))
+    meta = load_checkpoint(weights_path, model, map_location=device)
     model.to(device)
     model.eval()
-    return model
+    return model, meta
 
 
 def _overlay_heatmap(base_image: Image.Image, cam: np.ndarray, max_alpha: float = 0.6) -> Image.Image:
@@ -150,7 +151,7 @@ def explain_top_predictions(
     predict.ipynbのように「上位k件だけ画像、残りはテキストでよい」という用途向け。
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = _load_model(weights_path, device)
+    model, meta = _load_model(weights_path, device)
     gradcam = GradCAM(model)
 
     raw_image = Image.open(image_path).convert("RGB")
@@ -159,7 +160,7 @@ def explain_top_predictions(
         display_image = autocrop_to_content(display_image)
         display_image = mask_stamp_box(display_image, DEFAULT_STAMP_BOX)
 
-    transform = get_transforms(train=False)
+    transform = get_transforms(train=False, image_size=meta["image_size"])
     input_tensor = transform(display_image).unsqueeze(0).to(device)
 
     with torch.no_grad():
@@ -186,7 +187,7 @@ def explain_predictions_above_threshold(
      [(ラベル, 確信度), ...全ラベル確信度降順]) を返す。
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = _load_model(weights_path, device)
+    model, meta = _load_model(weights_path, device)
     gradcam = GradCAM(model)
 
     raw_image = Image.open(image_path).convert("RGB")
@@ -195,7 +196,7 @@ def explain_predictions_above_threshold(
         display_image = autocrop_to_content(display_image)
         display_image = mask_stamp_box(display_image, DEFAULT_STAMP_BOX)
 
-    transform = get_transforms(train=False)
+    transform = get_transforms(train=False, image_size=meta["image_size"])
     input_tensor = transform(display_image).unsqueeze(0).to(device)
 
     with torch.no_grad():
@@ -222,7 +223,7 @@ def show_gradcam(
     figsize_per_panel: float = 4.0,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = _load_model(weights_path, device)
+    model, meta = _load_model(weights_path, device)
     gradcam = GradCAM(model)
 
     raw_image = Image.open(image_path).convert("RGB")
@@ -231,7 +232,7 @@ def show_gradcam(
         display_image = autocrop_to_content(display_image)
         display_image = mask_stamp_box(display_image, DEFAULT_STAMP_BOX)
 
-    transform = get_transforms(train=False)
+    transform = get_transforms(train=False, image_size=meta["image_size"])
     input_tensor = transform(display_image).unsqueeze(0).to(device)
 
     with torch.no_grad():

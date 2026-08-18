@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, random_split
 
 from src.dataset import WeatherMapDataset
 from src.labels import LABELS
-from src.model import build_model
+from src.model import build_model, load_checkpoint
 from src.train import get_transforms
 
 
@@ -71,7 +71,16 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    dataset = WeatherMapDataset(args.data_dir, args.labels, transform=get_transforms(train=False))
+    # 前処理の解像度は重みに同梱されたものを使う(学習時と揃えないと精度が落ちる)。
+    # そのため、データセットを作る前に重みを読み込む。
+    model = build_model(num_classes=len(LABELS), pretrained=False).to(device)
+    meta = load_checkpoint(args.weights, model, map_location=device)
+    model.eval()
+    print(f"入力解像度: {meta['image_size']}(重みに記録された値)")
+
+    dataset = WeatherMapDataset(
+        args.data_dir, args.labels, transform=get_transforms(train=False, image_size=meta["image_size"])
+    )
 
     if args.full_dataset:
         eval_dataset = dataset
@@ -86,10 +95,6 @@ def main():
         _, eval_dataset = random_split(dataset, [train_size, val_size], generator=generator)
 
     loader = DataLoader(eval_dataset, batch_size=args.batch_size)
-
-    model = build_model(num_classes=len(LABELS), pretrained=False).to(device)
-    model.load_state_dict(torch.load(args.weights, map_location=device))
-    model.eval()
 
     all_probs, all_labels = [], []
     with torch.no_grad():

@@ -1,7 +1,10 @@
 import argparse
+import random
 from pathlib import Path
 
+import numpy as np
 import torch
+from sklearn.metrics import f1_score
 from torch import nn, optim
 from torch.utils.data import DataLoader, Subset, random_split
 from torchvision import transforms
@@ -9,16 +12,17 @@ from tqdm import tqdm
 
 from src.dataset import WeatherMapDataset
 from src.labels import LABELS
-from src.model import build_model
+from src.model import DEFAULT_IMAGE_SIZE, build_model, save_checkpoint
 
-IMAGE_SIZE = 224
+IMAGE_SIZE = DEFAULT_IMAGE_SIZE
 
 
-def get_transforms(train: bool):
+def get_transforms(train: bool, image_size: int = IMAGE_SIZE):
     # 天気図は左右反転すると「西高東低」が「東高西低」になるなど地理的な意味が
     # 壊れるため、水平反転は使わない。代わりに軽い明るさ/コントラストの変動と
     # 小さな回転・平行移動でデータ量の少なさを補う。
-    ops = [transforms.Resize((IMAGE_SIZE, IMAGE_SIZE))]
+    # 前線の種別は色(温暖前線=赤・寒冷前線=青)が担っているため、色相は変えない。
+    ops = [transforms.Resize((image_size, image_size))]
     if train:
         ops.append(transforms.ColorJitter(brightness=0.1, contrast=0.1))
         ops.append(transforms.RandomAffine(degrees=3, translate=(0.02, 0.02)))
@@ -59,10 +63,12 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshol
     """マルチラベル学習: labelsは各クラス0/1のmulti-hotベクトル、BCEで学習する。
 
     精度は「画像ごとに正解ラベル集合と予測ラベル集合が完全一致した割合」
-    (subset accuracy)を指標として使う。
+    (subset accuracy)と、ラベルごとのF1を平均したmacro F1の両方を返す。
+    完全一致率は数枚のブレで大きく上下するため、モデル選択にはmacro F1を使う。
     """
     model.train() if train else model.eval()
     total_loss, exact_match, total = 0.0, 0, 0
+    all_preds, all_targets = [], []
 
     with torch.set_grad_enabled(train):
         for images, labels in tqdm(loader, leave=False):
@@ -80,8 +86,16 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshol
             exact_match += (preds == labels).all(dim=1).sum().item()
             total_loss += loss.item() * images.size(0)
             total += images.size(0)
+            all_preds.append(preds.detach().cpu())
+            all_targets.append(labels.detach().cpu())
 
-    return total_loss / total, exact_match / total
+    macro_f1 = f1_score(
+        torch.cat(all_targets).numpy(),
+        torch.cat(all_preds).numpy(),
+        average="macro",
+        zero_division=0,
+    )
+    return total_loss / total, exact_match / total, macro_f1
 
 
 def main():
@@ -121,16 +135,54 @@ def main():
         help="学習に使う件数を制限する(検証セットのサイズは変えない)。"
         "学習件数と性能の関係を調べる実験用。例: 100, 300, 600 ...",
     )
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=IMAGE_SIZE,
+        help="モデルへの入力解像度。天気図は等圧線や前線記号が細かいため、"
+        f"既定の{IMAGE_SIZE}では潰れやすい。384程度まで上げると精度が改善しうるが"
+        "VRAMを解像度の2乗で消費するので--batch-sizeを下げること",
+    )
+    parser.add_argument(
+        "--select-metric",
+        choices=["macro_f1", "val_loss"],
+        default="macro_f1",
+        help="ベストモデルの保存・早期終了の判定に使う指標。"
+        "val_lossは改善が早く止まりF1のピークを取り逃すことが実測で確認されているため、"
+        "既定はmacro_f1(過去の実験を再現する場合のみval_lossを指定する)",
+    )
     args = parser.parse_args()
+
+    # 再現性のため、乱数源をすべて固定する(cuDNNの非決定的アルゴリズムも無効化)
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # 学習用と検証用でtransformが異なるため、データセットの実体を2つ作る。
+    # random_splitが返すSubsetは元のデータセットへの「参照」を共有するので、
+    # 1つのインスタンスを分割して片方のtransformだけ差し替えることはできない
+    # (差し替えると学習側のデータ拡張まで消える)。
     generator = torch.Generator().manual_seed(args.seed)
-    full_dataset = WeatherMapDataset(args.data_dir, args.labels, transform=get_transforms(train=True))
-    val_size = int(len(full_dataset) * args.val_ratio)
-    train_size = len(full_dataset) - val_size
-    train_ds, val_ds = random_split(full_dataset, [train_size, val_size], generator=generator)
-    val_ds.dataset.transform = get_transforms(train=False)
+    train_base = WeatherMapDataset(
+        args.data_dir, args.labels, transform=get_transforms(train=True, image_size=args.image_size)
+    )
+    eval_base = WeatherMapDataset(
+        args.data_dir, args.labels, transform=get_transforms(train=False, image_size=args.image_size)
+    )
+
+    # 分割はインデックスに対して行う。random_splitは全体長とgeneratorだけで
+    # 並び替えを決めるため、この書き方でも従来と同一の分割が再現される
+    # (src/evaluate.py が同じseedで検証セットを復元できる前提を壊さない)。
+    val_size = int(len(train_base) * args.val_ratio)
+    train_size = len(train_base) - val_size
+    train_idx, val_idx = random_split(range(len(train_base)), [train_size, val_size], generator=generator)
+    train_ds = Subset(train_base, list(train_idx))
+    val_ds = Subset(eval_base, list(val_idx))
 
     if args.train_limit is not None:
         if args.train_limit > len(train_ds):
@@ -166,34 +218,41 @@ def main():
     # 学習率を徐々に下げることで、終盤の細かい収束と汎化性能を安定させる
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
-    # 過学習の判定・モデル保存はval_lossを基準にする(小さな検証セットでは
-    # 「完全一致率」は数枚のブレで大きく上下しやすく、あてにならないため)
-    best_val_loss = float("inf")
+    # ベストモデルの選択基準。val_lossは早い段階で改善が止まる一方、その後も
+    # macro F1が伸び続けることが実測で確認されているため、既定はmacro F1。
+    # (--select-metric val_loss で従来の挙動に戻せる)
+    best_score = float("-inf")
     epochs_without_improvement = 0
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = run_epoch(model, train_loader, criterion, optimizer, device, train=True)
-        val_loss, val_acc = run_epoch(model, val_loader, criterion, optimizer, device, train=False)
+        train_loss, train_acc, train_f1 = run_epoch(
+            model, train_loader, criterion, optimizer, device, train=True
+        )
+        val_loss, val_acc, val_f1 = run_epoch(
+            model, val_loader, criterion, optimizer, device, train=False
+        )
         scheduler.step()
 
         print(
             f"epoch {epoch}/{args.epochs} "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} "
-            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} "
+            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} train_f1={train_f1:.4f} "
+            f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} val_f1={val_f1:.4f} "
             f"lr={scheduler.get_last_lr()[0]:.2e}"
         )
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # 「大きいほど良い」に符号を揃えて一律に比較する
+        score = val_f1 if args.select_metric == "macro_f1" else -val_loss
+        if score > best_score:
+            best_score = score
             epochs_without_improvement = 0
-            torch.save(model.state_dict(), out_path)
-            print(f"  saved best model to {out_path} (val_loss={val_loss:.4f})")
+            save_checkpoint(out_path, model, image_size=args.image_size)
+            print(f"  saved best model to {out_path} ({args.select_metric}={abs(score):.4f})")
         else:
             epochs_without_improvement += 1
             if epochs_without_improvement >= args.patience:
-                print(f"  val_lossが{args.patience}エポック改善しなかったため早期終了します")
+                print(f"  {args.select_metric}が{args.patience}エポック改善しなかったため早期終了します")
                 break
 
 
