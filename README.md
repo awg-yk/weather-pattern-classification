@@ -68,7 +68,7 @@ python scripts/predict.py --date 2025-01-01 --hour 0
 | `futatsudama_low` | 二つ玉低気圧 |
 | `typhoon` | 台風 |
 | `migratory_high` | 移動性高気圧（帯状高気圧`zonal_high`を統合） |
-| `summer_pressure_pattern` | 南高北低（夏型の気圧配置） |
+| `pacific_high` | 太平洋高気圧型（旧`summer_pressure_pattern`。移動しない・北に低気圧がないケースでも判断しやすいよう気圧系そのもので命名） |
 | `front_passage` | 前線通過（寒冷前線・温暖前線） |
 | `stationary_front` | 停滞前線 |
 | `okhotsk_high` | オホーツク海高気圧 |

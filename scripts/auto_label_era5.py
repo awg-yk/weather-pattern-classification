@@ -48,9 +48,9 @@ def classify(field, lon, lat) -> str:
     if gradient_ew > 6 and abs(gradient_ew) > abs(gradient_ns):
         return "winter_pressure_pattern"
 
-    # 南高北低: 南で高圧・北で低圧(夏型)
+    # 南高北低: 南で高圧・北で低圧(太平洋高気圧型)
     if gradient_ns < -4:
-        return "summer_pressure_pattern"
+        return "pacific_high"
 
     # 気圧差が小さく穏やか -> 移動性高気圧 or 帯状高気圧の可能性(要人手判別)
     if field_range < 15:
