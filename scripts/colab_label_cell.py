@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 REPO_URL = "https://github.com/awg-yk/weather-pattern-classification.git"
-BRANCH = "claude/weather-chart-classification-4b6in1"
+BRANCH = "main"
 REPO_DIR = Path("/content/weather-pattern-classification")
 DRIVE_DATA_DIR = Path("/content/drive/MyDrive/weather-pattern-classification-data")
 

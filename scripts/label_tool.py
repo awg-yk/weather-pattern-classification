@@ -27,12 +27,24 @@ Colabのノートブックセルで以下のように使う:
         filter_labels=["japan_sea_low", "nankigan_low"],
     )
 
+    # 3) 新しいラベルを追加した後、既存の画像を見直して付け足す
+    #    (例: okhotsk_highを追加した場合、出現しやすい5〜8月の画像だけに
+    #     絞って見直す)
+    run_review_session(
+        images_dir="data/processed/jma",
+        labels_csv="data/labels.csv",
+        month_range=(5, 8),
+    )
+
 - 既にラベル済みのファイルは新規セッション(1)では自動的にスキップされる
 - 「決定」ボタンで選択中のチェックボックスの内容を保存して次の画像に進む
 - 「わからない/該当なし」ボタンで unclassified として記録する
 - 「戻る」ボタンで直前の1件を取り消せる(新規セッションのみ)
+- images_dirはPNG(data/processed/jma等)・JPEG(NDL手動アーカイブ由来)の
+  どちらも拾う
 """
 
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -45,6 +57,27 @@ from src.labels import LABELS, LABEL_JA
 SKIP_LABEL = "unclassified"
 SKIP_LABEL_JA = "わからない/該当なし"
 
+# 対応する画像拡張子。data/processed/jma配下はPNGだが、NDL手動アーカイブ
+# (data/raw/ndl_manual/jpg)由来の画像はJPEGなので両方拾えるようにする。
+IMAGE_EXTENSIONS = ("*.png", "*.jpg", "*.jpeg")
+
+# ファイル名からYYYYMMDDHH形式の日付を抜き出す。
+# JMA取得分("Js_2025010100.png")・NDL手動アーカイブ分
+# ("Js_2001070300_page001.jpg")のどちらの命名にも対応する。
+_DATE_PATTERN = re.compile(r"(\d{10})")
+
+
+def _list_images(images_dir: Path) -> list:
+    files = []
+    for pattern in IMAGE_EXTENSIONS:
+        files.extend(images_dir.glob(pattern))
+    return sorted(files)
+
+
+def _guess_date(filename: str) -> str:
+    match = _DATE_PATTERN.search(filename)
+    return match.group(1) if match else ""
+
 
 def _load_labeled_filenames(labels_csv: Path) -> set:
     if not labels_csv.exists():
@@ -55,7 +88,7 @@ def _load_labeled_filenames(labels_csv: Path) -> set:
 
 def _append_labels(labels_csv: Path, filename: str, labels: list, source: str) -> None:
     file_exists = labels_csv.exists()
-    date_guess = filename.split("_")[-1].split(".")[0][:8] if "_" in filename else ""
+    date_guess = _guess_date(filename)
     label_field = "|".join(labels) if labels else SKIP_LABEL
     row_df = pd.DataFrame([{
         "filename": filename, "label": label_field, "source": source, "date": date_guess,
@@ -91,7 +124,7 @@ def run_labeling_session(images_dir: str, labels_csv: str, source: str = "jma_ma
     images_dir = Path(images_dir)
     labels_csv = Path(labels_csv)
 
-    all_files = sorted(images_dir.glob("*.png"))
+    all_files = _list_images(images_dir)
     labeled = _load_labeled_filenames(labels_csv)
     remaining = [f for f in all_files if f.name not in labeled]
 
@@ -162,12 +195,17 @@ def run_review_session(
     images_dir: str,
     labels_csv: str,
     filter_labels: list | None = None,
+    month_range: tuple | None = None,
 ):
     """既にラベル済みの画像を見直し、チェックボックスの状態を編集して上書き保存する。
 
     filter_labels を指定すると、そのいずれかのラベルが付いている画像だけに絞り込む
     (例: 少数派のfutatsudama_lowを見直したい場合、関連しそうなjapan_sea_low/
     nankigan_lowが付いている画像だけを対象にする、など)。
+
+    month_range を (開始月, 終了月) で指定すると、date列(YYYYMMDDHH)の月がその
+    範囲に入る画像だけに絞り込む(例: オホーツク海高気圧の見直しなら
+    month_range=(5, 8) で梅雨〜盛夏の画像だけに絞れる)。
     """
     images_dir = Path(images_dir)
     labels_csv = Path(labels_csv)
@@ -179,11 +217,15 @@ def run_review_session(
     df = pd.read_csv(labels_csv)
     df["parsed"] = df["label"].apply(lambda s: str(s).split("|"))
 
+    mask = pd.Series(True, index=df.index)
     if filter_labels:
-        mask = df["parsed"].apply(lambda ls: any(l in filter_labels for l in ls))
-        target_indices = df[mask].index.tolist()
-    else:
-        target_indices = df.index.tolist()
+        mask &= df["parsed"].apply(lambda ls: any(l in filter_labels for l in ls))
+    if month_range:
+        start_month, end_month = month_range
+        month = df["date"].astype(str).str.slice(4, 6)
+        month_num = pd.to_numeric(month, errors="coerce")
+        mask &= month_num.between(start_month, end_month)
+    target_indices = df[mask].index.tolist()
 
     state = {"pos": 0}
     output = widgets.Output()

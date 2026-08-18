@@ -8,7 +8,7 @@ LABELS = [
     "typhoon",                   # 台風
     "migratory_high",            # 移動性高気圧（帯状高気圧を統合）
     "summer_pressure_pattern",   # 南高北低（夏型）
-    "cold_front_passage",        # 寒冷前線通過
+    "front_passage",             # 前線通過（寒冷前線・温暖前線）
     "stationary_front",          # 停滞前線
     "okhotsk_high",              # オホーツク海高気圧
 ]
@@ -25,7 +25,7 @@ LABEL_JA = {
     "typhoon": "台風",
     "migratory_high": "移動性高気圧",
     "summer_pressure_pattern": "南高北低（夏型）",
-    "cold_front_passage": "寒冷前線通過",
+    "front_passage": "前線通過（寒冷前線・温暖前線）",
     "stationary_front": "停滞前線",
     "okhotsk_high": "オホーツク海高気圧",
 }

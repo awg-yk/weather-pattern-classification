@@ -69,7 +69,7 @@ python scripts/predict.py --date 2025-01-01 --hour 0
 | `typhoon` | 台風 |
 | `migratory_high` | 移動性高気圧（帯状高気圧`zonal_high`を統合） |
 | `summer_pressure_pattern` | 南高北低（夏型の気圧配置） |
-| `cold_front_passage` | 寒冷前線通過 |
+| `front_passage` | 前線通過（寒冷前線・温暖前線） |
 | `stationary_front` | 停滞前線 |
 | `okhotsk_high` | オホーツク海高気圧 |
 
