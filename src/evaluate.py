@@ -3,7 +3,7 @@ import argparse
 import numpy as np
 import torch
 from sklearn.metrics import classification_report, f1_score
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 
 from src.dataset import WeatherMapDataset
 from src.labels import LABELS
@@ -45,12 +45,47 @@ def main():
         action="store_true",
         help="一律の--thresholdの代わりに、ラベルごとにF1が最大になる閾値を探索して評価する",
     )
+    parser.add_argument(
+        "--val-ratio",
+        type=float,
+        default=0.2,
+        help="train.pyと同じ値を指定すること。指定した重みの学習で使われたのと"
+        "同じtrain/val分割を再現し、検証セット(学習に使われなかった分)だけを"
+        "評価するために使う",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="train.pyの--seedと同じ値を指定すること。異なると学習時とは別の"
+        "分割になり、学習に使った画像を評価に含めてしまう(不当に高いスコアが出る)",
+    )
+    parser.add_argument(
+        "--full-dataset",
+        action="store_true",
+        help="train/val分割をせず、labels.csvの全件を評価する(train-limitで"
+        "比較する場合は使わないこと。学習に使った画像が評価に混ざり、"
+        "件数が多いモデルほど不当に有利になる)",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     dataset = WeatherMapDataset(args.data_dir, args.labels, transform=get_transforms(train=False))
-    loader = DataLoader(dataset, batch_size=args.batch_size)
+
+    if args.full_dataset:
+        eval_dataset = dataset
+    else:
+        # train.pyのrandom_splitと同じseed・val-ratioで分割を再現する。
+        # --train-limitで学習用件数だけを絞っていても、train/val分割自体は
+        # train-limit適用前のfull_dataset全体に対して行われる(train.py参照)
+        # ので、ここでも同じ手順(seed固定のrandom_split)を再現すればよい。
+        generator = torch.Generator().manual_seed(args.seed)
+        val_size = int(len(dataset) * args.val_ratio)
+        train_size = len(dataset) - val_size
+        _, eval_dataset = random_split(dataset, [train_size, val_size], generator=generator)
+
+    loader = DataLoader(eval_dataset, batch_size=args.batch_size)
 
     model = build_model(num_classes=len(LABELS), pretrained=False).to(device)
     model.load_state_dict(torch.load(args.weights, map_location=device))
