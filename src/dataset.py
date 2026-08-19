@@ -1,4 +1,5 @@
 import re
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -83,6 +84,19 @@ class WeatherMapDataset(Dataset):
             print(f"対象年 {sorted(years)} に限定: {before}件 → {len(df)}件")
             if df.empty:
                 raise ValueError(f"指定した年 {sorted(years)} に該当する画像がありません")
+
+        # 画像の実在チェックは学習を始める前にまとめて行う。__getitem__に任せると
+        # 1エポック目の途中で落ち、そこまでの計算が無駄になるため。
+        missing = [fn for fn in df["filename"] if not (self.images_dir / fn).exists()]
+        if missing:
+            by_year = Counter(str(fn)[3:7] for fn in missing)
+            raise FileNotFoundError(
+                f"labels.csvに載っている画像のうち{len(missing)}件が{self.images_dir}にありません"
+                f"(対象{len(df)}件中)。\n"
+                f"  年別: {dict(sorted(by_year.items()))}\n"
+                f"  例  : {missing[:5]}\n"
+                "scripts/collect_jma.py で取得・変換し直してください。"
+            )
 
         self.df = df
 
