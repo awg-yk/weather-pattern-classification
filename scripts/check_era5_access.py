@@ -101,14 +101,11 @@ def main():
     size_kb = out_path.stat().st_size / 1024
     print(f"\n成功しました: {out_path} ({size_kb:.1f} KB)")
 
-    try:
-        import xarray as xr
-    except ImportError:
-        print("(xarrayが無いため中身の確認は省略します)")
-        return
-    ds = xr.open_dataset(out_path)
-    print("\n--- 中身 ---")
-    print(ds)
+    from src.era5 import open_era5
+
+    with open_era5(out_path) as ds:
+        print("\n--- 中身 ---")
+        print(ds)
 
 
 def _hint(error: Exception) -> str:

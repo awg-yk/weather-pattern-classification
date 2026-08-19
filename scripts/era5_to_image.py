@@ -13,7 +13,8 @@ import cartopy.crs as ccrs
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import xarray as xr
+
+from src.era5 import open_era5
 
 CONTOUR_INTERVAL_HPA = 4
 
@@ -46,7 +47,7 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ds = xr.open_dataset(args.nc)
+    ds = open_era5(args.nc)
     mslp = ds["msl"] / 100.0  # Pa -> hPa
     lon = ds["longitude"].values
     lat = ds["latitude"].values
