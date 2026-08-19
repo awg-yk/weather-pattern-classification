@@ -297,6 +297,27 @@ Web UIはこれを読んで前処理を自動的に合わせるため、`--image
 残したい場合は、再学習のたびに `--out weights/model_YYYYMMDD.pt` のように日付やバージョンを
 含めたファイル名を指定すること。上書きしてしまうと、その時点の重みは復元できない。
 
+### 論文の図として出す(ラベルを指定して成功例・失敗例を並べる)
+
+`scripts/gradcam_report.py` は、ラベルを1つ指定して、そのラベルが正解となっている
+テスト画像から**当てられた例と見逃した例**を並べた図を作る。得意なラベルと苦手な
+ラベルを対比させると、何を手がかりにしているのかが読み取りやすい。
+
+```bash
+# 得意な例(台風)
+python -m scripts.gradcam_report \
+    --data-dir data/processed --labels data/labels.csv \
+    --weights runs/loyo/model_test2025.pt \
+    --years 2023 2024 2025 --split-mode loyo --test-year 2025 \
+    --label typhoon --out runs/loyo/gradcam_typhoon.png
+
+# 苦手な例(オホーツク海高気圧)
+python -m scripts.gradcam_report ... --label okhotsk_high --out runs/loyo/gradcam_okhotsk.png
+```
+
+分割の指定(`--years` / `--split-mode` / `--test-year` など)は学習時と同じ値にすること。
+学習に使った画像が図に混ざらないよう、テストセットからのみ選ばれる。
+
 ## モデルの判断根拠を可視化する(Grad-CAM)
 
 CNNは「H/Lの文字」「前線の色」「等圧線の形」を人間のように記号として理解しているわけではなく、
