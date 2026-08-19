@@ -23,7 +23,7 @@ from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
 from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
-from src.model import build_model
+from src.model import build_model, load_checkpoint
 from src.train import get_transforms
 
 DEFAULT_WEIGHTS = Path(__file__).resolve().parent.parent / "weights" / "model.pt"
@@ -79,7 +79,7 @@ def main():
         # pretrained=False: どうせ直後に自前の学習済み重みで上書きするので、
         # ImageNet事前学習済み重みのダウンロードは不要(ネット接続なしでも動かせる)
         model = build_model(num_classes=len(LABELS), pretrained=False)
-        model.load_state_dict(torch.load(args.weights, map_location=device))
+        meta = load_checkpoint(args.weights, model, map_location=device)
         model.to(device)
         model.eval()
 
@@ -88,7 +88,7 @@ def main():
             image = autocrop_to_content(image)
             image = mask_stamp_box(image, DEFAULT_STAMP_BOX)
 
-        transform = get_transforms(train=False)
+        transform = get_transforms(train=False, image_size=meta["image_size"])
         input_tensor = transform(image).unsqueeze(0).to(device)
 
         with torch.no_grad():
