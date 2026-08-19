@@ -18,3 +18,6 @@ uvicorn[standard]
 python-multipart
 tqdm
 ipywidgets
+# ラベリングはノートブック上で動く（notebooks/labeling.ipynb）
+jupyter
+ipykernel
