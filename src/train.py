@@ -110,6 +110,11 @@ def main():
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument(
+        "--coordconv",
+        action="store_true",
+        help="入力に座標(緯度経度に相当)チャンネルを足す。位置で決まる気圧配置の判別を助ける",
+    )
+    parser.add_argument(
         "--freeze-backbone",
         action="store_true",
         help="特徴抽出部を凍結し分類ヘッドのみ学習する(データが少ない場合の過学習対策)",
@@ -250,7 +255,10 @@ def main():
         num_classes=len(LABELS),
         freeze_backbone=args.freeze_backbone,
         dropout=args.dropout,
+        coordconv=args.coordconv,
     ).to(device)
+    if args.coordconv:
+        print("CoordConv: 入力に座標チャンネルを追加します(位置に依存する気圧配置の判別用)")
 
     pos_weight = compute_pos_weight(train_ds, num_classes=len(LABELS), cap=args.pos_weight_cap).to(device)
     print("pos_weight:", {label: round(w, 2) for label, w in zip(LABELS, pos_weight.tolist())})

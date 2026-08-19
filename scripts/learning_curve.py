@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--coordconv", action="store_true")
     parser.add_argument("--seed", type=int, default=42)
     # 分割の指定(交差検証と同じ値を使うこと)
     parser.add_argument("--years", type=int, nargs="+", default=None)
@@ -83,6 +84,8 @@ def main():
                          "--batch-size", args.batch_size,
                          "--image-size", args.image_size,
                          "--out", weights]
+            if args.coordconv:
+                train_cmd += ["--coordconv"]
             if limit is not None:
                 train_cmd += ["--train-limit", limit]
             run(train_cmd)

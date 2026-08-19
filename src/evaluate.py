@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader, Subset
 
 from src.dataset import WeatherMapDataset
 from src.labels import LABELS
-from src.model import build_model, load_checkpoint
+from src.model import load_model
 from src.split import SPLIT_MODES, make_splits
 from src.train import get_transforms
 
@@ -110,8 +110,8 @@ def main():
 
     # 前処理の解像度は重みに同梱されたものを使う(学習時と揃えないと精度が落ちる)。
     # そのため、データセットを作る前に重みを読み込む。
-    model = build_model(num_classes=len(LABELS), pretrained=False).to(device)
-    meta = load_checkpoint(args.weights, model, map_location=device)
+    model, meta = load_model(args.weights, map_location=device)
+    model.to(device)
     model.eval()
     print(f"入力解像度: {meta['image_size']}(重みに記録された値)")
 

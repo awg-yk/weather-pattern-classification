@@ -94,8 +94,8 @@ import torch.nn.functional as F
 from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
-from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
-from src.model import build_model, load_checkpoint
+from src.labels import INDEX_TO_LABEL, LABEL_JA
+from src.model import backbone, load_model
 from src.train import get_transforms
 
 
@@ -107,7 +107,8 @@ class GradCAM:
         self.activations = None
         self.gradients = None
 
-        target_layer = model.features[-1]
+        # CoordConvで包まれている場合は中のEfficientNetを取り出す
+        target_layer = backbone(model).features[-1]
         target_layer.register_forward_hook(self._save_activation)
         target_layer.register_full_backward_hook(self._save_gradient)
 
@@ -137,8 +138,7 @@ class GradCAM:
 
 def _load_model(weights_path: str, device: torch.device):
     """モデルと、その重みが前提とする入力サイズなどのメタデータを返す。"""
-    model = build_model(num_classes=len(LABELS), pretrained=False)
-    meta = load_checkpoint(weights_path, model, map_location=device)
+    model, meta = load_model(weights_path, map_location=device)
     model.to(device)
     model.eval()
     return model, meta

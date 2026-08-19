@@ -26,8 +26,8 @@ from PIL import Image
 
 from scripts.fetch_and_predict import fetch_chart
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
-from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
-from src.model import build_model, load_checkpoint
+from src.labels import INDEX_TO_LABEL, LABEL_JA
+from src.model import load_model
 from src.train import get_transforms
 
 
@@ -63,8 +63,8 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = build_model(num_classes=len(LABELS), pretrained=False).to(device)
-    meta = load_checkpoint(args.weights, model, map_location=device)
+    model, meta = load_model(args.weights, map_location=device)
+    model.to(device)
     model.eval()
     transform = get_transforms(train=False, image_size=meta["image_size"])
     print(f"モデル: {args.weights}(入力解像度 {meta['image_size']})")

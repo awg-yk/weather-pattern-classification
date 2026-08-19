@@ -17,8 +17,8 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
-from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
-from src.model import build_model, load_checkpoint
+from src.labels import INDEX_TO_LABEL, LABEL_JA
+from src.model import load_model as load_weights
 from src.train import get_transforms
 
 WEIGHTS_PATH = os.environ.get("MODEL_WEIGHTS", "weights/model.pt")
@@ -56,8 +56,7 @@ def load_model():
         # モデル未学習の段階でもAPIサーバー自体は起動できるようにしておく
         print(f"warning: weights not found at {WEIGHTS_PATH}. /predict will fail until trained.")
         return
-    m = build_model(num_classes=len(LABELS), pretrained=False)
-    meta = load_checkpoint(WEIGHTS_PATH, m, map_location=device)
+    m, meta = load_weights(WEIGHTS_PATH, map_location=device)
     m.eval()
     m.to(device)
     transform = get_transforms(train=False, image_size=meta["image_size"])

@@ -40,6 +40,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
+    parser.add_argument("--coordconv", action="store_true")
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--gap-days", type=int, default=3)
     parser.add_argument(
@@ -71,14 +72,17 @@ def main():
             print(f"\n=== fold: テスト={test_year}年 (既存の結果を再利用) ===")
         else:
             print(f"\n{'=' * 60}\n=== fold: テスト={test_year}年 ===\n{'=' * 60}")
-            run([
+            train_cmd = [
                 "src.train", *common,
                 "--test-year", test_year,
                 "--epochs", args.epochs,
                 "--batch-size", args.batch_size,
                 "--image-size", args.image_size,
                 "--out", weights,
-            ])
+            ]
+            if args.coordconv:
+                train_cmd.append("--coordconv")
+            run(train_cmd)
             run([
                 "src.evaluate", *common,
                 "--test-year", test_year,
