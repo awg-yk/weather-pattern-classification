@@ -48,13 +48,33 @@ class WeatherMapDataset(Dataset):
         self.transform = transform
 
         df = pd.read_csv(labels_csv)
+        rows_in_csv = len(df)
         df["parsed_labels"] = df["label"].apply(parse_labels)
         df = df[df["parsed_labels"].apply(len) > 0].reset_index(drop=True)
+        if df.empty:
+            raise ValueError(
+                f"{labels_csv} に、現在のsrc/labels.pyで認識できるラベルを持つ行がありません"
+                f"(CSVの行数: {rows_in_csv})。\n"
+                "ラベル名を変更した直後であれば scripts/merge_labels.py で移行してください。"
+            )
         # 時間ブロック分割(src/split.py)が使う観測日時。
-        df["parsed_datetime"] = [
-            parse_datetime(fn, dt)
-            for fn, dt in zip(df["filename"], df.get("date", [None] * len(df)))
-        ]
+        # 空のリストからは日付型のSeriesが作れないため、明示的に変換しておく
+        # (そうしないと後段の .dt が分かりにくいAttributeErrorで落ちる)。
+        df["parsed_datetime"] = pd.to_datetime(
+            pd.Series(
+                [
+                    parse_datetime(fn, dt)
+                    for fn, dt in zip(df["filename"], df.get("date", [None] * len(df)))
+                ],
+                index=df.index,
+            )
+        )
+        if df["parsed_datetime"].isna().all():
+            raise ValueError(
+                f"{labels_csv} のどの行からも観測日時を取り出せませんでした。\n"
+                "filename列にYYYYMMDDHH(例: Js_2025010100.png)が含まれている必要があります。\n"
+                f"最初の行のfilename: {df['filename'].iloc[0]!r}"
+            )
 
         if years:
             years = {int(y) for y in years}
