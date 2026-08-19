@@ -43,6 +43,11 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument(
+        "--era5-features",
+        default=None,
+        help="学習時に --era5-features を指定した場合は、同じCSVを渡すこと",
+    )
+    parser.add_argument(
         "--optimize-thresholds",
         action="store_true",
         help="一律の--thresholdの代わりに、ラベルごとにF1が最大になる閾値を探索して評価する",
@@ -120,7 +125,14 @@ def main():
         args.labels,
         transform=get_transforms(train=False, image_size=meta["image_size"]),
         years=args.years,
+        features_csv=args.era5_features,
     )
+    if meta["num_features"] != len(dataset.feature_cols):
+        raise SystemExit(
+            f"この重みはERA5特徴量{meta['num_features']}個を前提にしていますが、"
+            f"渡されたデータには{len(dataset.feature_cols)}個しかありません。\n"
+            "学習時と同じ --era5-features を指定してください。"
+        )
 
     # train.pyと同じ手順で分割を復元する(--split-mode/--val-ratio/--test-ratio/--seedを
     # 学習時と揃えることが前提)。
@@ -139,8 +151,12 @@ def main():
         loader = DataLoader(Subset(dataset, rows), batch_size=args.batch_size)
         probs_list, labels_list = [], []
         with torch.no_grad():
-            for images, labels in loader:
-                probs_list.append(torch.sigmoid(model(images.to(device))).cpu())
+            for images, features, labels in loader:
+                images = images.to(device)
+                outputs = (
+                    model(images, features.to(device)) if features.numel() else model(images)
+                )
+                probs_list.append(torch.sigmoid(outputs).cpu())
                 labels_list.append(labels)
         return torch.cat(probs_list).numpy(), torch.cat(labels_list).numpy()
 

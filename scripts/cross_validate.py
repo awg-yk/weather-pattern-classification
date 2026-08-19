@@ -41,6 +41,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--coordconv", action="store_true")
+    parser.add_argument("--era5-features", default=None)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--gap-days", type=int, default=3)
     parser.add_argument(
@@ -62,6 +63,8 @@ def main():
         "--gap-days", args.gap_days,
         "--seed", args.seed,
     ]
+    if args.era5_features:
+        common += ["--era5-features", args.era5_features]
 
     results = []
     for test_year in args.years:

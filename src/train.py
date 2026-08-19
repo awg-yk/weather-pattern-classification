@@ -72,12 +72,14 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshol
     all_preds, all_targets = [], []
 
     with torch.set_grad_enabled(train):
-        for images, labels in tqdm(loader, leave=False):
+        for images, features, labels in tqdm(loader, leave=False):
             images, labels = images.to(device), labels.to(device)
+            # 要素数0なら「ERA5を使わない構成」なので、そのままNoneとして渡す
+            features = features.to(device) if features.numel() else None
 
             if train:
                 optimizer.zero_grad()
-            outputs = model(images)
+            outputs = model(images, features) if features is not None else model(images)
             loss = criterion(outputs, labels)
             if train:
                 loss.backward()
@@ -109,6 +111,11 @@ def main():
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument(
+        "--era5-features",
+        default=None,
+        help="scripts/era5_features.py が出力したCSV。画像に加えてERA5の数値も使う",
+    )
     parser.add_argument(
         "--coordconv",
         action="store_true",
@@ -212,12 +219,14 @@ def main():
         args.labels,
         transform=get_transforms(train=True, image_size=args.image_size),
         years=args.years,
+        features_csv=args.era5_features,
     )
     eval_base = WeatherMapDataset(
         args.data_dir,
         args.labels,
         transform=get_transforms(train=False, image_size=args.image_size),
         years=args.years,
+        features_csv=args.era5_features,
     )
 
     splits = make_splits(
@@ -256,9 +265,17 @@ def main():
         freeze_backbone=args.freeze_backbone,
         dropout=args.dropout,
         coordconv=args.coordconv,
+        num_features=len(train_base.feature_cols),
     ).to(device)
     if args.coordconv:
         print("CoordConv: 入力に座標チャンネルを追加します(位置に依存する気圧配置の判別用)")
+    if train_base.feature_cols:
+        # 正規化の統計は学習用サブセットだけから求める。
+        # 検証・テストの分を含めると、そこにしか無い情報が学習側に漏れる。
+        train_features = train_base.features[train_ds.indices]
+        model.set_feature_stats(train_features.mean(0), train_features.std(0))
+        print(f"ERA5特徴量{len(train_base.feature_cols)}個を併用します"
+              f"(正規化は学習{len(train_features)}件から算出)")
 
     pos_weight = compute_pos_weight(train_ds, num_classes=len(LABELS), cap=args.pos_weight_cap).to(device)
     print("pos_weight:", {label: round(w, 2) for label, w in zip(LABELS, pos_weight.tolist())})
