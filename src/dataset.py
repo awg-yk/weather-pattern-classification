@@ -37,7 +37,13 @@ class WeatherMapDataset(Dataset):
     単一ラベルの行もそのまま扱える。
     """
 
-    def __init__(self, images_dir: str, labels_csv: str, transform=None):
+    def __init__(self, images_dir: str, labels_csv: str, transform=None, years=None):
+        """years に年のリストを渡すと、その年の画像だけを対象にする。
+
+        「2023〜2025年の3年分」のように対象期間を区切って実験するときに使う。
+        ここで絞り込んでおくことで、src/split.py が返す行番号と
+        Subset のインデックスが常に一致する。
+        """
         self.images_dir = Path(images_dir)
         self.transform = transform
 
@@ -49,6 +55,15 @@ class WeatherMapDataset(Dataset):
             parse_datetime(fn, dt)
             for fn, dt in zip(df["filename"], df.get("date", [None] * len(df)))
         ]
+
+        if years:
+            years = {int(y) for y in years}
+            before = len(df)
+            df = df[df["parsed_datetime"].dt.year.isin(years)].reset_index(drop=True)
+            print(f"対象年 {sorted(years)} に限定: {before}件 → {len(df)}件")
+            if df.empty:
+                raise ValueError(f"指定した年 {sorted(years)} に該当する画像がありません")
+
         self.df = df
 
     def __len__(self) -> int:

@@ -15,7 +15,7 @@
 import numpy as np
 import pandas as pd
 
-SPLIT_MODES = ("temporal", "by_year", "random")
+SPLIT_MODES = ("temporal", "by_year", "loyo", "random")
 
 
 def _sizes(n: int, val_ratio: float, test_ratio: float) -> tuple:
@@ -43,21 +43,93 @@ def _require_dates(df: pd.DataFrame) -> pd.Series:
     return dates
 
 
+def _split_days_by_count(dates: pd.Series, rows: list, targets: list) -> list:
+    """rowsを日単位でまとめ、日付順にtargets件ずつのブロックに切り分ける。
+
+    同じ日の00Z/12Zはほぼ同一の画像なので、必ず同じブロックに入れる。
+    累積件数で境界を決めるため、後ろの日が前のブロックに戻ることはない。
+    """
+    rows_by_day = {}
+    for i in rows:
+        rows_by_day.setdefault(dates.iloc[i].normalize(), []).append(i)
+
+    ordered_days = sorted(rows_by_day)
+    cumulative = np.cumsum([len(rows_by_day[d]) for d in ordered_days])
+
+    blocks, start = [], 0
+    boundary = 0
+    for target in targets:
+        boundary += target
+        end = int(np.searchsorted(cumulative, boundary, side="left")) + 1
+        end = min(max(end, start), len(ordered_days))
+        blocks.append([i for d in ordered_days[start:end] for i in rows_by_day[d]])
+        start = end
+    blocks.append([i for d in ordered_days[start:] for i in rows_by_day[d]])
+    return blocks
+
+
 def make_splits(
     df: pd.DataFrame,
     mode: str = "temporal",
     val_ratio: float = 0.2,
     test_ratio: float = 0.0,
     seed: int = 42,
+    test_year=None,
+    gap_days: int = 3,
 ) -> dict:
     """dfの行番号を train / val / test に振り分けて返す。
 
     mode:
       temporal : 日付順に前から train → val → test。境界の2か所以外は時間的に離れる
       by_year  : 年ごと丸ごと割り当てる。各分割が全季節を含むので季節の偏りが出ない
+      loyo     : test_yearの1年をテストに、残りの年を日付順にtrain/valへ分ける。
+                 テストが必ず通年になるので、季節で偏って評価できないラベルが出ない
       random   : 日付を無視したランダム分割(従来互換。リークするので報告には使わない)
+
+    gap_days: loyoで、テスト年からこの日数以内にある学習データを除外する。
+              年をまたぐ境界(12月末と1月初)は数日差で天気図がほぼ同じになるため。
     """
     n = len(df)
+    if mode == "loyo":
+        if test_year is None:
+            raise ValueError("--split-mode loyo では --test-year の指定が必要です")
+        dates = _require_dates(df)
+        years = dates.dt.year.astype(int)
+        test_rows = [i for i in range(n) if years.iloc[i] == int(test_year)]
+        if not test_rows:
+            raise ValueError(
+                f"{test_year}年の画像がありません(対象の年: {sorted(set(years))})"
+            )
+
+        pool = [i for i in range(n) if years.iloc[i] != int(test_year)]
+
+        # テスト年の前後(前年12月末・翌年1月初)は、テスト年の端の日と数日しか
+        # 離れておらず天気図がほとんど同じになる。学習側からその期間を取り除く。
+        if gap_days > 0:
+            distance = min_days_to_other_split(df, pool, test_rows)
+            purged = [i for i, d in zip(pool, distance) if d <= gap_days]
+            pool = [i for i, d in zip(pool, distance) if d > gap_days]
+            if purged:
+                print(f"  テスト年から{gap_days}日以内の学習データ{len(purged)}件を除外しました")
+
+        # 残りの年を日付順に並べ、後ろ val_ratio ぶんを検証用にする
+        n_val_pool = int(len(pool) * val_ratio)
+        train_rows, val_rows = _split_days_by_count(
+            dates, pool, [len(pool) - n_val_pool]
+        )
+        splits = {"train": train_rows, "val": val_rows, "test": test_rows}
+
+        dates_all = df["parsed_datetime"]
+        print(
+            f"loyo分割(テスト={test_year}年): "
+            f"train({len(train_rows)}件, {dates_all.iloc[train_rows].min():%Y-%m-%d}"
+            f"〜{dates_all.iloc[train_rows].max():%Y-%m-%d}) / "
+            f"val({len(val_rows)}件, {dates_all.iloc[val_rows].min():%Y-%m-%d}"
+            f"〜{dates_all.iloc[val_rows].max():%Y-%m-%d}) / "
+            f"test({len(test_rows)}件, {test_year}年通年)"
+        )
+        return splits
+
     n_train, n_val, n_test = _sizes(n, val_ratio, test_ratio)
 
     if mode == "random":
@@ -73,27 +145,10 @@ def make_splits(
         dates = _require_dates(df)
         # 日単位でまとめてから割り当てる。JMAアーカイブは1日2回(00Z/12Z)あり、
         # 同じ日の2枚はほぼ同一なので、境界で引き裂かれて別々の分割に入るのを防ぐ。
-        day = dates.dt.normalize()
-        rows_by_day = {}
-        for i, d in enumerate(day):
-            rows_by_day.setdefault(d, []).append(i)
-
-        ordered_days = sorted(rows_by_day)
-        cumulative = np.cumsum([len(rows_by_day[d]) for d in ordered_days])
-
-        # 目標件数に最初に到達する日を境界にする。累積で決めるので、後ろの日が
-        # 前の分割に戻ることはなく、期間が必ず時系列順に並ぶ。
-        train_end = int(np.searchsorted(cumulative, n_train, side="left")) + 1
-        val_end = int(np.searchsorted(cumulative, n_train + n_val, side="left")) + 1
-
-        def rows_of_days(day_list):
-            return [i for d in day_list for i in rows_by_day[d]]
-
-        splits = {
-            "train": rows_of_days(ordered_days[:train_end]),
-            "val": rows_of_days(ordered_days[train_end:val_end]),
-            "test": rows_of_days(ordered_days[val_end:]),
-        }
+        train_rows, val_rows, test_rows = _split_days_by_count(
+            dates, list(range(n)), [n_train, n_val]
+        )
+        splits = {"train": train_rows, "val": val_rows, "test": test_rows}
 
     elif mode == "by_year":
         dates = _require_dates(df)

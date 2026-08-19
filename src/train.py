@@ -160,6 +160,25 @@ def main():
         "0だとテストセットを作らない(従来互換)",
     )
     parser.add_argument(
+        "--years",
+        type=int,
+        nargs="+",
+        default=None,
+        help="対象にする年(例: --years 2023 2024 2025)。指定しなければ全期間",
+    )
+    parser.add_argument(
+        "--test-year",
+        type=int,
+        default=None,
+        help="--split-mode loyo のとき、テストに回す年",
+    )
+    parser.add_argument(
+        "--gap-days",
+        type=int,
+        default=3,
+        help="loyoで、テスト年からこの日数以内の学習データを除外する(年境界のリーク対策)",
+    )
+    parser.add_argument(
         "--select-metric",
         choices=["macro_f1", "val_loss"],
         default="macro_f1",
@@ -184,10 +203,16 @@ def main():
     # 分割して片方のtransformだけ差し替えることはできない
     # (差し替えると学習側のデータ拡張まで消える)。
     train_base = WeatherMapDataset(
-        args.data_dir, args.labels, transform=get_transforms(train=True, image_size=args.image_size)
+        args.data_dir,
+        args.labels,
+        transform=get_transforms(train=True, image_size=args.image_size),
+        years=args.years,
     )
     eval_base = WeatherMapDataset(
-        args.data_dir, args.labels, transform=get_transforms(train=False, image_size=args.image_size)
+        args.data_dir,
+        args.labels,
+        transform=get_transforms(train=False, image_size=args.image_size),
+        years=args.years,
     )
 
     splits = make_splits(
@@ -196,6 +221,8 @@ def main():
         val_ratio=args.val_ratio,
         test_ratio=args.test_ratio,
         seed=args.seed,
+        test_year=args.test_year,
+        gap_days=args.gap_days,
     )
     train_ds = Subset(train_base, splits["train"])
     val_ds = Subset(eval_base, splits["val"])
