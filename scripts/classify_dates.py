@@ -50,6 +50,12 @@ def main():
         help="取得した天気図の保存先。同じ日付を再実行しても通信しない",
     )
     parser.add_argument(
+        "--poppler-path",
+        default=None,
+        help=r"popplerのbinフォルダ。2022-10-01以降の日付はPDFで配信されるため変換に必要"
+        "(それ以前は手動アーカイブのJPEGなので不要)",
+    )
+    parser.add_argument(
         "--all-probabilities",
         action="store_true",
         help="全ラベルの確信度も列として出力する",
@@ -76,7 +82,12 @@ def main():
         target = stamp.date()
         row = {args.date_column: target.isoformat()}
         try:
-            image_path = fetch_chart(target.isoformat(), hour=args.hour, cache_dir=args.cache_dir)
+            image_path = fetch_chart(
+                target.isoformat(),
+                hour=args.hour,
+                cache_dir=args.cache_dir,
+                poppler_path=args.poppler_path,
+            )
             image = Image.open(image_path).convert("RGB")
             image = mask_stamp_box(autocrop_to_content(image), DEFAULT_STAMP_BOX)
             tensor = transform(image).unsqueeze(0).to(device)
