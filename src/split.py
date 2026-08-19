@@ -71,67 +71,91 @@ def make_splits(
 
     elif mode == "temporal":
         dates = _require_dates(df)
-        # 同時刻の行が混ざっても順序が安定するよう、日付→行番号の順で並べる
-        order = list(np.lexsort((df.index.to_numpy(), dates.to_numpy())))
+        # 日単位でまとめてから割り当てる。JMAアーカイブは1日2回(00Z/12Z)あり、
+        # 同じ日の2枚はほぼ同一なので、境界で引き裂かれて別々の分割に入るのを防ぐ。
+        day = dates.dt.normalize()
+        rows_by_day = {}
+        for i, d in enumerate(day):
+            rows_by_day.setdefault(d, []).append(i)
+
+        ordered_days = sorted(rows_by_day)
+        cumulative = np.cumsum([len(rows_by_day[d]) for d in ordered_days])
+
+        # 目標件数に最初に到達する日を境界にする。累積で決めるので、後ろの日が
+        # 前の分割に戻ることはなく、期間が必ず時系列順に並ぶ。
+        train_end = int(np.searchsorted(cumulative, n_train, side="left")) + 1
+        val_end = int(np.searchsorted(cumulative, n_train + n_val, side="left")) + 1
+
+        def rows_of_days(day_list):
+            return [i for d in day_list for i in rows_by_day[d]]
+
+        splits = {
+            "train": rows_of_days(ordered_days[:train_end]),
+            "val": rows_of_days(ordered_days[train_end:val_end]),
+            "test": rows_of_days(ordered_days[val_end:]),
+        }
 
     elif mode == "by_year":
         dates = _require_dates(df)
         years = dates.dt.year.astype(int)
-        # 新しい年から順にtest → valへ詰め、残りをtrainにする
-        remaining_years = sorted((int(y) for y in years.unique()), reverse=True)
-        test_years, val_years = [], []
-        filled = 0
-        for year in remaining_years:
-            if filled < n_test:
-                test_years.append(year)
-            elif filled < n_test + n_val:
-                val_years.append(year)
-            else:
-                break
-            filled += int((years == year).sum())
+        all_years = sorted(int(y) for y in years.unique())
 
-        train_years = [y for y in remaining_years if y not in test_years and y not in val_years]
-        if not train_years:
+        # 年数そのものを比率で配分する。件数で貪欲に詰めると、1年の件数が目標を
+        # 大きく超えたときに丸ごと入ってしまい、後続の分割が空になる。
+        n_years = len(all_years)
+        n_test_y = max(1, round(n_years * test_ratio)) if test_ratio > 0 else 0
+        n_val_y = max(1, round(n_years * val_ratio)) if val_ratio > 0 else 0
+        if n_years - n_test_y - n_val_y < 1:
             raise ValueError(
-                f"by_year分割では年が足りません(年: {remaining_years})。"
-                "val_ratio/test_ratioを下げるか、--split-mode temporal を使ってください。"
+                f"by_year分割には年が足りません(対象の年: {all_years})。"
+                "train/val/testそれぞれに最低1年ずつ必要です。"
+                "--split-mode temporal を使うか、val_ratio/test_ratioを下げてください。"
             )
+
+        # 古い年から train → val → test(将来を予測する使い方に合わせて時系列順)
+        train_years = all_years[: n_years - n_val_y - n_test_y]
+        val_years = all_years[n_years - n_val_y - n_test_y : n_years - n_test_y]
+        test_years = all_years[n_years - n_test_y :] if n_test_y else []
 
         def rows_of(year_list):
             return [i for i in range(n) if years.iloc[i] in year_list]
 
         splits = {"train": rows_of(train_years), "val": rows_of(val_years), "test": rows_of(test_years)}
-        print(
-            f"by_year分割: train={sorted(train_years)} ({len(splits['train'])}件) / "
-            f"val={sorted(val_years)} ({len(splits['val'])}件) / "
-            f"test={sorted(test_years)} ({len(splits['test'])}件)"
-        )
-        return splits
 
     else:
         raise ValueError(f"未知の--split-mode: {mode}(選択肢: {', '.join(SPLIT_MODES)})")
 
-    splits = {
-        "train": order[:n_train],
-        "val": order[n_train : n_train + n_val],
-        "test": order[n_train + n_val :],
-    }
+    if mode == "random":
+        splits = {
+            "train": order[:n_train],
+            "val": order[n_train : n_train + n_val],
+            "test": order[n_train + n_val :],
+        }
 
-    if mode == "temporal":
-        dates = df["parsed_datetime"]
+    # 比率を指定したのに空になった分割があれば、黙って進めず知らせる
+    # (空のvalで学習するとベストモデルを選べない)
+    for name, ratio in (("val", val_ratio), ("test", test_ratio)):
+        if ratio > 0 and not splits[name]:
+            raise ValueError(
+                f"{name}が0件になりました(--split-mode {mode}, {name}_ratio={ratio})。"
+                "--split-mode temporal を使うか、比率を調整してください。"
+            )
 
-        def span(name):
-            rows = splits[name]
-            if not rows:
-                return "なし"
-            return f"{dates.iloc[rows].min():%Y-%m-%d} 〜 {dates.iloc[rows].max():%Y-%m-%d}"
+    dates = df["parsed_datetime"]
 
-        print(
-            f"temporal分割: train={span('train')} ({len(splits['train'])}件) / "
-            f"val={span('val')} ({len(splits['val'])}件) / "
-            f"test={span('test')} ({len(splits['test'])}件)"
-        )
+    def describe(name):
+        rows = splits[name]
+        if not rows:
+            return "なし"
+        label = f"{len(rows)}件"
+        if mode != "random" and dates.notna().all():
+            label += f", {dates.iloc[rows].min():%Y-%m-%d}〜{dates.iloc[rows].max():%Y-%m-%d}"
+        return label
 
+    print(
+        f"{mode}分割: train({describe('train')}) / "
+        f"val({describe('val')}) / test({describe('test')})"
+    )
     return splits
 
 
