@@ -60,8 +60,13 @@ def download_pdf(url: str, out_path: Path) -> bool:
     return True
 
 
-def pdf_to_png(pdf_path: Path, png_path: Path, dpi: int = 200) -> None:
-    pages = convert_from_path(str(pdf_path), dpi=dpi)
+def pdf_to_png(pdf_path: Path, png_path: Path, dpi: int = 200, poppler_path=None) -> None:
+    """PDFの1ページ目をPNGにする。
+
+    poppler_pathは、popplerのbinフォルダをPATHに通していない場合に直接指定するためのもの
+    (Windowsでは環境変数をいじるより手軽なことが多い)。
+    """
+    pages = convert_from_path(str(pdf_path), dpi=dpi, poppler_path=poppler_path)
     pages[0].save(png_path, "PNG")
 
 
@@ -78,6 +83,12 @@ def main():
         help="PDFのダウンロードだけ行い、PNGへの変換はしない。"
         "poppler(pdftoppm)の準備前に取得だけ先に進めたいときに使う。"
         "同じ--outで--download-onlyなしで再実行すれば、変換だけ後から実行できる",
+    )
+    parser.add_argument(
+        "--poppler-path",
+        default=None,
+        help=r"popplerのbinフォルダ(例: C:\poppler\Library\bin)。"
+        "PATHに通していない場合に指定する",
     )
     args = parser.parse_args()
 
@@ -115,7 +126,7 @@ def main():
 
             if not args.download_only:
                 try:
-                    pdf_to_png(pdf_path, png_path)
+                    pdf_to_png(pdf_path, png_path, poppler_path=args.poppler_path)
                     print(f"{ts} -> OK ({png_path})")
                     # 変換できた場合だけPDFを消す。失敗したのに消すと、
                     # ダウンロードし直しになってしまう。
