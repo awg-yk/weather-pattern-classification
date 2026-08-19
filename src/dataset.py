@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -7,10 +8,26 @@ from torch.utils.data import Dataset
 
 from src.labels import LABEL_TO_INDEX, LABELS
 
+# ファイル名に含まれるYYYYMMDDHH。"Js_2001070300_page001.jpg" にも
+# "Js_2025010100.png" にも対応する。
+_DATE_IN_FILENAME = re.compile(r"(\d{10})")
+
 
 def parse_labels(label_field: str) -> list:
     """"winter_pressure_pattern|japan_sea_low" のようなパイプ区切りを分解する。"""
     return [l for l in str(label_field).split("|") if l in LABEL_TO_INDEX]
+
+
+def parse_datetime(filename: str, date_field=None) -> pd.Timestamp:
+    """観測日時を取り出す。取れなければ NaT を返す。
+
+    labels.csvのdate列ではなくファイル名を優先して見る。date列は、ファイル名から
+    日付を抜き出すロジックを修正する前にラベル付けした行で "page001" のような
+    誤った値が入っていることがあるため。ファイル名は常に正しい。
+    """
+    match = _DATE_IN_FILENAME.search(str(filename))
+    raw = match.group(1) if match else str(date_field)
+    return pd.to_datetime(raw, format="%Y%m%d%H", errors="coerce")
 
 
 class WeatherMapDataset(Dataset):
@@ -27,6 +44,11 @@ class WeatherMapDataset(Dataset):
         df = pd.read_csv(labels_csv)
         df["parsed_labels"] = df["label"].apply(parse_labels)
         df = df[df["parsed_labels"].apply(len) > 0].reset_index(drop=True)
+        # 時間ブロック分割(src/split.py)が使う観測日時。
+        df["parsed_datetime"] = [
+            parse_datetime(fn, dt)
+            for fn, dt in zip(df["filename"], df.get("date", [None] * len(df)))
+        ]
         self.df = df
 
     def __len__(self) -> int:

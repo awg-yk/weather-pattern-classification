@@ -3,11 +3,12 @@ import argparse
 import numpy as np
 import torch
 from sklearn.metrics import classification_report, f1_score
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 
 from src.dataset import WeatherMapDataset
 from src.labels import LABELS
 from src.model import build_model, load_checkpoint
+from src.split import SPLIT_MODES, make_splits
 from src.train import get_transforms
 
 
@@ -49,9 +50,27 @@ def main():
         "--val-ratio",
         type=float,
         default=0.2,
-        help="train.pyと同じ値を指定すること。指定した重みの学習で使われたのと"
-        "同じtrain/val分割を再現し、検証セット(学習に使われなかった分)だけを"
-        "評価するために使う",
+        help="train.pyと同じ値を指定すること。学習時と同じ分割を再現するために使う",
+    )
+    parser.add_argument(
+        "--test-ratio",
+        type=float,
+        default=0.0,
+        help="train.pyと同じ値を指定すること。--split test を使うなら必須",
+    )
+    parser.add_argument(
+        "--split-mode",
+        choices=list(SPLIT_MODES),
+        default="temporal",
+        help="train.pyと同じ値を指定すること。異なると学習に使った画像が評価に混ざる",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["val", "test", "all"],
+        default="val",
+        help="どの分割を評価するか。val=閾値の調整やモデル比較に使う。"
+        "test=最終報告の数値(--optimize-thresholdsと併用すると閾値はvalで決めてtestに適用する)。"
+        "all=全件(学習画像を含むため報告には使えない)",
     )
     parser.add_argument(
         "--seed",
@@ -59,13 +78,6 @@ def main():
         default=42,
         help="train.pyの--seedと同じ値を指定すること。異なると学習時とは別の"
         "分割になり、学習に使った画像を評価に含めてしまう(不当に高いスコアが出る)",
-    )
-    parser.add_argument(
-        "--full-dataset",
-        action="store_true",
-        help="train/val分割をせず、labels.csvの全件を評価する(train-limitで"
-        "比較する場合は使わないこと。学習に使った画像が評価に混ざり、"
-        "件数が多いモデルほど不当に有利になる)",
     )
     args = parser.parse_args()
 
@@ -82,34 +94,52 @@ def main():
         args.data_dir, args.labels, transform=get_transforms(train=False, image_size=meta["image_size"])
     )
 
-    if args.full_dataset:
-        eval_dataset = dataset
+    # train.pyと同じ手順で分割を復元する(--split-mode/--val-ratio/--test-ratio/--seedを
+    # 学習時と揃えることが前提)。
+    splits = make_splits(
+        dataset.df,
+        mode=args.split_mode,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        seed=args.seed,
+    )
+
+    def infer(rows):
+        """指定した行に対して推論し、(確率, 正解ラベル)を返す。"""
+        loader = DataLoader(Subset(dataset, rows), batch_size=args.batch_size)
+        probs_list, labels_list = [], []
+        with torch.no_grad():
+            for images, labels in loader:
+                probs_list.append(torch.sigmoid(model(images.to(device))).cpu())
+                labels_list.append(labels)
+        return torch.cat(probs_list).numpy(), torch.cat(labels_list).numpy()
+
+    if args.split == "all":
+        eval_rows = list(range(len(dataset)))
+        print("警告: --split all は学習に使った画像を含むため、報告用の数値には使えません")
     else:
-        # train.pyのrandom_splitと同じseed・val-ratioで分割を再現する。
-        # --train-limitで学習用件数だけを絞っていても、train/val分割自体は
-        # train-limit適用前のfull_dataset全体に対して行われる(train.py参照)
-        # ので、ここでも同じ手順(seed固定のrandom_split)を再現すればよい。
-        generator = torch.Generator().manual_seed(args.seed)
-        val_size = int(len(dataset) * args.val_ratio)
-        train_size = len(dataset) - val_size
-        _, eval_dataset = random_split(dataset, [train_size, val_size], generator=generator)
+        eval_rows = splits[args.split]
+    if not eval_rows:
+        raise SystemExit(
+            f"--split {args.split} の対象が0件です。"
+            "--test-ratio を学習時と同じ値にしているか確認してください。"
+        )
 
-    loader = DataLoader(eval_dataset, batch_size=args.batch_size)
-
-    all_probs, all_labels = [], []
-    with torch.no_grad():
-        for images, labels in loader:
-            images = images.to(device)
-            outputs = model(images)
-            probs = torch.sigmoid(outputs).cpu()
-            all_probs.append(probs)
-            all_labels.append(labels)
-
-    all_probs = torch.cat(all_probs).numpy()
-    all_labels = torch.cat(all_labels).numpy()
+    all_probs, all_labels = infer(eval_rows)
 
     if args.optimize_thresholds:
-        thresholds = find_best_thresholds(all_probs, all_labels)
+        if args.split == "test":
+            # 閾値はvalで決めてtestに適用する。testで探索して同じtestで報告すると、
+            # 10ラベル×19候補をtestに合わせ込むことになり、数値が楽観方向に偏る。
+            tune_probs, tune_labels = infer(splits["val"])
+            print(f"閾値は val({len(splits['val'])}件)で決定し、test({len(eval_rows)}件)に適用します")
+        else:
+            tune_probs, tune_labels = all_probs, all_labels
+            print(
+                "注意: 閾値の探索と結果の報告に同じ分割を使っています。"
+                "最終報告には --split test を使ってください"
+            )
+        thresholds = find_best_thresholds(tune_probs, tune_labels)
         print("best thresholds:", {label: round(t, 2) for label, t in zip(LABELS, thresholds)})
     else:
         thresholds = np.full(len(LABELS), args.threshold)
