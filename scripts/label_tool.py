@@ -44,6 +44,7 @@ Colabのノートブックセルで以下のように使う:
   どちらも拾う
 """
 
+import io
 import re
 from pathlib import Path
 
@@ -58,7 +59,7 @@ from src.labels import LABELS, LABEL_JA
 # 掴んだままになっていないかを確認するために使う。
 # (Pythonは一度読み込んだモジュールを記憶するので、git pullしても
 #  カーネルを再起動しない限り古いコードが動き続ける)
-VERSION = "2026-08-20 判定画面を1つに保つ版"
+VERSION = "2026-08-20b 画像を差し替え表示する版"
 
 # 直前に開いた判定画面。セルを実行し直したときに古い画面を閉じるために覚えておく。
 # 閉じないと、押しても何も起きない画面が積み重なって画像が何枚も並んでしまう。
@@ -412,7 +413,11 @@ def run_binary_review_session(
         return
 
     state = {"idx": 0}
-    output = widgets.Output()
+    # Outputウィジェットに毎回描き直す方式だと、環境によっては前の画像が
+    # 消えずに積み重なる。画像ウィジェットを1つ用意して中身だけ差し替えれば、
+    # 消す処理そのものが要らなくなり、表示は常に1枚で済む。
+    image_view = widgets.Image(format="png", width=image_width)
+    caption = widgets.HTML()
     progress_label = widgets.Label()
 
     def update_progress():
@@ -420,20 +425,24 @@ def run_binary_review_session(
         progress_label.value = f"{finished} / {len(df)} 枚  ({LABEL_JA[label]}の判定)"
 
     def show_current():
-        with output:
-            clear_output(wait=True)
-            if state["idx"] >= len(remaining):
-                print(f"完了しました。{out_path} に書き出しています。")
-                return
-            filename = remaining[state["idx"]]
-            # 日付は表示する(季節が分からないと判断できないため)が、
-            # 以前付けた答えは表示しない
-            match = _DATE_PATTERN.search(filename)
-            stamp = match.group(1) if match else filename
-            print(f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[8:10]}Z")
-            image = Image.open(images_dir / filename)
-            height = round(image_width * image.height / image.width)
-            display(image.resize((image_width, height)))
+        if state["idx"] >= len(remaining):
+            caption.value = f"<b>完了しました。</b> {out_path} に書き出しています。"
+            image_view.layout.display = "none"
+            for button in (yes_button, no_button, unsure_button):
+                button.disabled = True
+            update_progress()
+            return
+
+        filename = remaining[state["idx"]]
+        # 日付は表示する(季節が分からないと判断できないため)が、
+        # 以前付けた答えは表示しない
+        match = _DATE_PATTERN.search(filename)
+        stamp = match.group(1) if match else filename
+        caption.value = f"<b>{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[8:10]}Z</b>"
+
+        buffer = io.BytesIO()
+        Image.open(images_dir / filename).save(buffer, format="PNG")
+        image_view.value = buffer.getvalue()
         update_progress()
 
     def record(answer):
@@ -464,7 +473,8 @@ def run_binary_review_session(
         ),
         widgets.HBox([yes_button, no_button, unsure_button]),
         progress_label,
-        output,
+        caption,
+        image_view,
     ])
     _ACTIVE_SESSION.append(panel)
     display(panel)
