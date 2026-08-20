@@ -15,7 +15,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import xarray as xr
+
+from src.era5 import open_era5
 
 # 日本付近をおおまかに東西南北4象限に分けて平均気圧を比較する
 WEST_LON = (120, 135)
@@ -65,7 +66,7 @@ def main():
     parser.add_argument("--out", default="data/labels_era5_draft.csv")
     args = parser.parse_args()
 
-    ds = xr.open_dataset(args.nc)
+    ds = open_era5(args.nc)
     mslp = ds["msl"] / 100.0  # Pa -> hPa
     lon = ds["longitude"].values
     lat = ds["latitude"].values

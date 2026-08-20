@@ -9,16 +9,117 @@ from src.labels import LABELS
 DEFAULT_IMAGE_SIZE = 224
 
 
+class CoordConv(nn.Module):
+    """入力画像に「そのピクセルが図のどこにあるか」を表す2チャンネルを足すラッパー。
+
+    畳み込みは平行移動に対して同じ反応をするため、「日本海にある低気圧」と
+    「オホーツク海にある高気圧」のように"位置そのものが定義に含まれる"気圧配置を
+    区別しづらい。Grad-CAMでも、オホーツク海高気圧の判定時にモデルが高気圧本体では
+    なく下流の等圧線を見ていることが確認できた。
+
+    そこで x座標・y座標を-1〜1に正規化した2枚のマップを画像に連結し、
+    畳み込みが絶対位置を直接参照できるようにする(Liu et al., 2018 "CoordConv")。
+    天気図は常に同じ図法・同じ描画範囲なので、画像上の座標はそのまま緯度経度に対応する。
+
+    追加した2チャンネル分の重みは0で初期化するので、学習開始時点の出力は
+    元の学習済みモデルと完全に一致する。位置情報を使うかどうかは学習が決める。
+    """
+
+    def __init__(self, net: nn.Module):
+        super().__init__()
+        self.net = net
+        first_conv = net.features[0][0]
+        expanded = nn.Conv2d(
+            first_conv.in_channels + 2,
+            first_conv.out_channels,
+            kernel_size=first_conv.kernel_size,
+            stride=first_conv.stride,
+            padding=first_conv.padding,
+            bias=first_conv.bias is not None,
+        )
+        with torch.no_grad():
+            expanded.weight.zero_()
+            expanded.weight[:, : first_conv.in_channels] = first_conv.weight
+            if first_conv.bias is not None:
+                expanded.bias.copy_(first_conv.bias)
+        net.features[0][0] = expanded
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        n, _, h, w = x.shape
+        ys = torch.linspace(-1.0, 1.0, h, device=x.device, dtype=x.dtype)
+        xs = torch.linspace(-1.0, 1.0, w, device=x.device, dtype=x.dtype)
+        grid_y = ys.view(1, 1, h, 1).expand(n, 1, h, w)
+        grid_x = xs.view(1, 1, 1, w).expand(n, 1, h, w)
+        return self.net(torch.cat([x, grid_y, grid_x], dim=1))
+
+
+class FeatureFusion(nn.Module):
+    """CNNが画像から作った特徴ベクトルに、ERA5の数値特徴を連結して分類する。
+
+    天気図の画像には「等圧線がどう曲がっているか」は写っているが、
+    「オホーツク海の気圧が周囲より何hPa高いか」は数値としては読み取れない。
+    ERA5の領域特徴(scripts/era5_features.py)を線形モデルに与えるだけで
+    オホーツク海高気圧のAUCが0.879に達したことから、その情報は確かに存在し、
+    画像からの抽出が難しいだけだと分かっている。そこで両方を分類器に渡す。
+
+    数値特徴は学習データの平均・標準偏差で正規化してから使う。単位も桁も
+    バラバラ(気圧はhPa、位置は度)のままだと、一部の特徴だけが極端に強く効くため。
+    正規化に使う統計は重みと一緒に保存し、推論時も同じ値で揃える。
+    """
+
+    def __init__(self, net: nn.Module, num_features: int, num_classes: int, dropout: float = 0.3):
+        super().__init__()
+        inner = net.net if isinstance(net, CoordConv) else net
+        in_features = inner.classifier[1].in_features
+        # 画像側の分類ヘッドを外し、プーリング後の特徴ベクトルを取り出す
+        inner.classifier = nn.Identity()
+
+        self.net = net
+        self.num_features = num_features
+        # 正規化の統計。学習前に set_feature_stats() で入れ、重みと一緒に保存される。
+        self.register_buffer("feature_mean", torch.zeros(num_features))
+        self.register_buffer("feature_std", torch.ones(num_features))
+        self.head = nn.Sequential(
+            nn.Dropout(p=dropout),
+            nn.Linear(in_features + num_features, num_classes),
+        )
+
+    def set_feature_stats(self, mean: torch.Tensor, std: torch.Tensor) -> None:
+        """学習データだけから求めた平均・標準偏差を設定する。
+
+        検証・テストのデータを含めて計算すると、そこにしか無い情報が
+        学習側に漏れるため、必ず学習用サブセットから求めること。
+        """
+        self.feature_mean.copy_(mean)
+        # 値が一定の特徴で0除算にならないようにする
+        self.feature_std.copy_(std.clamp(min=1e-6))
+
+    def forward(self, x: torch.Tensor, features: torch.Tensor = None) -> torch.Tensor:
+        if features is None:
+            raise ValueError(
+                "このモデルはERA5特徴量を使う構成です。forward(images, features)の形で"
+                "呼んでください(--era5-features を指定して学習された重みです)。"
+            )
+        image_features = self.net(x)
+        scaled = (features - self.feature_mean) / self.feature_std
+        return self.head(torch.cat([image_features, scaled], dim=1))
+
+
 def build_model(
     num_classes: int = len(LABELS),
     pretrained: bool = True,
     freeze_backbone: bool = False,
     dropout: float = 0.3,
+    coordconv: bool = False,
+    num_features: int = 0,
 ) -> nn.Module:
     """EfficientNet-B0をベースにした転移学習モデル。データが少ない段階に適したサイズ。
 
     freeze_backbone=True にすると特徴抽出部を凍結し、分類ヘッドのみ学習する。
     データが数百枚程度と少ない場合、過学習を抑えるのに有効。
+
+    coordconv=True にすると入力に座標チャンネルを足す(CoordConvを参照)。
+    num_features>0 にするとERA5の数値特徴を併用する(FeatureFusionを参照)。
     """
     weights = EfficientNet_B0_Weights.DEFAULT if pretrained else None
     model = efficientnet_b0(weights=weights)
@@ -32,6 +133,17 @@ def build_model(
         nn.Dropout(p=dropout),
         nn.Linear(in_features, num_classes),
     )
+    if coordconv:
+        model = CoordConv(model)
+    if num_features:
+        model = FeatureFusion(model, num_features, num_classes, dropout=dropout)
+    return model
+
+
+def backbone(model: nn.Module):
+    """CoordConv・FeatureFusionで包まれていても中のEfficientNetを返す。Grad-CAM用。"""
+    while isinstance(model, (CoordConv, FeatureFusion)):
+        model = model.net
     return model
 
 
@@ -43,7 +155,13 @@ def save_checkpoint(path, model: nn.Module, image_size: int) -> None:
     推論側が学習時と同じ前処理を自動で再現できるようにする。
     """
     torch.save(
-        {"state_dict": model.state_dict(), "image_size": image_size, "labels": list(LABELS)},
+        {
+            "state_dict": model.state_dict(),
+            "image_size": image_size,
+            "labels": list(LABELS),
+            "coordconv": _has(model, CoordConv),
+            "num_features": model.num_features if isinstance(model, FeatureFusion) else 0,
+        },
         path,
     )
 
@@ -62,10 +180,14 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
         state_dict = obj["state_dict"]
         image_size = obj.get("image_size", DEFAULT_IMAGE_SIZE)
         labels = obj.get("labels", list(LABELS))
+        coordconv = obj.get("coordconv", False)
+        num_features = obj.get("num_features", 0)
     else:  # 旧形式: state_dictがそのまま保存されている
         state_dict = obj
         image_size = DEFAULT_IMAGE_SIZE
         labels = list(LABELS)
+        coordconv = False
+        num_features = 0
 
     if labels != list(LABELS):
         raise ValueError(
@@ -75,5 +197,46 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
             "ラベルを変更した場合は再学習が必要です。"
         )
 
+    model_features = model.num_features if isinstance(model, FeatureFusion) else 0
+    if coordconv != _has(model, CoordConv) or num_features != model_features:
+        raise ValueError(
+            "重みの構成と渡されたモデルが一致しません。\n"
+            f"  重み側  : coordconv={coordconv}, num_features={num_features}\n"
+            f"  モデル側: coordconv={_has(model, CoordConv)}, num_features={model_features}\n"
+            "build_modelではなくload_modelを使うと、重みに合わせて自動で組み立てます。"
+        )
+
     model.load_state_dict(state_dict)
-    return {"image_size": image_size, "labels": labels}
+    return {
+        "image_size": image_size,
+        "labels": labels,
+        "coordconv": coordconv,
+        "num_features": num_features,
+    }
+
+
+def _has(model: nn.Module, kind) -> bool:
+    """CoordConvがFeatureFusionの内側にあっても見つけられるようにする。"""
+    while isinstance(model, (CoordConv, FeatureFusion)):
+        if isinstance(model, kind):
+            return True
+        model = model.net
+    return False
+
+
+def load_model(path, map_location=None):
+    """重みのメタデータに合わせてモデルを組み立ててから読み込む。
+
+    CoordConvの有無は重みごとに違うため、推論側が構成を知らなくても
+    正しいモデルを復元できるようにこの関数を通す。(model, メタデータ)を返す。
+    """
+    obj = torch.load(path, map_location=map_location)
+    meta_obj = obj if isinstance(obj, dict) else {}
+    model = build_model(
+        num_classes=len(LABELS),
+        pretrained=False,
+        coordconv=meta_obj.get("coordconv", False),
+        num_features=meta_obj.get("num_features", 0),
+    )
+    meta = load_checkpoint(path, model, map_location=map_location)
+    return model, meta

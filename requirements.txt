@@ -9,6 +9,9 @@ matplotlib
 cartopy
 xarray
 netCDF4
+# 日本語を含むパスでもnetCDFを開けるようにするための代替バックエンド(src/era5.py)
+h5netcdf
+h5py
 cdsapi
 requests
 beautifulsoup4
@@ -18,3 +21,6 @@ uvicorn[standard]
 python-multipart
 tqdm
 ipywidgets
+# ラベリングはノートブック上で動く（notebooks/labeling.ipynb）
+jupyter
+ipykernel

@@ -6,13 +6,14 @@ import numpy as np
 import torch
 from sklearn.metrics import f1_score
 from torch import nn, optim
-from torch.utils.data import DataLoader, Subset, random_split
+from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from tqdm import tqdm
 
 from src.dataset import WeatherMapDataset
 from src.labels import LABELS
 from src.model import DEFAULT_IMAGE_SIZE, build_model, save_checkpoint
+from src.split import SPLIT_MODES, make_splits
 
 IMAGE_SIZE = DEFAULT_IMAGE_SIZE
 
@@ -71,12 +72,14 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshol
     all_preds, all_targets = [], []
 
     with torch.set_grad_enabled(train):
-        for images, labels in tqdm(loader, leave=False):
+        for images, features, labels in tqdm(loader, leave=False):
             images, labels = images.to(device), labels.to(device)
+            # 要素数0なら「ERA5を使わない構成」なので、そのままNoneとして渡す
+            features = features.to(device) if features.numel() else None
 
             if train:
                 optimizer.zero_grad()
-            outputs = model(images)
+            outputs = model(images, features) if features is not None else model(images)
             loss = criterion(outputs, labels)
             if train:
                 loss.backward()
@@ -108,6 +111,16 @@ def main():
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument(
+        "--era5-features",
+        default=None,
+        help="scripts/era5_features.py が出力したCSV。画像に加えてERA5の数値も使う",
+    )
+    parser.add_argument(
+        "--coordconv",
+        action="store_true",
+        help="入力に座標(緯度経度に相当)チャンネルを足す。位置で決まる気圧配置の判別を助ける",
+    )
     parser.add_argument(
         "--freeze-backbone",
         action="store_true",
@@ -144,6 +157,40 @@ def main():
         "VRAMを解像度の2乗で消費するので--batch-sizeを下げること",
     )
     parser.add_argument(
+        "--split-mode",
+        choices=list(SPLIT_MODES),
+        default="temporal",
+        help="train/val/testの分け方。天気図は隣り合う日どうしが酷似しているため、"
+        "randomだと検証画像と1日違いの画像で学習してしまいスコアが水増しされる。"
+        "既定は時間ブロック分割。randomは過去の実験を再現する用途のみ",
+    )
+    parser.add_argument(
+        "--test-ratio",
+        type=float,
+        default=0.0,
+        help="最終報告用に取り分けるテストデータの割合。学習にも閾値探索にも使わない。"
+        "0だとテストセットを作らない(従来互換)",
+    )
+    parser.add_argument(
+        "--years",
+        type=int,
+        nargs="+",
+        default=None,
+        help="対象にする年(例: --years 2023 2024 2025)。指定しなければ全期間",
+    )
+    parser.add_argument(
+        "--test-year",
+        type=int,
+        default=None,
+        help="--split-mode loyo のとき、テストに回す年",
+    )
+    parser.add_argument(
+        "--gap-days",
+        type=int,
+        default=3,
+        help="loyoで、テスト年からこの日数以内の学習データを除外する(年境界のリーク対策)",
+    )
+    parser.add_argument(
         "--select-metric",
         choices=["macro_f1", "val_loss"],
         default="macro_f1",
@@ -164,25 +211,37 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 学習用と検証用でtransformが異なるため、データセットの実体を2つ作る。
-    # random_splitが返すSubsetは元のデータセットへの「参照」を共有するので、
-    # 1つのインスタンスを分割して片方のtransformだけ差し替えることはできない
+    # Subsetは元のデータセットへの「参照」を共有するので、1つのインスタンスを
+    # 分割して片方のtransformだけ差し替えることはできない
     # (差し替えると学習側のデータ拡張まで消える)。
-    generator = torch.Generator().manual_seed(args.seed)
     train_base = WeatherMapDataset(
-        args.data_dir, args.labels, transform=get_transforms(train=True, image_size=args.image_size)
+        args.data_dir,
+        args.labels,
+        transform=get_transforms(train=True, image_size=args.image_size),
+        years=args.years,
+        features_csv=args.era5_features,
     )
     eval_base = WeatherMapDataset(
-        args.data_dir, args.labels, transform=get_transforms(train=False, image_size=args.image_size)
+        args.data_dir,
+        args.labels,
+        transform=get_transforms(train=False, image_size=args.image_size),
+        years=args.years,
+        features_csv=args.era5_features,
     )
 
-    # 分割はインデックスに対して行う。random_splitは全体長とgeneratorだけで
-    # 並び替えを決めるため、この書き方でも従来と同一の分割が再現される
-    # (src/evaluate.py が同じseedで検証セットを復元できる前提を壊さない)。
-    val_size = int(len(train_base) * args.val_ratio)
-    train_size = len(train_base) - val_size
-    train_idx, val_idx = random_split(range(len(train_base)), [train_size, val_size], generator=generator)
-    train_ds = Subset(train_base, list(train_idx))
-    val_ds = Subset(eval_base, list(val_idx))
+    splits = make_splits(
+        train_base.df,
+        mode=args.split_mode,
+        val_ratio=args.val_ratio,
+        test_ratio=args.test_ratio,
+        seed=args.seed,
+        test_year=args.test_year,
+        gap_days=args.gap_days,
+    )
+    train_ds = Subset(train_base, splits["train"])
+    val_ds = Subset(eval_base, splits["val"])
+    # テストセットはここでは一切触らない。src/evaluate.py --split test で
+    # 同じ分割を復元し、最終報告のときに1回だけ測る。
 
     if args.train_limit is not None:
         if args.train_limit > len(train_ds):
@@ -205,7 +264,18 @@ def main():
         num_classes=len(LABELS),
         freeze_backbone=args.freeze_backbone,
         dropout=args.dropout,
+        coordconv=args.coordconv,
+        num_features=len(train_base.feature_cols),
     ).to(device)
+    if args.coordconv:
+        print("CoordConv: 入力に座標チャンネルを追加します(位置に依存する気圧配置の判別用)")
+    if train_base.feature_cols:
+        # 正規化の統計は学習用サブセットだけから求める。
+        # 検証・テストの分を含めると、そこにしか無い情報が学習側に漏れる。
+        train_features = train_base.features[train_ds.indices]
+        model.set_feature_stats(train_features.mean(0), train_features.std(0))
+        print(f"ERA5特徴量{len(train_base.feature_cols)}個を併用します"
+              f"(正規化は学習{len(train_features)}件から算出)")
 
     pos_weight = compute_pos_weight(train_ds, num_classes=len(LABELS), cap=args.pos_weight_cap).to(device)
     print("pos_weight:", {label: round(w, 2) for label, w in zip(LABELS, pos_weight.tolist())})

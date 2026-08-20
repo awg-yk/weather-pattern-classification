@@ -20,6 +20,7 @@ Colabのノートブックセルで以下のように使う:
 """
 
 import subprocess
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -28,20 +29,35 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
-def _register_cjk_font() -> bool:
-    """OSのfontconfigから直接CJKフォントファイルを探して matplotlib に登録する。
+# matplotlibに同梱されがちな環境で見かける日本語フォントの候補。
+# Windows(Yu Gothic/Meiryo/MS Gothic)・mac(Hiragino)・Linux(Noto/IPA)を順に試す。
+_CJK_FAMILIES = (
+    "Yu Gothic",
+    "Meiryo",
+    "MS Gothic",
+    "Hiragino Sans",
+    "Hiragino Kaku Gothic ProN",
+    "Noto Sans CJK JP",
+    "Noto Sans JP",
+    "IPAexGothic",
+    "TakaoGothic",
+)
 
-    matplotlibは起動時にフォント一覧をキャッシュしているため、実行中に
-    `apt-get install fonts-noto-cjk` してもキャッシュが更新されず
-    ttflistに反映されないことがある。fc-list(fontconfig)はOS側の情報を
-    直接見るので、その場でインストールしたフォントもすぐ拾える。
+
+def _register_cjk_font() -> bool:
+    """matplotlibで日本語が表示できるようにフォントを設定する。
+
+    まずfontconfig(fc-list)を試す。Colabのように実行中にフォントを入れた場合、
+    matplotlibの起動時キャッシュには載っておらず、OS側を直接見ないと拾えないため。
+    ただしfc-listはWindowsには存在しないので、失敗したときは
+    matplotlibが認識済みのフォント名から日本語対応のものを探す。
     """
     try:
         result = subprocess.run(
             ["fc-list", ":lang=ja", "file"], capture_output=True, text=True, timeout=10
         )
         font_paths = [line.split(":")[0].strip() for line in result.stdout.splitlines() if line.strip()]
-    except Exception:
+    except Exception:  # Windowsなどfc-listが無い環境
         font_paths = []
 
     for path in font_paths:
@@ -50,31 +66,36 @@ def _register_cjk_font() -> bool:
         except Exception:
             continue
 
-    if not font_paths:
-        return False
+    if font_paths:
+        try:
+            matplotlib.rcParams["font.family"] = fm.FontProperties(fname=font_paths[0]).get_name()
+            return True
+        except Exception:
+            pass
 
-    try:
-        font_name = fm.FontProperties(fname=font_paths[0]).get_name()
-        matplotlib.rcParams["font.family"] = font_name
-        return True
-    except Exception:
-        return False
+    installed = {f.name for f in fm.fontManager.ttflist}
+    for family in _CJK_FAMILIES:
+        if family in installed:
+            matplotlib.rcParams["font.family"] = family
+            return True
+    return False
 
 
 if not _register_cjk_font():
-    print(
-        "警告: 日本語フォントが見つかりませんでした。"
-        "`!apt-get -qq install -y fonts-noto-cjk` を実行してから、"
-        "このセルを再実行(ランタイム再起動は不要)してください。"
+    _hint = (
+        "Windowsなら通常「Yu Gothic」等が入っているはずです。"
+        if sys.platform.startswith("win")
+        else "`apt-get install -y fonts-noto-cjk`(Linux)や`brew install --cask font-noto-sans-cjk`(mac)で導入できます。"
     )
+    print(f"警告: 日本語フォントが見つかりませんでした。図中の日本語が豆腐(□)になります。{_hint}")
 
 import torch
 import torch.nn.functional as F
 from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
-from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
-from src.model import build_model, load_checkpoint
+from src.labels import INDEX_TO_LABEL, LABEL_JA
+from src.model import backbone, load_model
 from src.train import get_transforms
 
 
@@ -86,7 +107,8 @@ class GradCAM:
         self.activations = None
         self.gradients = None
 
-        target_layer = model.features[-1]
+        # CoordConvで包まれている場合は中のEfficientNetを取り出す
+        target_layer = backbone(model).features[-1]
         target_layer.register_forward_hook(self._save_activation)
         target_layer.register_full_backward_hook(self._save_gradient)
 
@@ -116,8 +138,7 @@ class GradCAM:
 
 def _load_model(weights_path: str, device: torch.device):
     """モデルと、その重みが前提とする入力サイズなどのメタデータを返す。"""
-    model = build_model(num_classes=len(LABELS), pretrained=False)
-    meta = load_checkpoint(weights_path, model, map_location=device)
+    model, meta = load_model(weights_path, map_location=device)
     model.to(device)
     model.eval()
     return model, meta

@@ -60,8 +60,13 @@ def download_pdf(url: str, out_path: Path) -> bool:
     return True
 
 
-def pdf_to_png(pdf_path: Path, png_path: Path, dpi: int = 200) -> None:
-    pages = convert_from_path(str(pdf_path), dpi=dpi)
+def pdf_to_png(pdf_path: Path, png_path: Path, dpi: int = 200, poppler_path=None) -> None:
+    """PDFの1ページ目をPNGにする。
+
+    poppler_pathは、popplerのbinフォルダをPATHに通していない場合に直接指定するためのもの
+    (Windowsでは環境変数をいじるより手軽なことが多い)。
+    """
+    pages = convert_from_path(str(pdf_path), dpi=dpi, poppler_path=poppler_path)
     pages[0].save(png_path, "PNG")
 
 
@@ -72,6 +77,19 @@ def main():
     parser.add_argument("--hours", type=int, nargs="+", default=HOURS_UTC, help="取得する観測時刻(UTC)")
     parser.add_argument("--out", default="data/raw/jma")
     parser.add_argument("--keep-pdf", action="store_true", help="変換後もPDFを残す")
+    parser.add_argument(
+        "--download-only",
+        action="store_true",
+        help="PDFのダウンロードだけ行い、PNGへの変換はしない。"
+        "poppler(pdftoppm)の準備前に取得だけ先に進めたいときに使う。"
+        "同じ--outで--download-onlyなしで再実行すれば、変換だけ後から実行できる",
+    )
+    parser.add_argument(
+        "--poppler-path",
+        default=None,
+        help=r"popplerのbinフォルダ(例: C:\poppler\Library\bin)。"
+        "PATHに通していない場合に指定する",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.out)
@@ -82,6 +100,7 @@ def main():
 
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end)
+    downloaded, convert_failures = 0, 0
 
     for d in daterange(start, end):
         for hour in args.hours:
@@ -93,21 +112,50 @@ def main():
             if png_path.exists():
                 continue
 
-            ok = download_pdf(url, pdf_path)
-            if not ok:
-                print(f"{ts} -> FAILED (404 or empty) ({url})")
-                continue
+            # 前回ダウンロード済みのPDFが残っていれば再取得しない。
+            # (変換だけ失敗していた場合、通信をやり直さず変換から再開できる)
+            reused = pdf_path.exists() and pdf_path.stat().st_size > 0
+            if reused:
+                print(f"{ts} -> ダウンロード済みのPDFを再利用")
+            else:
+                ok = download_pdf(url, pdf_path)
+                if not ok:
+                    print(f"{ts} -> FAILED (404 or empty) ({url})")
+                    continue
+                downloaded += 1
 
-            try:
-                pdf_to_png(pdf_path, png_path)
-                print(f"{ts} -> OK ({png_path})")
-            except Exception as e:
-                print(f"{ts} -> PDF->PNG変換失敗: {e}")
-            finally:
-                if not args.keep_pdf:
-                    pdf_path.unlink(missing_ok=True)
+            if not args.download_only:
+                try:
+                    pdf_to_png(pdf_path, png_path, poppler_path=args.poppler_path)
+                    print(f"{ts} -> OK ({png_path})")
+                    # 変換できた場合だけPDFを消す。失敗したのに消すと、
+                    # ダウンロードし直しになってしまう。
+                    if not args.keep_pdf:
+                        pdf_path.unlink(missing_ok=True)
+                except Exception as e:
+                    convert_failures += 1
+                    print(f"{ts} -> PDF->PNG変換失敗(PDFは保持): {e}")
+            else:
+                print(f"{ts} -> DL ({pdf_path})")
 
-            time.sleep(REQUEST_INTERVAL_SEC)
+            # 待つのはサーバーへの負荷を抑えるため。既存PDFを使った回は
+            # 通信していないので待たない(変換のやり直しが無駄に遅くなる)。
+            if not reused:
+                time.sleep(REQUEST_INTERVAL_SEC)
+
+    print(f"\n新規ダウンロード: {downloaded}件")
+    if args.download_only:
+        print(
+            f"PDFは {pdf_dir} にあります。PNGへの変換は、同じ--outを指定して\n"
+            "--download-only なしで再実行してください(再ダウンロードはしません)。"
+        )
+    if convert_failures:
+        print(
+            f"\n{convert_failures}件がPNGに変換できませんでした。PDFは {pdf_dir} に残してあります。\n"
+            "poppler(pdftoppm)が入っていない可能性があります。導入後に\n"
+            f"  python -m scripts.collect_jma --start {args.start} --end {args.end} --out {args.out}\n"
+            "を再実行すると、ダウンロード済みのPDFを使って変換だけやり直します。"
+        )
 
 
 if __name__ == "__main__":

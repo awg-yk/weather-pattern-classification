@@ -72,7 +72,12 @@ def find_latest_available_date(hour: int = 0, search_back_days: int = 150) -> da
     return None
 
 
-def fetch_chart(date_str: str, hour: int = 0, cache_dir: str = str(DEFAULT_CACHE_DIR)) -> Path:
+def fetch_chart(
+    date_str: str,
+    hour: int = 0,
+    cache_dir: str = str(DEFAULT_CACHE_DIR),
+    poppler_path=None,
+) -> Path:
     """指定した日付・時刻の天気図をダウンロード(またはJPEGアーカイブから取得)し、
     そのパスを返す。
 
@@ -109,7 +114,8 @@ def fetch_chart(date_str: str, hour: int = 0, cache_dir: str = str(DEFAULT_CACHE
             "またまだ公開されていない新しい日付は404になります。"
         )
 
-    pdf_to_png(pdf_path, png_path)
+    # JSMAPはPDF配信なのでPNG変換にpopplerが要る(手動アーカイブはJPEGなので不要)
+    pdf_to_png(pdf_path, png_path, poppler_path=poppler_path)
     pdf_path.unlink(missing_ok=True)
     return png_path
 
@@ -119,9 +125,17 @@ def main():
     parser.add_argument("date", help="YYYY-MM-DD")
     parser.add_argument("--hour", type=int, default=0, choices=[0, 12], help="UTC時刻(0または12)")
     parser.add_argument("--cache-dir", default=str(DEFAULT_CACHE_DIR))
+    parser.add_argument(
+        "--poppler-path",
+        default=None,
+        help=r"popplerのbinフォルダ(例: C:\poppler\...\Library\bin)。"
+        "2022-10-01以降の日付はPDFで配信されるため変換に必要",
+    )
     args = parser.parse_args()
 
-    png_path = fetch_chart(args.date, hour=args.hour, cache_dir=args.cache_dir)
+    png_path = fetch_chart(
+        args.date, hour=args.hour, cache_dir=args.cache_dir, poppler_path=args.poppler_path
+    )
     print(png_path)
 
 

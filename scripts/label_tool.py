@@ -289,3 +289,106 @@ def run_review_session(
 
     display(progress_label, output, grid, controls)
     show_current()
+
+
+def run_binary_review_session(
+    images_dir: str,
+    labels_csv: str,
+    out_csv: str,
+    label: str = "okhotsk_high",
+    sample: int = 200,
+    seed: int = 42,
+    years: list | None = None,
+):
+    """1つのラベルについて「あり/なし」だけを、元の答えを伏せて判定し直す。
+
+    元のラベルを表示しないのが要点。自分が以前どう答えたかが見えていると、
+    無意識にそれへ引きずられ(アンカリング)、一致率が実際より高く出てしまう。
+
+    伏せたまま2回目を付ければ、1回目との一致率が測れる。これは人間でも判断が
+    揺れる度合いであり、モデルの性能がどこまで伸びうるかの上限にあたる。
+    一致率が90%なら、それを超えるF1は原理的に期待できない。
+
+    結果は labels.csv とは別のファイルに書く。突き合わせて確認するまで、
+    元のラベルには一切手を触れない。
+
+    途中で止めても、既に答えた分は飛ばして続きから再開できる。
+    """
+    images_dir = Path(images_dir)
+    out_path = Path(out_csv)
+
+    df = pd.read_csv(labels_csv)
+    df["parsed"] = df["label"].apply(lambda s: str(s).split("|"))
+    if years:
+        years = {int(y) for y in years}
+        year_of = df["filename"].str.extract(_DATE_PATTERN)[0].str.slice(0, 4)
+        df = df[pd.to_numeric(year_of, errors="coerce").isin(years)]
+
+    # 画像が実在する行だけを対象にする
+    df = df[df["filename"].apply(lambda f: (images_dir / f).exists())].reset_index(drop=True)
+    if df.empty:
+        print(f"{images_dir} に対象の画像がありません。")
+        return
+
+    # 無作為抽出。seedを固定しているので、中断して開き直しても同じ200枚になる。
+    if sample and sample < len(df):
+        df = df.sample(n=sample, random_state=seed).reset_index(drop=True)
+
+    done = set()
+    if out_path.exists():
+        done = set(pd.read_csv(out_path)["filename"])
+    remaining = [f for f in df["filename"] if f not in done]
+
+    if not remaining:
+        print(f"{len(done)}枚すべて判定済みです。scripts/compare_review.py で突き合わせてください。")
+        return
+
+    state = {"idx": 0}
+    output = widgets.Output()
+    progress_label = widgets.Label()
+
+    def update_progress():
+        finished = len(done) + state["idx"]
+        progress_label.value = f"{finished} / {len(df)} 枚  ({LABEL_JA[label]}の判定)"
+
+    def show_current():
+        with output:
+            clear_output(wait=True)
+            if state["idx"] >= len(remaining):
+                print(f"完了しました。{out_path} に書き出しています。")
+                return
+            filename = remaining[state["idx"]]
+            # 日付は表示する(季節が分からないと判断できないため)が、
+            # 以前付けた答えは表示しない
+            match = _DATE_PATTERN.search(filename)
+            stamp = match.group(1) if match else filename
+            print(f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[8:10]}Z")
+            display(Image.open(images_dir / filename).resize((720, 540)))
+        update_progress()
+
+    def record(answer):
+        if state["idx"] >= len(remaining):
+            return
+        filename = remaining[state["idx"]]
+        row = pd.DataFrame([{"filename": filename, "answer": answer}])
+        row.to_csv(out_path, mode="a", header=not out_path.exists(), index=False)
+        state["idx"] += 1
+        show_current()
+
+    yes_button = widgets.Button(description=f"あり (1)", button_style="success")
+    yes_button.on_click(lambda _: record("yes"))
+    no_button = widgets.Button(description="なし (0)", button_style="")
+    no_button.on_click(lambda _: record("no"))
+    unsure_button = widgets.Button(description="わからない", button_style="warning")
+    unsure_button.on_click(lambda _: record("unsure"))
+
+    display(
+        widgets.HTML(
+            f"<b>{LABEL_JA[label]}</b> が該当するかだけを判定してください。"
+            "以前の答えは表示していません(引きずられないようにするため)。"
+        ),
+        progress_label,
+        output,
+        widgets.HBox([yes_button, no_button, unsure_button]),
+    )
+    show_current()

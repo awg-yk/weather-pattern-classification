@@ -22,8 +22,8 @@ import torch
 from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
-from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
-from src.model import build_model, load_checkpoint
+from src.labels import INDEX_TO_LABEL, LABEL_JA
+from src.model import load_model
 from src.train import get_transforms
 
 DEFAULT_WEIGHTS = Path(__file__).resolve().parent.parent / "weights" / "model.pt"
@@ -78,8 +78,7 @@ def main():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # pretrained=False: どうせ直後に自前の学習済み重みで上書きするので、
         # ImageNet事前学習済み重みのダウンロードは不要(ネット接続なしでも動かせる)
-        model = build_model(num_classes=len(LABELS), pretrained=False)
-        meta = load_checkpoint(args.weights, model, map_location=device)
+        model, meta = load_model(args.weights, map_location=device)
         model.to(device)
         model.eval()
 
