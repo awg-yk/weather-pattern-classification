@@ -26,13 +26,21 @@ from src.era5 import open_era5
 # 気圧配置の定義に対応する領域(南, 北, 西, 東)。
 # ラベルごとに「そこが高いか低いか」が決め手になる場所を選んでいる。
 REGIONS = {
-    "okhotsk": (45, 60, 135, 160),      # オホーツク海高気圧
+    # オホーツク海は南北に分ける。高気圧が南寄りにあれば北日本に北東気流が
+    # 入りやすく、北寄りだと入りにくい。ひとまとめに平均すると、この違いが
+    # 消えてしまう(北緯58度の高気圧と47度の高気圧が同じ値になる)。
+    "okhotsk_south": (45, 52, 140, 160),
+    "okhotsk_north": (52, 60, 135, 160),
     "japan_sea": (35, 45, 130, 140),    # 日本海低気圧
     "south_coast": (25, 35, 130, 145),  # 南岸低気圧
     "continent": (45, 60, 110, 130),    # シベリア高気圧(西高東低の西)
     "pacific": (20, 35, 145, 165),      # 太平洋高気圧
     "japan": (30, 45, 128, 146),        # 日本付近(基準)
+    "north_japan": (38, 46, 139, 147),  # 北日本(北東気流が入るかを見る場所)
 }
+
+# 高気圧の中心が南北どちらにあるかを見る範囲(オホーツク海全体)
+OKHOTSK_BOX = (45, 60, 135, 160)
 
 
 def _subset(da, lat_range, lon_range):
@@ -43,6 +51,55 @@ def _subset(da, lat_range, lon_range):
     lo, hi = lat_range
     lat_slice = slice(hi, lo) if lat[0] > lat[-1] else slice(lo, hi)
     return da.sel({lat_name: lat_slice, lon_name: slice(*lon_range)})
+
+
+# 地衡風の計算に使う定数
+OMEGA = 7.2921e-5      # 地球の自転角速度 [1/s]
+AIR_DENSITY = 1.225    # 空気密度 [kg/m^3]
+METERS_PER_DEGREE = 111_000.0
+
+
+def geostrophic_wind_north_japan(msl, lat_name: str, lon_name: str) -> dict:
+    """北日本の地衡風(等圧線に平行に吹く風)を気圧場から計算する。
+
+    オホーツク海高気圧のラベルは「北東気流が北日本に入りそうな高気圧」という
+    予報官の判断で付けられている。その判断に対応する量を直接計算する。
+
+    地衡風は気圧傾度力とコリオリ力の釣り合いで決まり、等圧線に平行に吹く。
+    北半球では高気圧の周りを時計回りに回るので、日本の北東に高気圧があれば
+    北日本には北東からの風が入る。
+
+        u = -(1/(f·ρ))·∂p/∂y   (東向き成分)
+        v =  (1/(f·ρ))·∂p/∂x   (北向き成分)
+
+    返すのは東西成分u・南北成分v・風速の3つ。北東成分のような合成量は作らない。
+    合成の仕方を決め打ちすると情報が落ちるため(実際、北向き成分を混ぜると
+    オホーツク海の南北による違いが消えてしまう)、成分のまま渡して重み付けは
+    モデルに任せる。
+
+    やませに相当するのは u が大きく負(東寄りの風)の状態。高気圧が
+    オホーツク海の南部にあるときに強く現れ、北部にあるときは弱い。
+    """
+    lat0, lat1, lon0, lon1 = REGIONS["north_japan"]
+    # 傾度を取るため、対象領域より少し広く切り出す
+    field = _subset(msl, (lat0 - 3, lat1 + 3), (lon0 - 3, lon1 + 3)) * 100.0  # hPa -> Pa
+
+    lat = field[lat_name]
+    # 緯度・経度[度]を距離[m]に直してから微分する
+    dp_dy = field.differentiate(lat_name) / METERS_PER_DEGREE
+    dp_dx = field.differentiate(lon_name) / (METERS_PER_DEGREE * np.cos(np.deg2rad(lat)))
+    coriolis = 2 * OMEGA * np.sin(np.deg2rad(lat))
+
+    u = -dp_dy / (coriolis * AIR_DENSITY)
+    v = dp_dx / (coriolis * AIR_DENSITY)
+
+    u = _subset(u, (lat0, lat1), (lon0, lon1)).mean(dim=[lat_name, lon_name])
+    v = _subset(v, (lat0, lat1), (lon0, lon1)).mean(dim=[lat_name, lon_name])
+    return {
+        "u": u.values.astype("float32"),
+        "v": v.values.astype("float32"),
+        "speed": np.hypot(u.values, v.values).astype("float32"),
+    }
 
 
 def _time_name(ds):
@@ -71,6 +128,26 @@ def mslp_features(ds) -> pd.DataFrame:
 
     # 西高東低の指標。冬型では大陸が高く、日本の東の海上が低い。
     out["mslp_west_minus_east"] = out["mslp_continent_anom"] - out["mslp_pacific_anom"]
+
+    # オホーツク海の高気圧が南寄りか北寄りか。正なら南寄り。
+    out["mslp_okhotsk_south_minus_north"] = (
+        out["mslp_okhotsk_south_anom"] - out["mslp_okhotsk_north_anom"]
+    )
+
+    # オホーツク海の範囲内で最も気圧が高い格子点の緯度 = 高気圧中心の南北位置
+    okhotsk = _subset(msl, (OKHOTSK_BOX[0], OKHOTSK_BOX[1]), (OKHOTSK_BOX[2], OKHOTSK_BOX[3]))
+    ok_flat = okhotsk.stack(pt=(lat_name, lon_name))
+    ok_center = ok_flat["pt"][ok_flat.argmax("pt").values]
+    out["mslp_okhotsk_center_lat"] = np.array([p[0] for p in ok_center.values], dtype="float32")
+    out["mslp_okhotsk_center_lon"] = np.array([p[1] for p in ok_center.values], dtype="float32")
+    out["mslp_okhotsk_center_value"] = ok_flat.max("pt").values
+
+    # 北日本に北東気流が入っているか。風のデータを落とさなくても、地上気圧から
+    # 地衡風(等圧線に平行に吹く風)として計算できる。
+    wind = geostrophic_wind_north_japan(msl, lat_name, lon_name)
+    out["wind_north_japan_u"] = wind["u"]   # 負なら東寄りの風(やませ)
+    out["wind_north_japan_v"] = wind["v"]   # 負なら北寄りの風
+    out["wind_north_japan_speed"] = wind["speed"]
 
     # 領域内で最も低い/高い格子点の位置。低気圧・高気圧の中心がどこにあるかを直接表す。
     flat = msl.stack(pt=(lat_name, lon_name))
