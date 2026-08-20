@@ -13,7 +13,7 @@ from tqdm import tqdm
 from src.dataset import WeatherMapDataset
 from src.labels import LABELS
 from src.model import DEFAULT_IMAGE_SIZE, build_model, save_checkpoint
-from src.split import SPLIT_MODES, make_splits
+from src.split import SPLIT_MODES, VAL_MODES, make_splits
 
 IMAGE_SIZE = DEFAULT_IMAGE_SIZE
 
@@ -191,6 +191,14 @@ def main():
         help="loyoで、テスト年からこの日数以内の学習データを除外する(年境界のリーク対策)",
     )
     parser.add_argument(
+        "--val-mode",
+        default="tail",
+        choices=VAL_MODES,
+        help="loyoでの検証データの取り方。tail=学習期間の末尾(既定)、"
+        "spread=1年を通して等間隔に週を抜く。spreadは検証が通年になるが、"
+        "抜いた週の前後を学習から除くぶん学習データが減る",
+    )
+    parser.add_argument(
         "--select-metric",
         choices=["macro_f1", "val_loss"],
         default="macro_f1",
@@ -237,6 +245,7 @@ def main():
         seed=args.seed,
         test_year=args.test_year,
         gap_days=args.gap_days,
+        val_mode=args.val_mode,
     )
     train_ds = Subset(train_base, splits["train"])
     val_ds = Subset(eval_base, splits["val"])

@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader, Subset
 from src.dataset import WeatherMapDataset
 from src.labels import LABELS
 from src.model import load_model
-from src.split import SPLIT_MODES, make_splits
+from src.split import SPLIT_MODES, VAL_MODES, make_splits
 from src.train import get_transforms
 
 
@@ -86,6 +86,12 @@ def main():
         help="train.pyと同じ値を指定すること",
     )
     parser.add_argument(
+        "--val-mode",
+        default="tail",
+        choices=VAL_MODES,
+        help="学習時と同じ値を指定すること。違うと別の分割を復元してしまう",
+    )
+    parser.add_argument(
         "--test-year",
         type=int,
         default=None,
@@ -96,6 +102,12 @@ def main():
         type=int,
         default=3,
         help="train.pyと同じ値を指定すること",
+    )
+    parser.add_argument(
+        "--val-mode",
+        default="tail",
+        choices=VAL_MODES,
+        help="学習時と同じ値を指定すること。違うと別の分割を復元してしまう",
     )
     parser.add_argument(
         "--json-out",
@@ -144,6 +156,7 @@ def main():
         seed=args.seed,
         test_year=args.test_year,
         gap_days=args.gap_days,
+        val_mode=args.val_mode,
     )
 
     def infer(rows):

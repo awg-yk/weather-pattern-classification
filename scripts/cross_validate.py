@@ -44,6 +44,7 @@ def main():
     parser.add_argument("--era5-features", default=None)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--gap-days", type=int, default=3)
+    parser.add_argument("--val-mode", default="tail", choices=["spread", "tail"])
     parser.add_argument(
         "--skip-existing",
         action="store_true",
@@ -61,6 +62,7 @@ def main():
         "--split-mode", "loyo",
         "--val-ratio", args.val_ratio,
         "--gap-days", args.gap_days,
+        "--val-mode", args.val_mode,
         "--seed", args.seed,
     ]
     if args.era5_features:

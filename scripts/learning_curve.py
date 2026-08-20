@@ -47,6 +47,7 @@ def main():
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--test-ratio", type=float, default=0.0)
     parser.add_argument("--gap-days", type=int, default=3)
+    parser.add_argument("--val-mode", default="tail", choices=["spread", "tail"])
     parser.add_argument("--skip-existing", action="store_true", help="結果JSONがあるものは飛ばす")
     args = parser.parse_args()
 
@@ -60,6 +61,7 @@ def main():
         "--val-ratio", args.val_ratio,
         "--test-ratio", args.test_ratio,
         "--gap-days", args.gap_days,
+        "--val-mode", args.val_mode,
         "--seed", args.seed,
     ]
     if args.era5_features:
