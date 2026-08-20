@@ -328,6 +328,7 @@ def run_binary_review_session(
     years: list | None = None,
     months: list | None = None,
     filenames: list | None = None,
+    image_width: int = 560,
 ):
     """1つのラベルについて「あり/なし」だけを、元の答えを伏せて判定し直す。
 
@@ -345,6 +346,9 @@ def run_binary_review_session(
     sample に None を渡すと抽出せず、対象すべてを順に見る。
     filenames にファイル名のリストを渡すと、その画像だけを対象にする
     (positives_union と組み合わせて、陽性候補だけを見直すときに使う)。
+
+    ボタンは画像の上に置く。下に置くと、画像1枚ごとに視線と手が
+    上下に往復することになり、数百枚を見るときに効いてくる。
 
     途中で止めても、既に答えた分は飛ばして続きから再開できる。
     """
@@ -408,7 +412,9 @@ def run_binary_review_session(
             match = _DATE_PATTERN.search(filename)
             stamp = match.group(1) if match else filename
             print(f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[8:10]}Z")
-            display(Image.open(images_dir / filename).resize((720, 540)))
+            image = Image.open(images_dir / filename)
+            height = round(image_width * image.height / image.width)
+            display(image.resize((image_width, height)))
         update_progress()
 
     def record(answer):
@@ -432,8 +438,8 @@ def run_binary_review_session(
             f"<b>{LABEL_JA[label]}</b> が該当するかだけを判定してください。"
             "以前の答えは表示していません(引きずられないようにするため)。"
         ),
+        widgets.HBox([yes_button, no_button, unsure_button]),
         progress_label,
         output,
-        widgets.HBox([yes_button, no_button, unsure_button]),
     )
     show_current()
