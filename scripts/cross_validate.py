@@ -47,6 +47,10 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--coordconv", action="store_true")
+    parser.add_argument(
+        "--no-pretrained", action="store_true",
+        help="ImageNetの事前学習重みを使わない(ERA5格子と条件を揃えるとき)",
+    )
     parser.add_argument("--era5-features", default=None)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--gap-days", type=int, default=3)
@@ -110,6 +114,8 @@ def main():
                 ]
                 if args.input_mode == "era5-grid":
                     train_cmd += ["--grid-size", args.grid_size]
+                if args.no_pretrained:
+                    train_cmd.append("--no-pretrained")
             if train_cmd is not None:
                 if args.coordconv:
                     train_cmd.append("--coordconv")
