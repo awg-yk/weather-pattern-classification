@@ -52,11 +52,13 @@ def main():
     )
     parser.add_argument(
         "--combine",
-        default="mean",
-        choices=["mean", "max"],
+        default="max",
+        choices=["max", "mean"],
         help="--hour both のときの統合方法。"
-        "mean=2時刻の確率を平均(安定)、max=確信度が高い方の時刻を採用。"
-        "モデルは自信過剰なので、maxは「正しい方」ではなく「極端な方」を選びうる",
+        "max(既定)=確信度が高い方の時刻の判定をそのまま採用するので、"
+        "結果は必ずどちらかの天気図が支持する気圧配置になる。"
+        "mean=2時刻の確率を平均する。統計的には安定だが、両方で2位だったラベルが"
+        "逆転し、どちらの天気図も1位に選ばなかった気圧配置が出ることがある",
     )
     parser.add_argument(
         "--cache-dir",
@@ -126,6 +128,7 @@ def main():
     failures = []
     disagreements = 0
     both_hours = 0
+    third_label = 0   # 統合結果がどちらの時刻の判定とも違ってしまった件数
     for i, stamp in enumerate(df[args.date_column], start=1):
         target = stamp.date()
         row = {args.date_column: target.isoformat()}
@@ -148,6 +151,9 @@ def main():
                 # 各時刻の最大確率を比べ、高い方の時刻の予測をそのまま使う
                 probs = max(by_hour.values(), key=lambda p: float(p.max()))
 
+            best = int(torch.argmax(probs))
+            label = INDEX_TO_LABEL[best]
+
             note = ""
             if len(by_hour) == 2:
                 both_hours += 1
@@ -158,12 +164,14 @@ def main():
                     row[f"確信度_{hour:02d}Z"] = round(float(p[best_h]), 4)
                 if tops[0] != tops[12]:
                     disagreements += 1
-                    note = f"  ※00Zと12Zで判定が異なる({LABEL_JA[tops[0]]} / {LABEL_JA[tops[12]]})"
+                    row["備考"] = f"00Zと12Zで判定が異なる({LABEL_JA[tops[0]]} / {LABEL_JA[tops[12]]})"
+                    note = "  ※" + row["備考"]
+                if label not in tops.values():
+                    third_label += 1
+                    note += "  ⚠どちらの天気図も1位に選ばなかったラベル"
             elif hours == [0, 12]:
-                note = f"  ※{'12' if 0 in by_hour else '00'}Zは取得できず片方のみ"
-
-            best = int(torch.argmax(probs))
-            label = INDEX_TO_LABEL[best]
+                row["備考"] = f"{'12' if 0 in by_hour else '00'}Zは取得できず片方のみ"
+                note = "  ※" + row["備考"]
             row["気圧配置"] = LABEL_JA[label]
             row["ラベル"] = label
             row["確信度"] = round(float(probs[best]), 4)
@@ -199,10 +207,20 @@ def main():
     print(f"  {'合計':<22}{total:>4}件")
 
     if len(hours) == 2 and both_hours:
-        print(f"\n00Zと12Zで判定が分かれた日: {disagreements}件 / {both_hours}件 "
-              f"({disagreements / both_hours * 100:.0f}%)")
-        print("  同じ日でもどちらの天気図を見るかで結果が変わる割合。"
-              "この手法の再現性の目安になる。")
+        rate = disagreements / both_hours
+        print(f"\n00Zと12Zで判定が分かれた日: {disagreements}件 / {both_hours}件 ({rate * 100:.0f}%)")
+        # モデルの1位正解率をaとすると、真の気圧配置が同じでも 2a(1-a) 程度は
+        # 食い違う。この水準と比べないと「天気が変わった割合」と誤読してしまう。
+        for accuracy in (0.65, 0.70, 0.75):
+            print(f"    参考: 1位正解率が{accuracy:.0%}なら、"
+                  f"両時刻の正解が同一でも約{2 * accuracy * (1 - accuracy) * 100:.0f}%は食い違う")
+        print("  この割合の大部分はモデルの不安定さで説明され、"
+              "天気が実際に変化した割合ではない。")
+        if third_label:
+            print(f"\n  ⚠ 統合結果がどちらの時刻の判定とも異なった日: {third_label}件"
+                  f"({third_label / both_hours * 100:.0f}%)")
+            print("    --combine mean で、両時刻とも2位だったラベルが逆転したもの。"
+                  "--combine max なら必ずどちらかの判定になる。")
 
     if failures:
         print(f"\n取得できなかった日付: {len(failures)}件")
