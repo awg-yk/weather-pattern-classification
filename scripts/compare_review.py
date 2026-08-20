@@ -19,8 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.dataset import parse_labels
-from src.labels import LABEL_JA, LABELS
+from src.labels import LABEL_JA, LABELS, parse_labels
 
 
 def cohen_kappa(a, b) -> float:

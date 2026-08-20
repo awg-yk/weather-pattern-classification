@@ -26,8 +26,7 @@ from sklearn.metrics import f1_score, roc_auc_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from src.dataset import parse_labels
-from src.labels import LABEL_JA, LABELS
+from src.labels import LABEL_JA, LABELS, parse_labels
 
 # 参考として並べる、CNN(CoordConvあり)のleave-one-year-out交差検証の結果
 CNN_F1 = {

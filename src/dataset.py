@@ -7,16 +7,11 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 
-from src.labels import LABEL_TO_INDEX, LABELS
+from src.labels import LABEL_TO_INDEX, LABELS, parse_labels  # noqa: F401  (従来の import 経路を保つ)
 
 # ファイル名に含まれるYYYYMMDDHH。"Js_2001070300_page001.jpg" にも
 # "Js_2025010100.png" にも対応する。
 _DATE_IN_FILENAME = re.compile(r"(\d{10})")
-
-
-def parse_labels(label_field: str) -> list:
-    """"winter_pressure_pattern|japan_sea_low" のようなパイプ区切りを分解する。"""
-    return [l for l in str(label_field).split("|") if l in LABEL_TO_INDEX]
 
 
 def parse_datetime(filename: str, date_field=None) -> pd.Timestamp:

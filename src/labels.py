@@ -29,3 +29,13 @@ LABEL_JA = {
     "stationary_front": "停滞前線",
     "okhotsk_high": "オホーツク海高気圧",
 }
+
+
+def parse_labels(label_field: str) -> list:
+    """"winter_pressure_pattern|japan_sea_low" のようなパイプ区切りを分解する。
+
+    ラベルCSVを読むだけの処理(集計・突き合わせ)からも使うため、
+    torchに依存しないこのモジュールに置いている。
+    """
+    return [l for l in str(label_field).split("|") if l in LABEL_TO_INDEX]
+
