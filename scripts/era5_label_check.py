@@ -43,6 +43,11 @@ def main():
     parser.add_argument("--features", default="data/era5_features.csv")
     parser.add_argument("--labels", default="data/labels.csv")
     parser.add_argument("--years", type=int, nargs="+", default=[2023, 2024, 2025])
+    parser.add_argument(
+        "--detail",
+        default=None,
+        help="1つのラベルについて、全特徴量の係数と単独AUCを表示する(例: okhotsk_high)",
+    )
     args = parser.parse_args()
 
     feats = pd.read_csv(args.features)
@@ -91,6 +96,12 @@ def main():
         print(f"  {LABEL_JA[label]:<22}{auc:>8.3f}{f1:>8.3f}{cnn:>10.3f}{f1 - cnn:>+8.3f}")
         rows.append({"label": label, "auc": auc, "f1": f1, "cnn_f1": cnn, "support": int(y.sum())})
 
+    if args.detail:
+        if args.detail not in LABELS:
+            raise SystemExit(f"--detail は {LABELS} のいずれかを指定してください")
+        _detail(args.detail, X, df, feature_cols)
+        return
+
     summary = pd.DataFrame(rows)
     print(f"\n  {'macro F1(ERA5のみ)':<22}{summary['f1'].mean():>16.3f}")
     print(f"  {'macro F1(CNN)':<22}{summary['cnn_f1'].mean():>16.3f}")
@@ -108,6 +119,27 @@ def main():
         top = np.argsort(-np.abs(coef))[:3]
         parts = [f"{feature_cols[i]}({coef[i]:+.2f})" for i in top]
         print(f"  {LABEL_JA[label]:<22}{'  '.join(parts)}")
+
+
+def _detail(label, X, df, feature_cols):
+    """1ラベルについて、特徴量ごとの寄与を詳しく出す。
+
+    係数は他の特徴量と一緒に使ったときの寄与、単独AUCはその特徴量だけを
+    見たときの判別力。両方見ないと「他と組んで初めて効く量」を見落とす。
+    """
+    y = df["parsed_labels"].apply(lambda ls, l=label: l in ls).to_numpy(dtype=int)
+    model = make_pipeline(
+        StandardScaler(), LogisticRegression(max_iter=2000, class_weight="balanced")
+    ).fit(X, y)
+    coef = model[-1].coef_[0]
+
+    print(f"\n{'=' * 62}\n{LABEL_JA[label]}({label}) の内訳  陽性{int(y.sum())}件\n{'=' * 62}")
+    print(f"  {'特徴量':<34}{'係数':>10}{'単独AUC':>10}")
+    print("  " + "-" * 54)
+    for i in np.argsort(-np.abs(coef)):
+        auc = roc_auc_score(y, X[:, i])
+        # 向きが逆でも判別力は同じなので、0.5未満なら反転して読む
+        print(f"  {feature_cols[i]:<34}{coef[i]:>+10.2f}{max(auc, 1 - auc):>10.3f}")
 
 
 if __name__ == "__main__":
