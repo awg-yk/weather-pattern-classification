@@ -35,7 +35,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dates-csv", required=True, help="日付が入ったCSV")
     parser.add_argument("--date-column", default="発生日", help="日付が入っている列名")
-    parser.add_argument("--weights", required=True)
+    parser.add_argument(
+        "--weights",
+        required=True,
+        nargs="+",
+        help="重みファイル。複数渡すと予測確率を平均する"
+        "(交差検証で作った各foldのモデルを平均すると、1つだけ使うより安定する)",
+    )
     parser.add_argument("--out", required=True, help="結果を書き出すCSV")
     parser.add_argument(
         "--hour",
@@ -63,11 +69,30 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, meta = load_model(args.weights, map_location=device)
-    model.to(device)
-    model.eval()
-    transform = get_transforms(train=False, image_size=meta["image_size"])
-    print(f"モデル: {args.weights}(入力解像度 {meta['image_size']})")
+    models, image_size = [], None
+    for path in args.weights:
+        model, meta = load_model(path, map_location=device)
+        model.to(device).eval()
+        if image_size is None:
+            image_size = meta["image_size"]
+        elif meta["image_size"] != image_size:
+            raise SystemExit(
+                f"入力解像度が揃っていません({path} は {meta['image_size']}、"
+                f"他は {image_size})。同じ条件で学習した重みを渡してください。"
+            )
+        if meta["num_features"]:
+            raise SystemExit(
+                f"{path} はERA5特徴量を前提にした重みです。"
+                "このスクリプトは天気図の画像だけで判定するため使えません。"
+            )
+        models.append(model)
+    transform = get_transforms(train=False, image_size=image_size)
+    if len(models) == 1:
+        print(f"モデル: {args.weights[0]}(入力解像度 {image_size})")
+    else:
+        print(f"モデル{len(models)}個の平均(入力解像度 {image_size}):")
+        for path in args.weights:
+            print(f"  - {path}")
 
     df = pd.read_csv(args.dates_csv)
     if args.date_column not in df.columns:
@@ -92,7 +117,9 @@ def main():
             image = mask_stamp_box(autocrop_to_content(image), DEFAULT_STAMP_BOX)
             tensor = transform(image).unsqueeze(0).to(device)
             with torch.no_grad():
-                probs = torch.sigmoid(model(tensor))[0].cpu()
+                probs = torch.stack(
+                    [torch.sigmoid(m(tensor))[0].cpu() for m in models]
+                ).mean(dim=0)
 
             best = int(torch.argmax(probs))
             label = INDEX_TO_LABEL[best]
