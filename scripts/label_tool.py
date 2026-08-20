@@ -296,9 +296,10 @@ def run_binary_review_session(
     labels_csv: str,
     out_csv: str,
     label: str = "okhotsk_high",
-    sample: int = 200,
+    sample: int | None = 200,
     seed: int = 42,
     years: list | None = None,
+    months: list | None = None,
 ):
     """1つのラベルについて「あり/なし」だけを、元の答えを伏せて判定し直す。
 
@@ -312,6 +313,9 @@ def run_binary_review_session(
     結果は labels.csv とは別のファイルに書く。突き合わせて確認するまで、
     元のラベルには一切手を触れない。
 
+    months に月のリストを渡すと、その月の画像だけを対象にする。
+    sample に None を渡すと抽出せず、対象すべてを順に見る。
+
     途中で止めても、既に答えた分は飛ばして続きから再開できる。
     """
     images_dir = Path(images_dir)
@@ -324,15 +328,23 @@ def run_binary_review_session(
         year_of = df["filename"].str.extract(_DATE_PATTERN)[0].str.slice(0, 4)
         df = df[pd.to_numeric(year_of, errors="coerce").isin(years)]
 
+    if months:
+        months = {int(m) for m in months}
+        month_of = df["filename"].str.extract(_DATE_PATTERN)[0].str.slice(4, 6)
+        df = df[pd.to_numeric(month_of, errors="coerce").isin(months)]
+
     # 画像が実在する行だけを対象にする
     df = df[df["filename"].apply(lambda f: (images_dir / f).exists())].reset_index(drop=True)
     if df.empty:
         print(f"{images_dir} に対象の画像がありません。")
         return
 
-    # 無作為抽出。seedを固定しているので、中断して開き直しても同じ200枚になる。
     if sample and sample < len(df):
+        # 無作為抽出。seedを固定しているので、中断して開き直しても同じ枚数・同じ組になる。
         df = df.sample(n=sample, random_state=seed).reset_index(drop=True)
+    else:
+        # 全件を見る場合は日付順に並べる。似た時期の天気図が続くので判断基準が揺れにくい。
+        df = df.sort_values("filename").reset_index(drop=True)
 
     done = set()
     if out_path.exists():
