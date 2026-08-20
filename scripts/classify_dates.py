@@ -24,11 +24,63 @@ import pandas as pd
 import torch
 from PIL import Image
 
+import numpy as np
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+
 from scripts.fetch_and_predict import fetch_chart
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
-from src.labels import INDEX_TO_LABEL, LABEL_JA
+from src.dataset import parse_labels
+from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
 from src.model import load_model
 from src.train import get_transforms
+
+
+def _build_era5_model(features_csv: str, labels_csv: str) -> dict:
+    """ERA5特徴量からラベルを予測するロジスティック回帰を、ラベル済みの年で学習する。
+
+    天気図のCNNとは別に動かし、出力する確率だけを混ぜる(scripts/ensemble_era5.py と
+    同じ考え方)。特徴ベクトルに連結する方式は、画像側1280次元に対しERA5側が
+    26次元と差が大きく、効果が出なかった。
+    """
+    feats = pd.read_csv(features_csv)
+    columns = [c for c in feats.columns if c not in ("filename", "datetime")]
+
+    labels = pd.read_csv(labels_csv)
+    labels["parsed"] = labels["label"].apply(parse_labels)
+    labels = labels[labels["parsed"].apply(len) > 0]
+    train = labels.merge(feats, on="filename", how="inner")
+    if train.empty:
+        raise SystemExit(
+            "labels.csv とERA5特徴量が1件も結合できませんでした。"
+            "filenameの形式が揃っているか確認してください。"
+        )
+
+    X = train[columns].to_numpy(dtype="float64")
+    fitted = []
+    for label in LABELS:
+        y = train["parsed"].apply(lambda ls, l=label: l in ls).to_numpy(dtype=int)
+        if y.sum() < 2 or y.sum() == len(y):
+            fitted.append(None)   # 学習できないラベルは確率0を返す
+            continue
+        fitted.append(
+            make_pipeline(
+                StandardScaler(),
+                LogisticRegression(max_iter=2000, class_weight="balanced"),
+            ).fit(X, y)
+        )
+
+    def predict(vector):
+        row = vector.reshape(1, -1)
+        return np.array([0.0 if m is None else m.predict_proba(row)[0, 1] for m in fitted])
+
+    # 日時(YYYYMMDDHH)で引けるようにしておく
+    stamps = feats["filename"].str.extract(r"(\d{10})")[0]
+    values = feats[columns].to_numpy(dtype="float64")
+    by_time = {stamp: values[i] for i, stamp in enumerate(stamps) if isinstance(stamp, str)}
+
+    return {"columns": columns, "rows": len(train), "predict": predict, "by_time": by_time}
 
 
 def main():
@@ -72,6 +124,24 @@ def main():
         "(それ以前は手動アーカイブのJPEGなので不要)",
     )
     parser.add_argument(
+        "--era5-features",
+        default=None,
+        help="scripts/era5_features.py の出力。対象日を含む全期間ぶん。"
+        "指定するとERA5のロジスティック回帰を併用する(--labelsも必要)",
+    )
+    parser.add_argument(
+        "--labels",
+        default=None,
+        help="ERA5側のモデルを学習するためのlabels.csv。--era5-featuresと一緒に使う",
+    )
+    parser.add_argument(
+        "--blend-weight",
+        type=float,
+        default=0.25,
+        help="ERA5側の重み。0=天気図のみ、1=ERA5のみ。"
+        "既定の0.25は交差検証で選ばれた値(0.25/0.20/0.35)の代表値",
+    )
+    parser.add_argument(
         "--all-probabilities",
         action="store_true",
         help="全ラベルの確信度も列として出力する",
@@ -104,6 +174,14 @@ def main():
         for path in args.weights:
             print(f"  - {path}")
 
+    era5 = None
+    if args.era5_features:
+        if not args.labels:
+            raise SystemExit("--era5-features を使うには --labels も指定してください")
+        era5 = _build_era5_model(args.era5_features, args.labels)
+        print(f"ERA5併用: 特徴量{len(era5['columns'])}個 / "
+              f"学習{era5['rows']}件 / 重み {args.blend_weight}")
+
     df = pd.read_csv(args.dates_csv)
     if args.date_column not in df.columns:
         raise SystemExit(f"列 '{args.date_column}' がありません。列: {list(df.columns)}")
@@ -112,7 +190,7 @@ def main():
     print(f"対象: {len(df)}件({df[args.date_column].min():%Y-%m-%d} 〜 {df[args.date_column].max():%Y-%m-%d})\n")
 
     def predict(target, hour):
-        """1つの日時の天気図を取得して、全ラベルの確率を返す。"""
+        """1つの日時の天気図(と、あればERA5)から全ラベルの確率を返す。"""
         image_path = fetch_chart(
             target.isoformat(), hour=hour,
             cache_dir=args.cache_dir, poppler_path=args.poppler_path,
@@ -121,7 +199,18 @@ def main():
         image = mask_stamp_box(autocrop_to_content(image), DEFAULT_STAMP_BOX)
         tensor = transform(image).unsqueeze(0).to(device)
         with torch.no_grad():
-            return torch.stack([torch.sigmoid(m(tensor))[0].cpu() for m in models]).mean(dim=0)
+            probs = torch.stack([torch.sigmoid(m(tensor))[0].cpu() for m in models]).mean(dim=0)
+
+        if era5 is None:
+            return probs
+        key = f"{target:%Y%m%d}{hour:02d}"
+        if key not in era5["by_time"]:
+            raise KeyError(
+                f"{target} {hour:02d}Z のERA5特徴量がありません。"
+                f"scripts/download_era5.py と era5_features.py を{target.year}年について実行してください。"
+            )
+        era5_probs = torch.tensor(era5["predict"](era5["by_time"][key]), dtype=probs.dtype)
+        return (1 - args.blend_weight) * probs + args.blend_weight * era5_probs
 
     hours = [0, 12] if args.hour == "both" else [int(args.hour)]
     records = []
