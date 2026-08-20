@@ -54,6 +54,12 @@ from PIL import Image
 
 from src.labels import LABELS, LABEL_JA
 
+# このファイルの版。ノートブックから表示して、カーネルが古いコードを
+# 掴んだままになっていないかを確認するために使う。
+# (Pythonは一度読み込んだモジュールを記憶するので、git pullしても
+#  カーネルを再起動しない限り古いコードが動き続ける)
+VERSION = "2026-08-20 判定画面を1つに保つ版"
+
 # 直前に開いた判定画面。セルを実行し直したときに古い画面を閉じるために覚えておく。
 # 閉じないと、押しても何も起きない画面が積み重なって画像が何枚も並んでしまう。
 _ACTIVE_SESSION = []
@@ -293,6 +299,15 @@ def run_review_session(
 
     display(progress_label, output, grid, controls)
     show_current()
+
+
+def close_review_sessions() -> int:
+    """開いたままの判定画面をすべて閉じる。閉じた数を返す。"""
+    count = len(_ACTIVE_SESSION)
+    for widget in _ACTIVE_SESSION:
+        widget.close()
+    _ACTIVE_SESSION.clear()
+    return count
 
 
 def positives_union(labels_csv, review_csvs, label: str = "okhotsk_high") -> list:
