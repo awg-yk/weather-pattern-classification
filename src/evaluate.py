@@ -104,12 +104,6 @@ def main():
         help="train.pyと同じ値を指定すること",
     )
     parser.add_argument(
-        "--val-mode",
-        default="tail",
-        choices=VAL_MODES,
-        help="学習時と同じ値を指定すること。違うと別の分割を復元してしまう",
-    )
-    parser.add_argument(
         "--json-out",
         default=None,
         help="評価結果をJSONで書き出す先。交差検証の集計に使う",

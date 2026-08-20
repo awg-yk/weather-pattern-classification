@@ -77,17 +77,24 @@ def main():
             print(f"\n=== fold: テスト={test_year}年 (既存の結果を再利用) ===")
         else:
             print(f"\n{'=' * 60}\n=== fold: テスト={test_year}年 ===\n{'=' * 60}")
-            train_cmd = [
-                "src.train", *common,
-                "--test-year", test_year,
-                "--epochs", args.epochs,
-                "--batch-size", args.batch_size,
-                "--image-size", args.image_size,
-                "--out", weights,
-            ]
-            if args.coordconv:
-                train_cmd.append("--coordconv")
-            run(train_cmd)
+            # 学習は終わっているのに評価で落ちた場合、--skip-existing を付ければ
+            # 学習をやり直さずに評価だけ再開できる(1foldに数十分かかるため)
+            if args.skip_existing and weights.exists():
+                print(f"  学習済みの重みを再利用します: {weights}")
+                train_cmd = None
+            else:
+                train_cmd = [
+                    "src.train", *common,
+                    "--test-year", test_year,
+                    "--epochs", args.epochs,
+                    "--batch-size", args.batch_size,
+                    "--image-size", args.image_size,
+                    "--out", weights,
+                ]
+            if train_cmd is not None:
+                if args.coordconv:
+                    train_cmd.append("--coordconv")
+                run(train_cmd)
             run([
                 "src.evaluate", *common,
                 "--test-year", test_year,

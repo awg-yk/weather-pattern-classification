@@ -84,16 +84,21 @@ def main():
             print(f"\n=== 学習件数 {tag} (既存の結果を再利用) ===")
         else:
             print(f"\n{'=' * 60}\n=== 学習件数 {tag} ===\n{'=' * 60}")
-            train_cmd = ["src.train", *common,
-                         "--epochs", args.epochs,
-                         "--batch-size", args.batch_size,
-                         "--image-size", args.image_size,
-                         "--out", weights]
-            if args.coordconv:
-                train_cmd += ["--coordconv"]
-            if limit is not None:
-                train_cmd += ["--train-limit", limit]
-            run(train_cmd)
+            # 学習は終わっているのに評価で落ちた場合、--skip-existing を付ければ
+            # 学習をやり直さずに評価だけ再開できる
+            if args.skip_existing and weights.exists():
+                print(f"  学習済みの重みを再利用します: {weights}")
+            else:
+                train_cmd = ["src.train", *common,
+                             "--epochs", args.epochs,
+                             "--batch-size", args.batch_size,
+                             "--image-size", args.image_size,
+                             "--out", weights]
+                if args.coordconv:
+                    train_cmd += ["--coordconv"]
+                if limit is not None:
+                    train_cmd += ["--train-limit", limit]
+                run(train_cmd)
 
             run(["src.evaluate", *common,
                  "--batch-size", args.batch_size,
