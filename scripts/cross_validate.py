@@ -32,8 +32,14 @@ def run(cmd: list) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", required=True)
+    parser.add_argument("--data-dir", default=None, help="天気図画像のディレクトリ(chartモードで必須)")
     parser.add_argument("--labels", required=True)
+    parser.add_argument(
+        "--input-mode", default="chart", choices=["chart", "era5-grid"],
+        help="chart(既定)=天気図の画像。era5-grid=ERA5の格子を圧縮せず直接入力する",
+    )
+    parser.add_argument("--era5-grid-dir", default="data/raw/era5")
+    parser.add_argument("--grid-size", type=int, default=128)
     parser.add_argument("--years", type=int, nargs="+", required=True, help="対象年(この中から1年ずつテストに回す)")
     parser.add_argument("--out-dir", default="runs/loyo", help="重みと結果JSONの保存先")
     parser.add_argument("--seed", type=int, default=42)
@@ -52,11 +58,15 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.input_mode == "chart" and not args.data_dir:
+        raise SystemExit("chartモードでは --data-dir が必要です")
+    if args.input_mode == "era5-grid" and args.era5_features:
+        raise SystemExit("--input-mode era5-grid と --era5-features は併用できません")
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     common = [
-        "--data-dir", args.data_dir,
         "--labels", args.labels,
         "--years", *args.years,
         "--split-mode", "loyo",
@@ -64,7 +74,14 @@ def main():
         "--gap-days", args.gap_days,
         "--val-mode", args.val_mode,
         "--seed", args.seed,
+        "--input-mode", args.input_mode,
     ]
+    if args.input_mode == "era5-grid":
+        # --grid-sizeはtrain.pyだけが受け取る(evaluate.pyはチェックポイントに
+        # 保存された値を使うため、CLI引数を持たない)。
+        common += ["--era5-grid-dir", args.era5_grid_dir]
+    else:
+        common += ["--data-dir", args.data_dir]
     if args.era5_features:
         common += ["--era5-features", args.era5_features]
 
@@ -91,6 +108,8 @@ def main():
                     "--image-size", args.image_size,
                     "--out", weights,
                 ]
+                if args.input_mode == "era5-grid":
+                    train_cmd += ["--grid-size", args.grid_size]
             if train_cmd is not None:
                 if args.coordconv:
                     train_cmd.append("--coordconv")

@@ -7,6 +7,7 @@ from sklearn.metrics import classification_report, f1_score
 from torch.utils.data import DataLoader, Subset
 
 from src.dataset import WeatherMapDataset
+from src.era5_grid import ERA5GridDataset, compute_grid_stats
 from src.labels import LABELS
 from src.model import load_model
 from src.split import SPLIT_MODES, VAL_MODES, make_splits
@@ -37,8 +38,19 @@ def find_best_thresholds(probs: np.ndarray, labels: np.ndarray, steps: int = 19)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", required=True)
+    parser.add_argument("--data-dir", default=None, help="天気図画像のディレクトリ(chartモードで必須)")
     parser.add_argument("--labels", required=True)
+    parser.add_argument(
+        "--input-mode",
+        default="chart",
+        choices=["chart", "era5-grid"],
+        help="train.pyと同じ値を指定すること",
+    )
+    parser.add_argument(
+        "--era5-grid-dir",
+        default="data/raw/era5",
+        help="--input-mode era5-grid のときの、ERA5 netCDFの置き場所",
+    )
     parser.add_argument("--weights", required=True)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--threshold", type=float, default=0.5)
@@ -117,6 +129,9 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.input_mode == "chart" and not args.data_dir:
+        raise SystemExit("chartモードでは --data-dir が必要です")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 前処理の解像度は重みに同梱されたものを使う(学習時と揃えないと精度が落ちる)。
@@ -126,13 +141,19 @@ def main():
     model.eval()
     print(f"入力解像度: {meta['image_size']}(重みに記録された値)")
 
-    dataset = WeatherMapDataset(
-        args.data_dir,
-        args.labels,
-        transform=get_transforms(train=False, image_size=meta["image_size"]),
-        years=args.years,
-        features_csv=args.era5_features,
-    )
+    if args.input_mode == "era5-grid":
+        dataset = ERA5GridDataset(
+            args.labels, args.era5_grid_dir, years=args.years,
+            grid_size=meta["image_size"], augment=False,
+        )
+    else:
+        dataset = WeatherMapDataset(
+            args.data_dir,
+            args.labels,
+            transform=get_transforms(train=False, image_size=meta["image_size"]),
+            years=args.years,
+            features_csv=args.era5_features,
+        )
     if meta["num_features"] != len(dataset.feature_cols):
         raise SystemExit(
             f"この重みはERA5特徴量{meta['num_features']}個を前提にしていますが、"
@@ -152,6 +173,13 @@ def main():
         gap_days=args.gap_days,
         val_mode=args.val_mode,
     )
+
+    if args.input_mode == "era5-grid":
+        # train.pyと同じ手順(学習用サブセットだけから正規化の統計を求める)を
+        # ここで再現する。統計はチェックポイントに埋め込まれていないため、
+        # train.pyと同じ分割になっている前提でこの場で計算し直す。
+        mean, std = compute_grid_stats(dataset, splits["train"])
+        dataset.set_stats(mean, std)
 
     def infer(rows):
         """指定した行に対して推論し、(確率, 正解ラベル)を返す。"""

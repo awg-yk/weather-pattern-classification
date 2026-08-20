@@ -112,6 +112,7 @@ def build_model(
     dropout: float = 0.3,
     coordconv: bool = False,
     num_features: int = 0,
+    in_channels: int = 3,
 ) -> nn.Module:
     """EfficientNet-B0をベースにした転移学習モデル。データが少ない段階に適したサイズ。
 
@@ -120,9 +121,30 @@ def build_model(
 
     coordconv=True にすると入力に座標チャンネルを足す(CoordConvを参照)。
     num_features>0 にするとERA5の数値特徴を併用する(FeatureFusionを参照)。
+
+    in_channels!=3 は、天気図画像(RGB)ではなくERA5の格子(気圧・気温など)を
+    直接入力するとき用(src/era5_grid.pyを参照)。ImageNetの事前学習重みは
+    3チャンネルのRGB画像を前提にしており、気圧場には転用できないため、
+    in_channels!=3 のときは pretrained を強制的に無効にする。
     """
+    if in_channels != 3 and pretrained:
+        print("in_channelsが3以外のため、ImageNetの事前学習重みは使わずゼロから学習します"
+              "(事前学習はRGB画像を前提にしており、気圧場などの物理量には転用できないため)")
+        pretrained = False
+
     weights = EfficientNet_B0_Weights.DEFAULT if pretrained else None
     model = efficientnet_b0(weights=weights)
+
+    if in_channels != 3:
+        first_conv = model.features[0][0]
+        model.features[0][0] = nn.Conv2d(
+            in_channels,
+            first_conv.out_channels,
+            kernel_size=first_conv.kernel_size,
+            stride=first_conv.stride,
+            padding=first_conv.padding,
+            bias=first_conv.bias is not None,
+        )
 
     if freeze_backbone:
         for param in model.features.parameters():
@@ -147,6 +169,18 @@ def backbone(model: nn.Module):
     return model
 
 
+def _base_in_channels(model: nn.Module) -> int:
+    """build_model()のin_channels引数に相当する値を、実際の層から逆算する。
+
+    CoordConvは最初の畳み込みに+2チャンネル足すため、実際の層のin_channelsを
+    そのまま記録すると、読み込み時にbuild_model(in_channels=..., coordconv=True)が
+    もう一度+2してしまい、チャンネル数が二重に増えてしまう。ここで先に2を
+    差し引いておくことで、save_checkpoint/load_checkpointの往復を正しく保つ。
+    """
+    channels = backbone(model).features[0][0].in_channels
+    return channels - 2 if _has(model, CoordConv) else channels
+
+
 def save_checkpoint(path, model: nn.Module, image_size: int) -> None:
     """重みと一緒に、その重みが前提とする入力サイズ・ラベル一覧も保存する。
 
@@ -161,6 +195,7 @@ def save_checkpoint(path, model: nn.Module, image_size: int) -> None:
             "labels": list(LABELS),
             "coordconv": _has(model, CoordConv),
             "num_features": model.num_features if isinstance(model, FeatureFusion) else 0,
+            "in_channels": _base_in_channels(model),
         },
         path,
     )
@@ -182,12 +217,14 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
         labels = obj.get("labels", list(LABELS))
         coordconv = obj.get("coordconv", False)
         num_features = obj.get("num_features", 0)
+        in_channels = obj.get("in_channels", 3)
     else:  # 旧形式: state_dictがそのまま保存されている
         state_dict = obj
         image_size = DEFAULT_IMAGE_SIZE
         labels = list(LABELS)
         coordconv = False
         num_features = 0
+        in_channels = 3
 
     if labels != list(LABELS):
         raise ValueError(
@@ -198,11 +235,17 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
         )
 
     model_features = model.num_features if isinstance(model, FeatureFusion) else 0
-    if coordconv != _has(model, CoordConv) or num_features != model_features:
+    model_in_channels = _base_in_channels(model)
+    if (
+        coordconv != _has(model, CoordConv)
+        or num_features != model_features
+        or in_channels != model_in_channels
+    ):
         raise ValueError(
             "重みの構成と渡されたモデルが一致しません。\n"
-            f"  重み側  : coordconv={coordconv}, num_features={num_features}\n"
-            f"  モデル側: coordconv={_has(model, CoordConv)}, num_features={model_features}\n"
+            f"  重み側  : coordconv={coordconv}, num_features={num_features}, in_channels={in_channels}\n"
+            f"  モデル側: coordconv={_has(model, CoordConv)}, num_features={model_features}, "
+            f"in_channels={model_in_channels}\n"
             "build_modelではなくload_modelを使うと、重みに合わせて自動で組み立てます。"
         )
 
@@ -212,6 +255,7 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
         "labels": labels,
         "coordconv": coordconv,
         "num_features": num_features,
+        "in_channels": in_channels,
     }
 
 
@@ -237,6 +281,7 @@ def load_model(path, map_location=None):
         pretrained=False,
         coordconv=meta_obj.get("coordconv", False),
         num_features=meta_obj.get("num_features", 0),
+        in_channels=meta_obj.get("in_channels", 3),
     )
     meta = load_checkpoint(path, model, map_location=map_location)
     return model, meta

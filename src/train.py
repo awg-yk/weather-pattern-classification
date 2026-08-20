@@ -11,6 +11,7 @@ from torchvision import transforms
 from tqdm import tqdm
 
 from src.dataset import WeatherMapDataset
+from src.era5_grid import ERA5GridDataset, compute_grid_stats
 from src.labels import LABELS
 from src.model import DEFAULT_IMAGE_SIZE, build_model, save_checkpoint
 from src.split import SPLIT_MODES, VAL_MODES, make_splits
@@ -103,7 +104,7 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshol
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", required=True, help="画像が入ったディレクトリ")
+    parser.add_argument("--data-dir", default=None, help="画像が入ったディレクトリ(chartモードで必須)")
     parser.add_argument("--labels", required=True, help="labels.csvのパス")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -114,7 +115,27 @@ def main():
     parser.add_argument(
         "--era5-features",
         default=None,
-        help="scripts/era5_features.py が出力したCSV。画像に加えてERA5の数値も使う",
+        help="scripts/era5_features.py が出力したCSV。画像に加えてERA5の数値も使う"
+        "(--input-mode era5-grid とは併用できない)",
+    )
+    parser.add_argument(
+        "--input-mode",
+        default="chart",
+        choices=["chart", "era5-grid"],
+        help="chart(既定)=天気図の画像を入力にする。"
+        "era5-grid=ERA5の海面更正気圧・850hPa気温の格子を、圧縮せずそのまま"
+        "画像の代わりに入力する(前線は含まれないため、前線系ラベルは原理的に不利)",
+    )
+    parser.add_argument(
+        "--era5-grid-dir",
+        default="data/raw/era5",
+        help="--input-mode era5-grid のときの、ERA5 netCDFの置き場所",
+    )
+    parser.add_argument(
+        "--grid-size",
+        type=int,
+        default=128,
+        help="--input-mode era5-grid のときの、格子をリサイズする一辺の大きさ",
     )
     parser.add_argument(
         "--coordconv",
@@ -216,26 +237,47 @@ def main():
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+    if args.input_mode == "chart" and not args.data_dir:
+        raise SystemExit("chartモードでは --data-dir が必要です")
+    if args.input_mode == "era5-grid" and args.era5_features:
+        raise SystemExit(
+            "--input-mode era5-grid と --era5-features は併用できません"
+            "(era5-gridは格子そのものを入力にするため、26個への要約は不要)"
+        )
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # 学習用と検証用でtransformが異なるため、データセットの実体を2つ作る。
-    # Subsetは元のデータセットへの「参照」を共有するので、1つのインスタンスを
-    # 分割して片方のtransformだけ差し替えることはできない
-    # (差し替えると学習側のデータ拡張まで消える)。
-    train_base = WeatherMapDataset(
-        args.data_dir,
-        args.labels,
-        transform=get_transforms(train=True, image_size=args.image_size),
-        years=args.years,
-        features_csv=args.era5_features,
-    )
-    eval_base = WeatherMapDataset(
-        args.data_dir,
-        args.labels,
-        transform=get_transforms(train=False, image_size=args.image_size),
-        years=args.years,
-        features_csv=args.era5_features,
-    )
+    if args.input_mode == "era5-grid":
+        # 格子の読み込みはnetCDFの解凍を伴い重いため、train用・eval用で
+        # 二重に読み込まない。1つ構築してから浅いコピーで augment だけ切り替える
+        # (self.grids は同じ配列を参照するので、正規化の統計は両方に個別に設定する)。
+        import copy
+
+        train_base = ERA5GridDataset(
+            args.labels, args.era5_grid_dir, years=args.years,
+            grid_size=args.grid_size, augment=True,
+        )
+        eval_base = copy.copy(train_base)
+        eval_base.augment = False
+    else:
+        # 学習用と検証用でtransformが異なるため、データセットの実体を2つ作る。
+        # Subsetは元のデータセットへの「参照」を共有するので、1つのインスタンスを
+        # 分割して片方のtransformだけ差し替えることはできない
+        # (差し替えると学習側のデータ拡張まで消える)。
+        train_base = WeatherMapDataset(
+            args.data_dir,
+            args.labels,
+            transform=get_transforms(train=True, image_size=args.image_size),
+            years=args.years,
+            features_csv=args.era5_features,
+        )
+        eval_base = WeatherMapDataset(
+            args.data_dir,
+            args.labels,
+            transform=get_transforms(train=False, image_size=args.image_size),
+            years=args.years,
+            features_csv=args.era5_features,
+        )
 
     splits = make_splits(
         train_base.df,
@@ -275,6 +317,7 @@ def main():
         dropout=args.dropout,
         coordconv=args.coordconv,
         num_features=len(train_base.feature_cols),
+        in_channels=2 if args.input_mode == "era5-grid" else 3,
     ).to(device)
     if args.coordconv:
         print("CoordConv: 入力に座標チャンネルを追加します(位置に依存する気圧配置の判別用)")
@@ -285,6 +328,16 @@ def main():
         model.set_feature_stats(train_features.mean(0), train_features.std(0))
         print(f"ERA5特徴量{len(train_base.feature_cols)}個を併用します"
               f"(正規化は学習{len(train_features)}件から算出)")
+    if args.input_mode == "era5-grid":
+        # 正規化の統計も学習用サブセットだけから求める(理由は上と同じ)。
+        # train_base/eval_baseは同じ格子配列を参照する2つのビューなので、両方に設定する。
+        mean, std = compute_grid_stats(train_base, train_ds.indices)
+        train_base.set_stats(mean, std)
+        eval_base.set_stats(mean, std)
+        print(f"ERA5格子(気圧・気温)を直接入力します"
+              f"(grid_size={args.grid_size} / 正規化は学習{len(train_ds)}件から算出)")
+        print(f"  気圧の平均/標準偏差: {mean[0]:.2f} / {std[0]:.2f}"
+              f"  気温の平均/標準偏差: {mean[1]:.2f} / {std[1]:.2f}")
 
     pos_weight = compute_pos_weight(train_ds, num_classes=len(LABELS), cap=args.pos_weight_cap).to(device)
     print("pos_weight:", {label: round(w, 2) for label, w in zip(LABELS, pos_weight.tolist())})
@@ -326,7 +379,11 @@ def main():
         if score > best_score:
             best_score = score
             epochs_without_improvement = 0
-            save_checkpoint(out_path, model, image_size=args.image_size)
+            # 保存先は同じ"image_size"フィールドを使い回す(grid modeでは実質grid_size)。
+            # 推論側がここに保存された値をそのまま前処理サイズとして使うため、
+            # フィールド名を分けずに済ませている。
+            saved_size = args.grid_size if args.input_mode == "era5-grid" else args.image_size
+            save_checkpoint(out_path, model, image_size=saved_size)
             print(f"  saved best model to {out_path} ({args.select_metric}={abs(score):.4f})")
         else:
             epochs_without_improvement += 1
