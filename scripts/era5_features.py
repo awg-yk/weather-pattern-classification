@@ -193,6 +193,11 @@ def main():
     parser.add_argument("--years", type=int, nargs="+", required=True)
     parser.add_argument("--out", default="data/era5_features.csv")
     parser.add_argument(
+        "--season",
+        action="store_true",
+        help="日付から季節の特徴量を作る。推論時にも日付は分かるので反則ではない",
+    )
+    parser.add_argument(
         "--filename-format",
         default="Js_{:%Y%m%d%H}.png",
         help="ラベルCSVのfilename列に合わせる書式",
@@ -224,6 +229,15 @@ def main():
 
     df = pd.concat(frames, ignore_index=True).sort_values("datetime").reset_index(drop=True)
     df.insert(0, "filename", [args.filename_format.format(t) for t in df["datetime"]])
+
+    if args.season:
+        # 1年周期のsin/cosで表す。1月1日と12月31日が近い値になるので、
+        # 「月」をそのまま数値で与えるより季節の連続性を正しく表せる。
+        day = df["datetime"].dt.dayofyear
+        angle = 2 * np.pi * day / 365.25
+        df["season_sin"] = np.sin(angle)
+        df["season_cos"] = np.cos(angle)
+        print("季節の特徴量(season_sin, season_cos)を追加しました")
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -44,6 +44,13 @@ def main():
     parser.add_argument("--labels", default="data/labels.csv")
     parser.add_argument("--years", type=int, nargs="+", default=[2023, 2024, 2025])
     parser.add_argument(
+        "--months",
+        type=int,
+        nargs="+",
+        default=None,
+        help="この月だけで測る。暖候期に限れば「季節を当てているだけ」かを切り分けられる",
+    )
+    parser.add_argument(
         "--detail",
         default=None,
         help="1つのラベルについて、全特徴量の係数と単独AUCを表示する(例: okhotsk_high)",
@@ -65,6 +72,11 @@ def main():
         )
     df["year"] = pd.to_datetime(df["datetime"]).dt.year
     df = df[df["year"].isin(args.years)].reset_index(drop=True)
+    if args.months:
+        before = len(df)
+        month = pd.to_datetime(df["datetime"]).dt.month
+        df = df[month.isin(args.months)].reset_index(drop=True)
+        print(f"月を {sorted(args.months)} に限定: {before}件 → {len(df)}件")
     print(f"ラベル{len(labels)}件 / 特徴量{len(feats)}件 → 結合{len(df)}件\n")
 
     feature_cols = [c for c in feats.columns if c not in ("filename", "datetime")]
@@ -110,7 +122,8 @@ def main():
     print("\n--- ラベルごとに効いている特徴量(上位3件) ---")
     for label in LABELS:
         y = df["parsed_labels"].apply(lambda ls, l=label: l in ls).to_numpy(dtype=int)
-        if y.sum() < 5:
+        # --months で絞ると、全件が陽性(または陰性)になるラベルが出うる
+        if y.sum() < 5 or y.sum() == len(y):
             continue
         model = make_pipeline(
             StandardScaler(), LogisticRegression(max_iter=2000, class_weight="balanced")
@@ -128,6 +141,11 @@ def _detail(label, X, df, feature_cols):
     見たときの判別力。両方見ないと「他と組んで初めて効く量」を見落とす。
     """
     y = df["parsed_labels"].apply(lambda ls, l=label: l in ls).to_numpy(dtype=int)
+    if y.sum() in (0, len(y)):
+        raise SystemExit(
+            f"{LABEL_JA[label]} は、絞り込んだ{len(y)}件すべてが"
+            f"{'陽性' if y.sum() else '陰性'}のため比較できません。--months を広げてください。"
+        )
     model = make_pipeline(
         StandardScaler(), LogisticRegression(max_iter=2000, class_weight="balanced")
     ).fit(X, y)
