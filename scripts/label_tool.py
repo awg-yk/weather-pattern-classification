@@ -291,6 +291,33 @@ def run_review_session(
     show_current()
 
 
+def positives_union(labels_csv, review_csvs, label: str = "okhotsk_high") -> list:
+    """「一度でも あり とした」天気図のファイル名を集める。
+
+    labels.csvで陽性の行と、これまでの見直しで yes と答えた行の和集合。
+    基準を1つに決め直すとき、この集合だけを見ればよい——どちらの基準で
+    拾ったものも漏れなく入っており、片方の回で落とした事例も検討し直せる。
+
+    ここに入らない天気図(どの回でも「なし」だったもの)は対象外になるので、
+    この作業で新たな見落としを拾うことはできない。基準を揃えるための工程であって、
+    再現性を測る工程ではない。
+    """
+    names = set()
+    labels = pd.read_csv(labels_csv)
+    for filename, value in zip(labels["filename"], labels["label"]):
+        if label in str(value).split("|"):
+            names.add(filename)
+
+    for path in review_csvs or []:
+        path = Path(path)
+        if not path.exists():
+            print(f"  {path} が見つかりません(飛ばします)")
+            continue
+        review = pd.read_csv(path)
+        names.update(review.loc[review["answer"] == "yes", "filename"])
+    return sorted(names)
+
+
 def run_binary_review_session(
     images_dir: str,
     labels_csv: str,
@@ -300,6 +327,7 @@ def run_binary_review_session(
     seed: int = 42,
     years: list | None = None,
     months: list | None = None,
+    filenames: list | None = None,
 ):
     """1つのラベルについて「あり/なし」だけを、元の答えを伏せて判定し直す。
 
@@ -315,6 +343,8 @@ def run_binary_review_session(
 
     months に月のリストを渡すと、その月の画像だけを対象にする。
     sample に None を渡すと抽出せず、対象すべてを順に見る。
+    filenames にファイル名のリストを渡すと、その画像だけを対象にする
+    (positives_union と組み合わせて、陽性候補だけを見直すときに使う)。
 
     途中で止めても、既に答えた分は飛ばして続きから再開できる。
     """
@@ -327,6 +357,9 @@ def run_binary_review_session(
         years = {int(y) for y in years}
         year_of = df["filename"].str.extract(_DATE_PATTERN)[0].str.slice(0, 4)
         df = df[pd.to_numeric(year_of, errors="coerce").isin(years)]
+
+    if filenames:
+        df = df[df["filename"].isin(set(filenames))]
 
     if months:
         months = {int(m) for m in months}
