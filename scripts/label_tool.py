@@ -54,6 +54,10 @@ from PIL import Image
 
 from src.labels import LABELS, LABEL_JA
 
+# 直前に開いた判定画面。セルを実行し直したときに古い画面を閉じるために覚えておく。
+# 閉じないと、押しても何も起きない画面が積み重なって画像が何枚も並んでしまう。
+_ACTIVE_SESSION = []
+
 SKIP_LABEL = "unclassified"
 SKIP_LABEL_JA = "わからない/該当なし"
 
@@ -426,6 +430,11 @@ def run_binary_review_session(
         state["idx"] += 1
         show_current()
 
+    # 前回の画面が残っていれば閉じる(セルの再実行やカーネル未再起動への備え)
+    for widget in _ACTIVE_SESSION:
+        widget.close()
+    _ACTIVE_SESSION.clear()
+
     yes_button = widgets.Button(description=f"あり (1)", button_style="success")
     yes_button.on_click(lambda _: record("yes"))
     no_button = widgets.Button(description="なし (0)", button_style="")
@@ -433,7 +442,7 @@ def run_binary_review_session(
     unsure_button = widgets.Button(description="わからない", button_style="warning")
     unsure_button.on_click(lambda _: record("unsure"))
 
-    display(
+    panel = widgets.VBox([
         widgets.HTML(
             f"<b>{LABEL_JA[label]}</b> が該当するかだけを判定してください。"
             "以前の答えは表示していません(引きずられないようにするため)。"
@@ -441,5 +450,7 @@ def run_binary_review_session(
         widgets.HBox([yes_button, no_button, unsure_button]),
         progress_label,
         output,
-    )
+    ])
+    _ACTIVE_SESSION.append(panel)
+    display(panel)
     show_current()
