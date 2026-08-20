@@ -45,10 +45,18 @@ def main():
     parser.add_argument("--out", required=True, help="結果を書き出すCSV")
     parser.add_argument(
         "--hour",
-        type=int,
-        default=0,
-        choices=[0, 12],
-        help="使う観測時刻(UTC)。0Zは日本時間9時、12Zは21時",
+        default="0",
+        choices=["0", "12", "both"],
+        help="使う観測時刻(UTC)。0Zは日本時間9時、12Zは21時。"
+        "bothは両方を見て1つにまとめる(--combineで方法を選ぶ)",
+    )
+    parser.add_argument(
+        "--combine",
+        default="mean",
+        choices=["mean", "max"],
+        help="--hour both のときの統合方法。"
+        "mean=2時刻の確率を平均(安定)、max=確信度が高い方の時刻を採用。"
+        "モデルは自信過剰なので、maxは「正しい方」ではなく「極端な方」を選びうる",
     )
     parser.add_argument(
         "--cache-dir",
@@ -101,25 +109,58 @@ def main():
     df = df.dropna(subset=[args.date_column]).reset_index(drop=True)
     print(f"対象: {len(df)}件({df[args.date_column].min():%Y-%m-%d} 〜 {df[args.date_column].max():%Y-%m-%d})\n")
 
+    def predict(target, hour):
+        """1つの日時の天気図を取得して、全ラベルの確率を返す。"""
+        image_path = fetch_chart(
+            target.isoformat(), hour=hour,
+            cache_dir=args.cache_dir, poppler_path=args.poppler_path,
+        )
+        image = Image.open(image_path).convert("RGB")
+        image = mask_stamp_box(autocrop_to_content(image), DEFAULT_STAMP_BOX)
+        tensor = transform(image).unsqueeze(0).to(device)
+        with torch.no_grad():
+            return torch.stack([torch.sigmoid(m(tensor))[0].cpu() for m in models]).mean(dim=0)
+
+    hours = [0, 12] if args.hour == "both" else [int(args.hour)]
     records = []
     failures = []
+    disagreements = 0
+    both_hours = 0
     for i, stamp in enumerate(df[args.date_column], start=1):
         target = stamp.date()
         row = {args.date_column: target.isoformat()}
         try:
-            image_path = fetch_chart(
-                target.isoformat(),
-                hour=args.hour,
-                cache_dir=args.cache_dir,
-                poppler_path=args.poppler_path,
-            )
-            image = Image.open(image_path).convert("RGB")
-            image = mask_stamp_box(autocrop_to_content(image), DEFAULT_STAMP_BOX)
-            tensor = transform(image).unsqueeze(0).to(device)
-            with torch.no_grad():
-                probs = torch.stack(
-                    [torch.sigmoid(m(tensor))[0].cpu() for m in models]
-                ).mean(dim=0)
+            by_hour = {}
+            errors = []
+            for hour in hours:
+                try:
+                    by_hour[hour] = predict(target, hour)
+                except Exception as e:
+                    errors.append(f"{hour:02d}Z: {e}")
+            if not by_hour:
+                raise RuntimeError(" / ".join(errors))
+
+            if len(by_hour) == 1:
+                probs = next(iter(by_hour.values()))
+            elif args.combine == "mean":
+                probs = torch.stack(list(by_hour.values())).mean(dim=0)
+            else:
+                # 各時刻の最大確率を比べ、高い方の時刻の予測をそのまま使う
+                probs = max(by_hour.values(), key=lambda p: float(p.max()))
+
+            note = ""
+            if len(by_hour) == 2:
+                both_hours += 1
+                tops = {h: INDEX_TO_LABEL[int(torch.argmax(p))] for h, p in by_hour.items()}
+                for hour, p in by_hour.items():
+                    best_h = int(torch.argmax(p))
+                    row[f"気圧配置_{hour:02d}Z"] = LABEL_JA[INDEX_TO_LABEL[best_h]]
+                    row[f"確信度_{hour:02d}Z"] = round(float(p[best_h]), 4)
+                if tops[0] != tops[12]:
+                    disagreements += 1
+                    note = f"  ※00Zと12Zで判定が異なる({LABEL_JA[tops[0]]} / {LABEL_JA[tops[12]]})"
+            elif hours == [0, 12]:
+                note = f"  ※{'12' if 0 in by_hour else '00'}Zは取得できず片方のみ"
 
             best = int(torch.argmax(probs))
             label = INDEX_TO_LABEL[best]
@@ -129,7 +170,8 @@ def main():
             if args.all_probabilities:
                 for idx, name in INDEX_TO_LABEL.items():
                     row[f"p_{name}"] = round(float(probs[idx]), 4)
-            print(f"[{i:>3}/{len(df)}] {target} -> {LABEL_JA[label]} ({probs[best] * 100:.1f}%)")
+            print(f"[{i:>3}/{len(df)}] {target} -> {LABEL_JA[label]} "
+                  f"({probs[best] * 100:.1f}%){note}")
         except Exception as e:
             row["気圧配置"] = ""
             row["ラベル"] = ""
@@ -155,6 +197,12 @@ def main():
         bar = "█" * round(count / total * 30)
         print(f"  {name:<22}{count:>4}件 ({count / total * 100:>5.1f}%) {bar}")
     print(f"  {'合計':<22}{total:>4}件")
+
+    if len(hours) == 2 and both_hours:
+        print(f"\n00Zと12Zで判定が分かれた日: {disagreements}件 / {both_hours}件 "
+              f"({disagreements / both_hours * 100:.0f}%)")
+        print("  同じ日でもどちらの天気図を見るかで結果が変わる割合。"
+              "この手法の再現性の目安になる。")
 
     if failures:
         print(f"\n取得できなかった日付: {len(failures)}件")
