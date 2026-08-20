@@ -21,6 +21,9 @@ uvicorn[standard]
 python-multipart
 tqdm
 ipywidgets
+# テスト(tests/)。python -m pytest で実行する
+pytest
+
 # ラベリングはノートブック上で動く（notebooks/labeling.ipynb）
 jupyter
 ipykernel
