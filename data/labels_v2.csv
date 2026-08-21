@@ -33,7 +33,7 @@ Js_2025053100.png,nankigan_low|okhotsk_high,jma_manual,20250531
 Js_2025060100.png,nankigan_low|migratory_high|okhotsk_high,jma_manual,20250601
 Js_2025060200.png,migratory_high|front_passage,jma_manual,20250602
 Js_2025060300.png,nankigan_low|front_passage,jma_manual,20250603
-Js_2025060400.png,nankigan_low|futatsudama_low,jma_manual,20250604
+Js_2025060400.png,futatsudama_low,jma_manual,20250604
 Js_2025060500.png,migratory_high,jma_manual,20250605
 Js_2025060600.png,pacific_high|stationary_front,jma_manual,20250606
 Js_2025060700.png,pacific_high|stationary_front,jma_manual,20250607
@@ -214,7 +214,7 @@ Js_2025112800.png,futatsudama_low,jma_manual,20251128
 Js_2025112900.png,migratory_high,jma_manual,20251129
 Js_2025113000.png,japan_sea_low|migratory_high,jma_manual,20251130
 Js_2025120100.png,japan_sea_low,jma_manual,20251201
-Js_2025120200.png,japan_sea_low|futatsudama_low,jma_manual,20251202
+Js_2025120200.png,futatsudama_low,jma_manual,20251202
 Js_2025120300.png,nankigan_low,jma_manual,20251203
 Js_2025120400.png,winter_pressure_pattern,jma_manual,20251204
 Js_2025120500.png,winter_pressure_pattern,jma_manual,20251205
@@ -250,7 +250,7 @@ Js_2026010300.png,winter_pressure_pattern,jma_manual,20260103
 Js_2026010400.png,winter_pressure_pattern,jma_manual,20260104
 Js_2026010500.png,winter_pressure_pattern,jma_manual,20260105
 Js_2026010600.png,winter_pressure_pattern,jma_manual,20260106
-Js_2026010700.png,japan_sea_low|futatsudama_low,jma_manual,20260107
+Js_2026010700.png,futatsudama_low,jma_manual,20260107
 Js_2026010800.png,front_passage,jma_manual,20260108
 Js_2026010900.png,winter_pressure_pattern,jma_manual,20260109
 Js_2026011000.png,japan_sea_low,jma_manual,20260110
@@ -270,8 +270,8 @@ Js_2026012300.png,winter_pressure_pattern,jma_manual,20260123
 Js_2026012400.png,winter_pressure_pattern,jma_manual,20260124
 Js_2026012500.png,winter_pressure_pattern,jma_manual,20260125
 Js_2026012600.png,winter_pressure_pattern,jma_manual,20260126
-Js_2026012700.png,japan_sea_low|futatsudama_low,jma_manual,20260127
-Js_2026012800.png,japan_sea_low|futatsudama_low,jma_manual,20260128
+Js_2026012700.png,futatsudama_low,jma_manual,20260127
+Js_2026012800.png,futatsudama_low,jma_manual,20260128
 Js_2026012900.png,japan_sea_low,jma_manual,20260129
 Js_2026013000.png,japan_sea_low,jma_manual,20260130
 Js_2026013100.png,winter_pressure_pattern,jma_manual,20260131
@@ -306,7 +306,7 @@ Js_2026022800.png,nankigan_low,jma_manual,20260228
 Js_2026030100.png,winter_pressure_pattern,jma_manual,20260301
 Js_2026030200.png,winter_pressure_pattern,jma_manual,20260302
 Js_2026030300.png,nankigan_low,jma_manual,20260303
-Js_2026030400.png,nankigan_low|futatsudama_low,jma_manual,20260304
+Js_2026030400.png,futatsudama_low,jma_manual,20260304
 Js_2026030500.png,nankigan_low,jma_manual,20260305
 Js_2026030600.png,japan_sea_low,jma_manual,20260306
 Js_2026030700.png,futatsudama_low,jma_manual,20260307
@@ -321,8 +321,8 @@ Js_2026031500.png,unclassified,jma_manual,20260315
 Js_2026031600.png,migratory_high,jma_manual,20260316
 Js_2026031700.png,migratory_high,jma_manual,20260317
 Js_2026031800.png,nankigan_low|migratory_high,jma_manual,20260318
-Js_2026031900.png,nankigan_low|futatsudama_low,jma_manual,20260319
-Js_2026032000.png,japan_sea_low|futatsudama_low,jma_manual,20260320
+Js_2026031900.png,futatsudama_low,jma_manual,20260319
+Js_2026032000.png,futatsudama_low,jma_manual,20260320
 Js_2026032100.png,migratory_high,jma_manual,20260321
 Js_2026032200.png,migratory_high,jma_manual,20260322
 Js_2026032300.png,nankigan_low,jma_manual,20260323
@@ -382,7 +382,7 @@ Js_2025031212.png,stationary_front,jma_manual,20250312
 Js_2025031312.png,stationary_front,jma_manual,20250313
 Js_2025031412.png,migratory_high,jma_manual,20250314
 Js_2025031512.png,migratory_high,jma_manual,20250315
-Js_2025031612.png,nankigan_low|futatsudama_low,jma_manual,20250316
+Js_2025031612.png,futatsudama_low,jma_manual,20250316
 Js_2025031712.png,unclassified,jma_manual,20250317
 Js_2025031812.png,futatsudama_low,jma_manual,20250318
 Js_2025031912.png,migratory_high,jma_manual,20250319
