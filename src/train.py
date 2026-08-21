@@ -401,6 +401,7 @@ def main():
     # macro F1で選ぶと、pos_weightで陽性寄りに出力する初期エポックが最高値を取り、
     # 実質未学習の重みが保存されてしまう(3つのfoldで実際に起きた)。
     best_score = float("-inf")
+    best_epoch = 0
     epochs_without_improvement = 0
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -439,6 +440,7 @@ def main():
         score = {"macro_ap": val_ap, "macro_f1": val_f1}.get(args.select_metric, -val_loss)
         if score > best_score:
             best_score = score
+            best_epoch = epoch
             epochs_without_improvement = 0
             # 保存先は同じ"image_size"フィールドを使い回す(grid modeでは実質grid_size)。
             # 推論側がここに保存された値をそのまま前処理サイズとして使うため、
@@ -451,6 +453,12 @@ def main():
             if epochs_without_improvement >= args.patience:
                 print(f"  {args.select_metric}が{args.patience}エポック改善しなかったため早期終了します")
                 break
+
+    # どのエポックが選ばれたかは、結果を読むときの前提になる。極端に早いエポックが
+    # 選ばれていれば、それ以降の学習が汎化を損なっているということ(格子入力で実際に
+    # 起きた: エポック1の重みがエポック24の重みよりテストで良かった)。
+    print(f"\nベストはエポック {best_epoch}/{args.epochs} "
+          f"({args.select_metric}={abs(best_score):.4f}) -- 経過は {history_path}")
 
 
 if __name__ == "__main__":
