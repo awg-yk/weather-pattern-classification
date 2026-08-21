@@ -359,3 +359,42 @@ def test_apply_label_rule_writes_nothing_without_apply(tmp_path):
     )
     assert labels_csv.read_text(encoding="utf-8") == original
     assert not labels_csv.with_suffix(".csv.bak").exists()
+
+
+def test_review_cli_saves_each_answer_and_resumes(tmp_path):
+    """1枚ごとに保存し、中断しても続きから再開できること。
+
+    見直しは途中で止まる。まとめて最後に書く作りだと、そこまでの判定が消える。
+    """
+    import subprocess
+    import sys
+
+    from PIL import Image
+
+    images = tmp_path / "imgs"
+    images.mkdir()
+    names = [f"Js_2024050{i}00.png" for i in range(1, 4)]
+    for name in names:
+        Image.new("RGB", (8, 8)).save(images / name)
+    candidates = tmp_path / "cand.csv"
+    pd.DataFrame({"filename": names, "kind": ["needs_judgement"] * 3}).to_csv(
+        candidates, index=False)
+    out_csv = tmp_path / "out.csv"
+
+    def run(keys):
+        return subprocess.run(
+            [sys.executable, "-m", "scripts.review_cli", "--images-dir", str(images),
+             "--label", "futatsudama_low", "--candidates", str(candidates),
+             "--out-csv", str(out_csv)],
+            input=keys, capture_output=True, text=True,
+        )
+
+    run("y\nq\n")  # 1枚答えて中断
+    saved = pd.read_csv(out_csv)
+    assert list(saved["answer"]) == ["yes"]
+
+    out = run("n\nu\n").stdout  # 残り2枚
+    assert "残り2件(判定済み1件)" in out
+    assert list(pd.read_csv(out_csv)["answer"]) == ["yes", "no", "unsure"]
+
+    assert "すべて判定済み" in run("").stdout
