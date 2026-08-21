@@ -8,6 +8,69 @@
 > **数字は `data/labels_v2.csv` で測ったもの**(runs/v2_chart・runs/v2_grid)。
 > `labels.csv` で測った旧版との違いは「ラベルを直して何が変わったか」に書いた。
 
+## いま走っていること / 次にやること
+
+**`--val-mode spread` の交差検証を実行中**(2026-08-21 時点で1fold目)。
+
+```bash
+python -m scripts.cross_validate --data-dir <画像> --labels data/labels_v2.csv \
+    --years 2023 2024 2025 --val-mode spread --out-dir runs/v2_chart_spread
+python -m scripts.cross_validate --input-mode era5-grid --arch small_cnn --coordconv \
+    --labels data/labels_v2.csv --years 2023 2024 2025 --val-mode spread \
+    --out-dir runs/v2_grid_spread
+python -m scripts.compare_runs runs/v2_chart runs/v2_chart_spread \
+    runs/v2_grid runs/v2_grid_spread --exclude front_passage stationary_front
+```
+
+見たいのは2つ。**結論(天気図>格子、okhotsk_highだけ逆転)が変わらないこと**と、
+**前線2ラベルが改善すること**。検証の季節偏り(下の「欠陥3」)は一日で4回問題を
+起こしており、`spread` でも同じ結論なら「検証の取り方に依存しない」と書ける。
+学習データは1147→900件程度に減るので、全体は少し下がるかもしれない。
+
+その後の優先順位:
+
+1. **ERA5のチャンネル追加**(いまは海面更正気圧と850hPa気温だけ)。前線が格子で
+   弱い(0.430対0.718)のは「記号だから無い」のか「気圧と気温だけでは判断できない」
+   のか、まだ切り分けていない。500hPa高度・風・相当温位を足せば分かる。
+   **現在の結論の解釈に直接関わる。**
+2. **futatsudama_low の判定基準を `src/labels.py` に書く**(下記)。
+3. **2000〜2022年のラベリング**。天気図15,522枚は取得済み、ERA5も取得可能。
+   希少ラベル(futatsudama_low 112件、okhotsk_high 199件)にはこれ以外の道がない。
+
+### このページの数字を測ったあとで、ラベルを15件直した
+
+- `apply_label_rule` で9件(futatsudama_low に個別の低気圧ラベルが併記されていた分)
+- `apply_review` で6件(盲検レビューで yes と判定した分。13件中6件)
+
+2401件中15件(0.6%)なので影響は小さいはずだが、厳密には
+`runs/v2_chart` / `runs/v2_grid` はこの修正の前のラベルで測っている。
+
+### futatsudama_low の判定基準は、まだ言語化されていない
+
+13件の盲検レビューは 6 yes / 7 no / **0 unsure** に割れた。迷いなく割れたということは、
+「日本海と南岸に低気圧がある」だけでは決まらず、勢力の均衡や同時性といった条件で
+判断しているということ。**その条件がどこにも書かれていない。** 判定した本人が
+覚えているうちに `src/labels.py` に書き足すこと。
+
+## ラベルの再現性が、性能の上限になっている可能性
+
+`notebooks/okhotsk_review.ipynb` に、okhotsk_high を同じ人が2回判定した結果が
+記録されている -- **κ = 0.464 / 人間どうしのF1 = 0.500**。
+
+| | F1 |
+|---|---|
+| 人間の再現性(okhotsk_high) | 0.500 |
+| ERA5格子モデル | 0.470 |
+| 天気図モデル | 0.319 |
+
+**格子モデルは既に人間の再現性とほぼ同じ水準にある。** ラベル自体が0.50程度しか
+安定していないなら、それを超えるF1は原理的に出ない。0.470は「まだ低い」のではなく
+「天井に近い」と読むべきかもしれない。
+
+この観点はまだ他のラベルで測っていない。**モデルの性能ではなく、ラベルの再現性という
+上限に対してどこまで来ているかで議論すべきラベルがある**ということで、報告の枠組みに
+関わる。futatsudama_low は0 unsureだったので、okhotsk_highほど曖昧ではなさそう。
+
 ## 問い
 
 天気図の画像と、その元になっているERA5の気圧場。気圧配置の分類にはどちらが有効か。
