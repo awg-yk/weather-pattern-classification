@@ -290,3 +290,33 @@ def test_loyo_says_which_years_are_missing_instead_of_failing_on_a_date(tmp_path
     })
     with pytest.raises(ValueError, match="学習に回す年"):
         make_splits(df, mode="loyo", val_ratio=0.2, test_ratio=0.0, test_year=2026)
+
+
+def test_label_stats_counts_the_pair_that_should_imply_a_label(tmp_path, capsys):
+    """「この2つが揃うなら本来こう付くはず」を数えられること。
+
+    件数だけを見ても、そのラベルが難しいのか基準が揺れているのかは分からない。
+    futatsudama_low は106件あるが japan_sea_low と nankigan_low の両方が付いた
+    ものは0件で、個別の2ラベルを置き換える運用になっていた -- こういう規約は
+    気象の知識で決まるので、引数で指定する。
+    """
+    import subprocess
+    import sys
+
+    rows = (["futatsudama_low"] * 5
+            + ["japan_sea_low"] * 4
+            + ["japan_sea_low|nankigan_low"] * 3)
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame({
+        "filename": [f"Js_2023{i // 28 + 1:02d}{i % 28 + 1:02d}00.png" for i in range(len(rows))],
+        "label": rows,
+    }).to_csv(labels_csv, index=False)
+
+    out = subprocess.run(
+        [sys.executable, "-m", "scripts.label_stats", "--labels", str(labels_csv),
+         "--label", "futatsudama_low",
+         "--implied-by", "japan_sea_low", "nankigan_low"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "あり: 0件" in out
+    assert "なし: 3件" in out
