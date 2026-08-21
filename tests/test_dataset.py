@@ -97,3 +97,33 @@ def test_year_filter_keeps_rows_and_features_aligned(workspace):
     )
     assert len(dataset) == len(dataset.features)
     assert (dataset.df["parsed_datetime"].dt.year == 2024).all()
+
+
+def test_images_are_matched_by_timestamp_not_exact_filename(tmp_path):
+    """同じ観測時刻を指していれば、表記が違っても突き合わせられること。
+
+    気象庁から取ったものは Js_2025050100.png、国会図書館から取ったものは
+    JS_2025050100_page001.jpg。厳密一致で照合すると、画像は手元にあるのに
+    「見つからない」と言って学習が始まらない。
+    """
+    from PIL import Image
+
+    from src.dataset import WeatherMapDataset
+
+    images = tmp_path / "imgs"
+    images.mkdir()
+    stamps = ["2023010100", "2023010112"]
+    for i, stamp in enumerate(stamps):
+        prefix = "JS" if i else "Js"
+        Image.new("RGB", (16, 16)).save(images / f"{prefix}_{stamp}_page001.jpg")
+
+    labels = tmp_path / "labels.csv"
+    pd.DataFrame({
+        "filename": [f"Js_{s}.png" for s in stamps],
+        "label": ["winter_pressure_pattern"] * len(stamps),
+    }).to_csv(labels, index=False)
+
+    dataset = WeatherMapDataset(images, labels)
+    assert len(dataset) == len(stamps)
+    # 実際に開けるパスが解決されている
+    assert dataset.df["image_path"].iloc[0].exists()

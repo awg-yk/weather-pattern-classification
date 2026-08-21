@@ -26,6 +26,27 @@ def parse_datetime(filename: str, date_field=None) -> pd.Timestamp:
     return pd.to_datetime(raw, format="%Y%m%d%H", errors="coerce")
 
 
+def index_images_by_stamp(images_dir: Path) -> dict:
+    """画像ディレクトリを、ファイル名中のYYYYMMDDHH 10桁で引けるようにする。
+
+    labels.csvのfilenameと実ファイル名は、同じ観測時刻を指していても表記が揃わない
+    -- 気象庁から取ったものは Js_2025050100.png、国会図書館から取ったものは
+    JS_2025050100_page001.jpg のように、接頭辞の大小・接尾辞・拡張子が違う。
+    厳密一致で照合すると、画像は手元にあるのに「見つからない」と言って止まる。
+
+    同じ時刻に複数の候補があれば、名前順で最初のものを使う(同じ天気図の別変換版で
+    あることを想定している)。
+    """
+    index = {}
+    for path in sorted(images_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        match = _DATE_IN_FILENAME.search(path.name)
+        if match:
+            index.setdefault(match.group(0), path)
+    return index
+
+
 class WeatherMapDataset(Dataset):
     """labels.csv (filename,label,...) と画像ディレクトリからサンプルを返すマルチラベルDataset。
 
@@ -87,7 +108,11 @@ class WeatherMapDataset(Dataset):
 
         # 画像の実在チェックは学習を始める前にまとめて行う。__getitem__に任せると
         # 1エポック目の途中で落ち、そこまでの計算が無駄になるため。
-        missing = [fn for fn in df["filename"] if not (self.images_dir / fn).exists()]
+        available = index_images_by_stamp(self.images_dir)
+        resolved = [
+            available.get(stamp.strftime("%Y%m%d%H")) for stamp in df["parsed_datetime"]
+        ]
+        missing = [fn for fn, path in zip(df["filename"], resolved) if path is None]
         if missing:
             by_year = Counter(str(fn)[3:7] for fn in missing)
             raise FileNotFoundError(
@@ -95,8 +120,12 @@ class WeatherMapDataset(Dataset):
                 f"(対象{len(df)}件中)。\n"
                 f"  年別: {dict(sorted(by_year.items()))}\n"
                 f"  例  : {missing[:5]}\n"
+                f"  そのディレクトリで見つかった画像: {len(available)}件"
+                f"{'(例: ' + next(iter(available.values())).name + ')' if available else ''}\n"
                 "scripts/collect_jma.py で取得・変換し直してください。"
             )
+        # 照合できた実ファイルのパスを持ち回る。以降はfilenameではなくこれを読む。
+        df["image_path"] = resolved
 
         self.feature_cols = []
         self.features = None
@@ -125,7 +154,7 @@ class WeatherMapDataset(Dataset):
 
     def __getitem__(self, idx: int):
         row = self.df.iloc[idx]
-        img_path = self.images_dir / row["filename"]
+        img_path = row["image_path"]
         image = Image.open(img_path).convert("RGB")
         if self.transform:
             image = self.transform(image)
