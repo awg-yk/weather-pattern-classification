@@ -201,3 +201,42 @@ def test_ensemble_refuses_to_blend_rows_that_do_not_line_up():
 
     with pytest.raises(SystemExit, match="並びが揃っていません"):
         require_aligned(aligned, pd.DataFrame({"parsed_datetime": stamps[::-1]}))
+
+
+def test_blend_weight_is_chosen_per_label():
+    """得意分野が逆のラベルを、ひとつの重みで妥協させないこと。
+
+    一律の重みだと、天気図が強い台風(0.764対0.492)と格子が強いオホーツク海高気圧
+    (0.131対0.345)が同じ値を共有し、両方が損をした -- 混合0.607は天気図単独0.619を
+    下回った。ラベルごとに選べば、弱いほうのモデルは検証の時点で自然に外れる。
+    """
+    import numpy as np
+
+    from scripts.ensemble_chart_grid import per_label_weights
+
+    targets = np.zeros((200, 2))
+    targets[:80, 0] = 1
+    targets[:60, 1] = 1
+    # 1列目は天気図だけが当てられ、2列目は格子だけが当てられる
+    chart = np.stack([targets[:, 0], np.full(200, 0.5)], axis=1)
+    grid = np.stack([np.full(200, 0.5), targets[:, 1]], axis=1)
+
+    weights, thresholds = per_label_weights(
+        chart, grid, targets, np.round(np.arange(0, 1.01, 0.05), 2)
+    )
+    assert weights[0] < 0.3, "天気図が当てているラベルで格子に寄っている"
+    assert weights[1] > 0.7, "格子が当てているラベルで天気図に寄っている"
+    assert (thresholds > 0).all()
+
+
+def test_blend_weight_stays_neutral_for_labels_with_no_positives():
+    """検証データに1件も出ないラベルは、選びようがないので混ぜない。"""
+    import numpy as np
+
+    from scripts.ensemble_chart_grid import per_label_weights
+
+    targets = np.zeros((50, 1))
+    weights, _ = per_label_weights(
+        np.full((50, 1), 0.5), np.full((50, 1), 0.5), targets, np.array([0.0, 0.5, 1.0])
+    )
+    assert weights[0] == 0.0

@@ -65,6 +65,36 @@ def require_aligned(chart_df, grid_df) -> None:
         raise SystemExit(f"{mismatched}件で日時が一致しません。行の並びが揃っていません。")
 
 
+
+def per_label_weights(val_chart, val_grid, val_y, candidates):
+    """ラベルごとに、検証データで最も良い混合の重みと閾値を選ぶ。
+
+    重みを全ラベル共通の1つの値にすると、得意分野が逆のラベルどうしが妥協させ
+    られる。実測では、天気図が強い台風(0.764対0.492)と格子が強いオホーツク海
+    高気圧(0.131対0.345)が同じw=0.35前後を共有し、台風は0.711に落ち、オホーツクは
+    0.200に落ちた -- 全体でも天気図単独(0.619)を下回る0.607になった。
+
+    閾値は既にラベルごとに決めている。重みも同じ粒度で決めれば、そのラベルで
+    弱いほうのモデルは検証データを見た時点で自然に外れる。
+
+    陽性が1件も無いラベルは選びようがないので、混ぜない(天気図のみ)側に倒す。
+    """
+    weights = np.zeros(val_y.shape[1])
+    thresholds = np.full(val_y.shape[1], 0.5)
+    for i in range(val_y.shape[1]):
+        if val_y[:, i].sum() == 0:
+            continue
+        best = None
+        for w in candidates:
+            blended = (1 - w) * val_chart[:, i] + w * val_grid[:, i]
+            for threshold in np.round(np.arange(0.05, 1.0, 0.05), 2):
+                score = f1_score(val_y[:, i], (blended > threshold).astype(float), zero_division=0)
+                if best is None or score > best[0]:
+                    best = (score, w, threshold)
+        _, weights[i], thresholds[i] = best
+    return weights, thresholds
+
+
 def macro_f1(probs, targets, thresholds) -> float:
     return f1_score(targets, (probs > thresholds).astype(float), average="macro", zero_division=0)
 
@@ -139,18 +169,30 @@ def main():
                 best = {"w": float(w), "thresholds": thresholds, "val_f1": float(score)}
 
         test_blend = (1 - best["w"]) * test_chart + best["w"] * test_grid
+
+        # ラベルごとに重みを選ぶ場合(per_label_weightsを参照)
+        label_w, label_th = per_label_weights(val_chart, val_grid, val_y, weights)
+        test_per_label = (1 - label_w) * test_chart + label_w * test_grid
+
         scores = {
             "chart": macro_f1(test_chart, test_y, find_best_thresholds(val_chart, val_y)),
             "grid": macro_f1(test_grid, test_y, find_best_thresholds(val_grid, val_y)),
             "blend": macro_f1(test_blend, test_y, best["thresholds"]),
+            "per_label_blend": macro_f1(test_per_label, test_y, label_th),
         }
         trivial, _ = trivial_macro_f1(test_y)
 
         print(f"  検証で選ばれた重み w={best['w']:.2f}"
               f" (0=天気図のみ / 1=格子のみ, 検証macro F1 {best['val_f1']:.3f})")
         print(f"  テスト macro F1 -- 天気図 {scores['chart']:.3f}"
-              f" / 格子 {scores['grid']:.3f} / 混合 {scores['blend']:.3f}"
+              f" / 格子 {scores['grid']:.3f} / 一律の重みで混合 {scores['blend']:.3f}"
+              f" / ラベルごとの重みで混合 {scores['per_label_blend']:.3f}"
               f"   (自明な予測 {trivial:.3f})")
+        chosen = ", ".join(
+            "{} {:.2f}".format(LABEL_JA[label], label_w[i])
+            for i, label in enumerate(LABELS) if val_y[:, i].sum() > 0
+        )
+        print(f"  ラベルごとの重み: {chosen}")
 
         per_label = {}
         for i, label in enumerate(LABELS):
@@ -162,16 +204,19 @@ def main():
                     ("chart", test_chart, find_best_thresholds(val_chart, val_y)),
                     ("grid", test_grid, find_best_thresholds(val_grid, val_y)),
                     ("blend", test_blend, best["thresholds"]),
+                    ("per_label_blend", test_per_label, label_th),
                 )
             }
         per_fold.append({
             "test_year": test_year, "w": best["w"], "trivial_macro_f1": trivial,
             **{f"macro_f1_{k}": float(v) for k, v in scores.items()},
             "per_label": per_label,
+            "label_weights": {label: float(label_w[i]) for i, label in enumerate(LABELS)},
         })
 
     print(f"\n{'=' * 72}\nまとめ({len(per_fold)}fold)\n{'=' * 72}")
-    for key, name in (("chart", "天気図のみ"), ("grid", "ERA5格子のみ"), ("blend", "混合")):
+    for key, name in (("chart", "天気図のみ"), ("grid", "ERA5格子のみ"),
+                      ("blend", "混合(一律の重み)"), ("per_label_blend", "混合(ラベルごとの重み)")):
         values = [f[f"macro_f1_{key}"] for f in per_fold]
         base = statistics.mean([f["trivial_macro_f1"] for f in per_fold])
         sd = statistics.stdev(values) if len(values) > 1 else 0.0
@@ -182,18 +227,20 @@ def main():
     print(f"\n  選ばれた重み w: {chosen}  (0=天気図のみ / 1=格子のみ)")
 
     print(f"\n【ラベル別 F1(平均)】")
-    print(f"  {'ラベル':<24}{'天気図':>10}{'格子':>10}{'混合':>10}   混合の上積み")
-    print("  " + "-" * 68)
+    print(f"  {'ラベル':<24}{'天気図':>10}{'格子':>10}{'一律':>10}{'ラベル毎':>10}   上積み  重み")
+    print("  " + "-" * 78)
     for label in LABELS:
         values = {k: [f["per_label"][label][k] for f in per_fold if label in f["per_label"]]
-                  for k in ("chart", "grid", "blend")}
+                  for k in ("chart", "grid", "blend", "per_label_blend")}
         if not values["chart"]:
             continue
         means = {k: statistics.mean(v) for k, v in values.items()}
-        gain = means["blend"] - max(means["chart"], means["grid"])
+        gain = means["per_label_blend"] - max(means["chart"], means["grid"])
+        weight = statistics.mean([f["label_weights"][label] for f in per_fold])
         print(f"  {LABEL_JA[label]:<24}{means['chart']:>10.3f}{means['grid']:>10.3f}"
-              f"{means['blend']:>10.3f}   {gain:+.3f}")
-    print("\n  ※ 上積みは、天気図・格子の良いほうと混合との差")
+              f"{means['blend']:>10.3f}{means['per_label_blend']:>10.3f}   {gain:+.3f}  {weight:.2f}")
+    print("\n  ※ 上積みは、天気図・格子の良いほうと「ラベルごとの重みで混合」との差")
+    print("  ※ 重みは0=天気図のみ・1=格子のみ。foldごとに検証データで選んだ値の平均")
 
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
