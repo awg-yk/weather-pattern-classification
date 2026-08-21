@@ -44,6 +44,26 @@ def describe(summary: dict) -> str:
     return " / ".join(parts)
 
 
+
+def fold_trivial(fold: dict) -> float:
+    """そのfoldで「全部を陽性と答える」だけで得られるmacro F1。
+
+    src/evaluate.py が記録するようになる前の結果でも、per_labelのsupportと
+    n_evalから出現率を復元できるので、学習をやり直さずに基準を当てられる。
+    """
+    if "trivial_macro_f1" in fold:
+        return fold["trivial_macro_f1"]
+    n = fold.get("n_eval")
+    if not n:
+        return float("nan")
+    scores = []
+    for stats in fold["per_label"].values():
+        prevalence = stats["support"] / n
+        if prevalence > 0:
+            scores.append(2 * prevalence / (1 + prevalence))
+    return statistics.mean(scores) if scores else float("nan")
+
+
 def per_fold_macro(summary: dict, labels: list) -> list:
     """foldごとに、指定したラベルだけでmacro F1を取り直す。
 
@@ -91,15 +111,17 @@ def main():
     print("-" * 72)
     for path, summary in summaries:
         full = [f["macro_f1_evaluable"] for f in summary["folds"]]
-        trivial = [f["trivial_macro_f1"] for f in summary["folds"] if "trivial_macro_f1" in f]
+        trivial = [t for t in map(fold_trivial, summary["folds"]) if t == t]
         subset = per_fold_macro(summary, kept)
         delta = statistics.mean(subset) - statistics.mean(full)
         print(f"{path.name:<28} {statistics.mean(full):>10.3f} {statistics.mean(subset):>10.3f}   {delta:+.3f}")
+        print(f"  {describe(summary)}")
         if trivial:
             base = statistics.mean(trivial)
-            print(f"  {describe(summary)}  [自明な予測 {base:.3f} / 上積み {statistics.mean(full) - base:+.3f}]")
-        else:
-            print(f"  {describe(summary)}")
+            margin = statistics.mean(full) - base
+            flag = "  ← 自明な予測を上回っていません" if margin <= 0 else ""
+            print(f"  全部を陽性と答えるだけの macro F1: {base:.3f}"
+                  f"  → 上積み {margin:+.3f}{flag}")
         line = f"  除外後の各fold: {', '.join(f'{s:.3f}' for s in subset)}"
         if len(subset) > 1:
             line += f"  (標準偏差 {statistics.stdev(subset):.3f})"
