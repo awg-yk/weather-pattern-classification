@@ -217,15 +217,17 @@ def test_blend_weight_is_chosen_per_label():
     targets = np.zeros((200, 2))
     targets[:80, 0] = 1
     targets[:60, 1] = 1
-    # 1列目は天気図だけが当てられ、2列目は格子だけが当てられる
-    chart = np.stack([targets[:, 0], np.full(200, 0.5)], axis=1)
-    grid = np.stack([np.full(200, 0.5), targets[:, 1]], axis=1)
+    # 1列目は天気図が当て格子が外す、2列目はその逆。外すほうは単に無情報なのでは
+    # なく正解の逆を出す -- 無情報(定数)だと、ごく小さい重みでも分離できてしまい
+    # 最適な重みが一意に決まらない。
+    chart = np.stack([targets[:, 0], 1 - targets[:, 1]], axis=1)
+    grid = np.stack([1 - targets[:, 0], targets[:, 1]], axis=1)
 
     weights, thresholds = per_label_weights(
         chart, grid, targets, np.round(np.arange(0, 1.01, 0.05), 2)
     )
-    assert weights[0] < 0.3, "天気図が当てているラベルで格子に寄っている"
-    assert weights[1] > 0.7, "格子が当てているラベルで天気図に寄っている"
+    assert weights[0] < 0.5, "天気図が当てているラベルで格子に寄っている"
+    assert weights[1] > 0.5, "格子が当てているラベルで天気図に寄っている"
     assert (thresholds > 0).all()
 
 
