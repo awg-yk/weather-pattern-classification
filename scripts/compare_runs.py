@@ -45,20 +45,22 @@ def describe(summary: dict) -> str:
 
 
 
-def fold_trivial(fold: dict) -> float:
-    """そのfoldで「全部を陽性と答える」だけで得られるmacro F1。
+def fold_trivial(fold: dict, labels: list) -> float:
+    """そのfoldで「全部を陽性と答える」だけで得られる、指定ラベルでのmacro F1。
 
-    src/evaluate.py が記録するようになる前の結果でも、per_labelのsupportと
-    n_evalから出現率を復元できるので、学習をやり直さずに基準を当てられる。
+    ラベルを絞って平均を取り直すなら、基準も同じラベルで取り直さないと比べられない
+    -- 前線2つは出現率が高く(停滞前線は3割)、基準を押し上げているので、外したまま
+    全ラベルの基準と比べると上積みを過大評価する。
+
+    出現率はper_labelのsupportとn_evalから復元する。src/evaluate.pyが基準を
+    記録するようになる前の結果でも当てられるようにするため。
     """
-    if "trivial_macro_f1" in fold:
-        return fold["trivial_macro_f1"]
     n = fold.get("n_eval")
     if not n:
         return float("nan")
     scores = []
-    for stats in fold["per_label"].values():
-        prevalence = stats["support"] / n
+    for label in labels:
+        prevalence = fold["per_label"][label]["support"] / n
         if prevalence > 0:
             scores.append(2 * prevalence / (1 + prevalence))
     return statistics.mean(scores) if scores else float("nan")
@@ -111,17 +113,20 @@ def main():
     print("-" * 72)
     for path, summary in summaries:
         full = [f["macro_f1_evaluable"] for f in summary["folds"]]
-        trivial = [t for t in map(fold_trivial, summary["folds"]) if t == t]
+        trivial_full = [t for t in (fold_trivial(f, LABELS) for f in summary["folds"]) if t == t]
+        trivial_kept = [t for t in (fold_trivial(f, kept) for f in summary["folds"]) if t == t]
         subset = per_fold_macro(summary, kept)
         delta = statistics.mean(subset) - statistics.mean(full)
         print(f"{path.name:<28} {statistics.mean(full):>10.3f} {statistics.mean(subset):>10.3f}   {delta:+.3f}")
         print(f"  {describe(summary)}")
-        if trivial:
-            base = statistics.mean(trivial)
-            margin = statistics.mean(full) - base
-            flag = "  ← 自明な予測を上回っていません" if margin <= 0 else ""
-            print(f"  全部を陽性と答えるだけの macro F1: {base:.3f}"
-                  f"  → 上積み {margin:+.3f}{flag}")
+        if trivial_full:
+            base_full = statistics.mean(trivial_full)
+            base_kept = statistics.mean(trivial_kept)
+            margin_full = statistics.mean(full) - base_full
+            margin_kept = statistics.mean(subset) - base_kept
+            flag = "  ← 自明な予測を上回っていません" if margin_kept <= 0 else ""
+            print(f"  自明な予測(全部陽性): 全ラベル {base_full:.3f} / 除外後 {base_kept:.3f}")
+            print(f"  上積み:               全ラベル {margin_full:+.3f} / 除外後 {margin_kept:+.3f}{flag}")
         line = f"  除外後の各fold: {', '.join(f'{s:.3f}' for s in subset)}"
         if len(subset) > 1:
             line += f"  (標準偏差 {statistics.stdev(subset):.3f})"

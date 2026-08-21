@@ -77,6 +77,18 @@ def _macro_ap(targets, scores) -> float:
     return float(np.mean(scores_per_label)) if scores_per_label else float("nan")
 
 
+def _chance_ap(targets) -> float:
+    """当てずっぽうのmacro AP。ラベルごとのAPは、順位付けに情報が無ければ出現率に等しい。
+
+    APの絶対値は出現率で決まるので、基準を出さずに見ると解釈を誤る。実際、
+    学習データの出現率から出した基準を、季節が偏った検証セット(8〜12月)の
+    val_apと比べて「学習できていない」と読み違えた。基準は必ず同じデータから取る。
+    """
+    prevalence = targets.mean(axis=0)
+    present = prevalence > 0
+    return float(prevalence[present].mean()) if present.any() else float("nan")
+
+
 def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshold: float = 0.5):
     """マルチラベル学習: labelsは各クラス0/1のmulti-hotベクトル、BCEで学習する。
 
@@ -122,7 +134,8 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshol
     macro_f1 = f1_score(
         targets, torch.cat(all_preds).numpy(), average="macro", zero_division=0,
     )
-    return total_loss / total, exact_match / total, macro_f1, _macro_ap(targets, torch.cat(all_probs).numpy())
+    return (total_loss / total, exact_match / total, macro_f1,
+            _macro_ap(targets, torch.cat(all_probs).numpy()), _chance_ap(targets))
 
 
 def main():
@@ -398,10 +411,10 @@ def main():
     history_path = out_path.with_suffix(".history.json")
 
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc, train_f1, train_ap = run_epoch(
+        train_loss, train_acc, train_f1, train_ap, _ = run_epoch(
             model, train_loader, criterion, optimizer, device, train=True
         )
-        val_loss, val_acc, val_f1, val_ap = run_epoch(
+        val_loss, val_acc, val_f1, val_ap, val_chance_ap = run_epoch(
             model, val_loader, criterion, optimizer, device, train=False
         )
         scheduler.step()
@@ -410,14 +423,14 @@ def main():
             f"epoch {epoch}/{args.epochs} "
             f"train_loss={train_loss:.4f} train_f1={train_f1:.4f} train_ap={train_ap:.4f} "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} val_f1={val_f1:.4f} "
-            f"val_ap={val_ap:.4f} lr={scheduler.get_last_lr()[0]:.2e}"
+            f"val_ap={val_ap:.4f}(基準{val_chance_ap:.3f}) lr={scheduler.get_last_lr()[0]:.2e}"
         )
         history.append({
             "epoch": epoch,
             "train_loss": train_loss, "train_acc": train_acc,
             "train_f1": train_f1, "train_ap": train_ap,
             "val_loss": val_loss, "val_acc": val_acc,
-            "val_f1": val_f1, "val_ap": val_ap,
+            "val_f1": val_f1, "val_ap": val_ap, "val_chance_ap": val_chance_ap,
             "lr": scheduler.get_last_lr()[0],
         })
         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
