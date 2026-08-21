@@ -105,6 +105,46 @@ class FeatureFusion(nn.Module):
         return self.head(torch.cat([image_features, scaled], dim=1))
 
 
+class SmallCNN(nn.Module):
+    """ERA5格子のための小さな畳み込みネット。EfficientNet-B0のおよそ20分の1。
+
+    格子入力ではEfficientNet-B0(530万パラメータ)が学習データ1147件に対して
+    大きすぎ、極端な過学習に陥る -- 学習側のAPが0.95に達する一方で検証側は
+    横ばいのままで、エポック1の重みのほうがエポック24の重みよりテストで良い、
+    という状態になった。正しくベストエポックを選ぶと、自明な予測を下回る。
+
+    天気図画像と違い、ImageNetの事前学習が助けにならないことも分かっている
+    (自然画像のエッジや質感は、滑らかな気圧場には転移しない)。ゼロから学習する
+    以上、データ量に見合う容量にする必要がある。
+
+    構造はEfficientNetと同じ約束事に従う -- features / classifier という名前で
+    公開し、features[0][0] を最初の畳み込みにする。CoordConv・FeatureFusion・
+    save_checkpoint がその形を前提にしているため。
+    """
+
+    def __init__(self, num_classes: int, in_channels: int = 2, dropout: float = 0.3,
+                 widths=(32, 64, 128, 128)):
+        super().__init__()
+        blocks = []
+        previous = in_channels
+        for width in widths:
+            blocks.append(nn.Sequential(
+                nn.Conv2d(previous, width, kernel_size=3, padding=1, bias=False),
+                nn.BatchNorm2d(width),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(2),
+            ))
+            previous = width
+        self.features = nn.Sequential(*blocks)
+        # 大域平均プーリングで入力サイズに依存しなくする(EfficientNetと同じ)
+        self.pool = nn.AdaptiveAvgPool2d(1)
+        self.classifier = nn.Sequential(nn.Dropout(p=dropout), nn.Linear(previous, num_classes))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.pool(self.features(x))
+        return self.classifier(torch.flatten(x, 1))
+
+
 def _adapt_first_conv(model: nn.Module, in_channels: int, pretrained: bool) -> None:
     """最初の畳み込みを in_channels 入力に差し替える。事前学習重みは引き継ぐ。
 
@@ -148,6 +188,7 @@ def build_model(
     coordconv: bool = False,
     num_features: int = 0,
     in_channels: int = 3,
+    arch: str = "efficientnet_b0",
 ) -> nn.Module:
     """EfficientNet-B0をベースにした転移学習モデル。データが少ない段階に適したサイズ。
 
@@ -157,11 +198,26 @@ def build_model(
     coordconv=True にすると入力に座標チャンネルを足す(CoordConvを参照)。
     num_features>0 にするとERA5の数値特徴を併用する(FeatureFusionを参照)。
 
+    arch="small_cnn" にすると、EfficientNetの代わりに小さな畳み込みネットを使う
+    (SmallCNNを参照)。ERA5格子のようにデータ量が少なく事前学習も効かない入力向け。
+
     in_channels!=3 は、天気図画像(RGB)ではなくERA5の格子(気圧・気温など)を
     直接入力するとき用(src/era5_grid.pyを参照)。このとき形が合わないのは
     最初の畳み込み1層だけなので、その層だけ作り直し、残りは事前学習重みを
     引き継ぐ(_adapt_first_conv を参照)。
     """
+    if arch == "small_cnn":
+        # 事前学習重みは存在しないので、pretrainedは無視する
+        model = SmallCNN(num_classes, in_channels=in_channels, dropout=dropout)
+        if freeze_backbone:
+            for param in model.features.parameters():
+                param.requires_grad = False
+        if coordconv:
+            model = CoordConv(model)
+        if num_features:
+            model = FeatureFusion(model, num_features, num_classes, dropout=dropout)
+        return model
+
     weights = EfficientNet_B0_Weights.DEFAULT if pretrained else None
     model = efficientnet_b0(weights=weights)
 
@@ -218,6 +274,7 @@ def save_checkpoint(path, model: nn.Module, image_size: int) -> None:
             "coordconv": _has(model, CoordConv),
             "num_features": model.num_features if isinstance(model, FeatureFusion) else 0,
             "in_channels": _base_in_channels(model),
+            "arch": "small_cnn" if isinstance(backbone(model), SmallCNN) else "efficientnet_b0",
         },
         path,
     )
@@ -304,6 +361,7 @@ def load_model(path, map_location=None):
         coordconv=meta_obj.get("coordconv", False),
         num_features=meta_obj.get("num_features", 0),
         in_channels=meta_obj.get("in_channels", 3),
+        arch=meta_obj.get("arch", "efficientnet_b0"),
     )
     meta = load_checkpoint(path, model, map_location=map_location)
     return model, meta

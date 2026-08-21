@@ -185,3 +185,45 @@ def test_macro_ap_rises_as_the_ranking_improves_where_f1_at_a_fixed_threshold_st
     sharp = np.array([[0.45, 0.45], [0.40, 0.40], [0.10, 0.10], [0.05, 0.05]])
     assert _macro_ap(targets, sharp) == pytest.approx(1.0)
     assert f1_score(targets, (sharp > 0.5).astype(float), average="macro", zero_division=0) == 0.0
+
+
+def test_small_cnn_is_far_smaller_than_efficientnet():
+    """ERA5格子でEfficientNet-B0が過学習するため用意した小さい方の実体を確かめる。
+
+    正しくベストエポックを選ぶと、EfficientNetでの格子入力は自明な予測を下回った
+    (学習側AP 0.95 に対し検証側は横ばい)。容量をデータ量に合わせるのが目的なので、
+    桁が縮んでいること自体がこのクラスの要件。
+    """
+    def count(model):
+        return sum(p.numel() for p in model.parameters())
+
+    small = build_model(pretrained=False, in_channels=2, arch="small_cnn")
+    big = build_model(pretrained=False, in_channels=2)
+    assert count(small) * 10 < count(big)
+
+
+def test_small_cnn_accepts_any_input_size():
+    """大域平均プーリングのため、格子サイズを変えても組み直さずに動くこと。"""
+    model = build_model(pretrained=False, in_channels=2, arch="small_cnn").eval()
+    for size in (64, 128, 224):
+        with torch.no_grad():
+            assert model(torch.randn(1, 2, size, size)).shape == (1, len(LABELS))
+
+
+def test_small_cnn_survives_the_save_and_load_round_trip_with_coordconv():
+    """archは重みに記録され、読み込み側が構成を知らなくても復元できること。
+
+    ここが欠けると、EfficientNetの形で組んだモデルにSmallCNNの重みを読もうとして
+    落ちるか、最悪は別物として黙って動く。
+    """
+    model = build_model(pretrained=False, in_channels=2, arch="small_cnn", coordconv=True).eval()
+    grid = torch.randn(2, 2, 64, 64)
+    with torch.no_grad():
+        expected = model(grid)
+
+    path = pathlib.Path(tempfile.mkdtemp()) / "weights.pt"
+    save_checkpoint(path, model, image_size=64)
+    assert torch.load(path, map_location="cpu")["arch"] == "small_cnn"
+    restored, _ = load_model(path, map_location="cpu")
+    with torch.no_grad():
+        assert torch.allclose(expected, restored.eval()(grid), atol=1e-6)

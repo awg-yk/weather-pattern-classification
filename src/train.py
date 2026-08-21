@@ -174,6 +174,14 @@ def main():
         help="--input-mode era5-grid のときの、格子をリサイズする一辺の大きさ",
     )
     parser.add_argument(
+        "--arch",
+        default="efficientnet_b0",
+        choices=["efficientnet_b0", "small_cnn"],
+        help="small_cnnはEfficientNet-B0の約17分の1(24万パラメータ)の小さな畳み込みネット。"
+        "ERA5格子はImageNetの事前学習が効かずゼロから学習するため、EfficientNetでは"
+        "学習データ千件あまりに対して大きすぎ、極端な過学習に陥る",
+    )
+    parser.add_argument(
         "--coordconv",
         action="store_true",
         help="入力に座標(緯度経度に相当)チャンネルを足す。位置で決まる気圧配置の判別を助ける",
@@ -363,7 +371,10 @@ def main():
         coordconv=args.coordconv,
         num_features=len(train_base.feature_cols),
         in_channels=2 if args.input_mode == "era5-grid" else 3,
+        arch=args.arch,
     ).to(device)
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"モデル: {args.arch} (学習するパラメータ {trainable:,}個 / 学習データ{len(train_ds)}件)")
     if args.no_pretrained:
         print("事前学習重みを使わずゼロから学習します(--no-pretrained)")
     if args.coordconv:

@@ -48,6 +48,10 @@ def main():
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--coordconv", action="store_true")
     parser.add_argument(
+        "--arch", default="efficientnet_b0", choices=["efficientnet_b0", "small_cnn"],
+        help="small_cnn=データ量に見合う小さな畳み込みネット(src/model.pyのSmallCNNを参照)",
+    )
+    parser.add_argument(
         "--no-pretrained", action="store_true",
         help="ImageNetの事前学習重みを使わない(ERA5格子と条件を揃えるとき)",
     )
@@ -116,6 +120,7 @@ def main():
                     train_cmd += ["--grid-size", args.grid_size]
                 if args.no_pretrained:
                     train_cmd.append("--no-pretrained")
+                train_cmd += ["--arch", args.arch]
             if train_cmd is not None:
                 if args.coordconv:
                     train_cmd.append("--coordconv")
