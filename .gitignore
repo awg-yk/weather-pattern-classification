@@ -10,3 +10,14 @@ data/processed/
 .env
 .DS_Store
 node_modules/
+
+# 交差検証の出力。まとめ(summary.json)だけ残して、foldごとの中間ファイルは残さない。
+# どの条件で出た数字かはsummary.json内のconfigに入っているので、まとめさえあれば
+# 後から比較できる(scripts/compare_runs.py がこれを読む)。
+runs/*
+!runs/*/
+runs/*/*
+!runs/*/summary.json
+
+# ERA5から再計算できる中間データ(scripts/era5_features.py)
+data/era5_features_all.csv
