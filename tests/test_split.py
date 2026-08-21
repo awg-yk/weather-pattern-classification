@@ -116,3 +116,34 @@ def test_missing_dates_are_reported_not_ignored():
     df = pd.DataFrame({"filename": ["broken.png"], "parsed_datetime": [pd.NaT]})
     with pytest.raises(ValueError, match="日付"):
         make_splits(df, mode="temporal")
+
+
+def test_trivial_macro_f1_matches_the_all_positive_baseline():
+    """macro F1には「全部を陽性と答える」だけで得られる下駄がある。
+
+    これを引かずに絶対値だけを見ていたため、自明な予測を下回った実行(macro F1
+    0.250 に対して基準 0.29)を「低いが学習はできている」と読み違えていた。
+    """
+    import numpy as np
+
+    from src.evaluate import trivial_macro_f1
+
+    labels = np.zeros((1000, 2))
+    labels[:420, 0] = 1  # 出現率0.42 → 2p/(1+p) = 0.592
+    labels[:100, 1] = 1  # 出現率0.10 → 0.182
+    macro, per_label = trivial_macro_f1(labels)
+    assert per_label[0] == pytest.approx(2 * 0.42 / 1.42)
+    assert per_label[1] == pytest.approx(2 * 0.10 / 1.10)
+    assert macro == pytest.approx((per_label[0] + per_label[1]) / 2)
+
+
+def test_trivial_macro_f1_skips_labels_that_never_occur():
+    """1件も出現しないラベルは基準の平均から外す(F1を測れないため)。"""
+    import numpy as np
+
+    from src.evaluate import trivial_macro_f1
+
+    labels = np.zeros((100, 2))
+    labels[:20, 0] = 1
+    macro, _ = trivial_macro_f1(labels)
+    assert macro == pytest.approx(2 * 0.2 / 1.2)

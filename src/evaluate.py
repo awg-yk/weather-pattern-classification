@@ -14,6 +14,23 @@ from src.split import SPLIT_MODES, VAL_MODES, make_splits
 from src.train import get_transforms
 
 
+
+def trivial_macro_f1(labels: np.ndarray) -> tuple:
+    """「全部を陽性と予測する」だけで得られるmacro F1と、そのラベル別の値。
+
+    出現率pのラベルは、常に陽性と答えるだけでF1 = 2p/(1+p) を得る。頻出ラベルでは
+    これが0.5を超えるため、macro F1の絶対値は学習の成果を表さない。この下駄を
+    引いて初めて、モデルが何を足したのかが分かる。
+
+    実際、ERA5格子を224で学習した回はmacro F1 0.250で、この基準(約0.29)を
+    下回っていた -- 数字だけ見ていると「低いが学習はできている」と読めてしまう。
+    """
+    prevalence = labels.mean(axis=0)
+    per_label = np.where(prevalence > 0, 2 * prevalence / (1 + prevalence), 0.0)
+    evaluable = prevalence > 0
+    return (float(per_label[evaluable].mean()) if evaluable.any() else 0.0), per_label
+
+
 def find_best_thresholds(probs: np.ndarray, labels: np.ndarray, steps: int = 19) -> np.ndarray:
     """ラベルごとにF1を最大化する閾値を探索する。
 
@@ -247,6 +264,14 @@ def main():
     if missing:
         print(f"  評価セットに出現しなかったラベル: {', '.join(missing)}")
 
+    trivial, trivial_per_label = trivial_macro_f1(all_labels)
+    print(
+        f"\n全部を陽性と答えるだけで得られる macro F1: {trivial:.3f}"
+        f"  → このモデルの上積み: {macro_evaluable - trivial:+.3f}"
+    )
+    if macro_evaluable <= trivial:
+        print("  警告: 自明な予測を上回っていません。学習が機能していない可能性があります")
+
     if args.json_out:
         import json
 
@@ -259,6 +284,9 @@ def main():
             "n_eval": len(eval_rows),
             "macro_f1_all_labels": report["macro avg"]["f1-score"],
             "macro_f1_evaluable": macro_evaluable,
+            # 学習の成果は絶対値ではなくこの基準との差で読む(trivial_macro_f1を参照)
+            "trivial_macro_f1": trivial,
+            "macro_f1_over_trivial": macro_evaluable - trivial,
             "micro_f1": report["micro avg"]["f1-score"],
             "weighted_f1": report["weighted avg"]["f1-score"],
             "per_label": {
@@ -267,6 +295,7 @@ def main():
                     "precision": report[label]["precision"],
                     "recall": report[label]["recall"],
                     "support": supports[label],
+                    "trivial_f1": float(trivial_per_label[LABELS.index(label)]),
                 }
                 for label in LABELS
             },
