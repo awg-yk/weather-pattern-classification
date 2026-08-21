@@ -47,7 +47,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--coordconv", action="store_true")
-    parser.add_argument("--cnn-widths", type=int, nargs="+", default=[32, 64, 128, 128])
+    parser.add_argument("--cnn-widths", type=int, nargs="+", default=[128, 256, 512, 512])
     parser.add_argument(
         "--arch", default="efficientnet_b0", choices=["efficientnet_b0", "small_cnn"],
         help="small_cnn=データ量に見合う小さな畳み込みネット(src/model.pyのSmallCNNを参照)",

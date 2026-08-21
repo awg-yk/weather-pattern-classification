@@ -182,7 +182,7 @@ def main():
         "学習データ千件あまりに対して大きすぎ、極端な過学習に陥る",
     )
     parser.add_argument(
-        "--cnn-widths", type=int, nargs="+", default=[32, 64, 128, 128],
+        "--cnn-widths", type=int, nargs="+", default=[128, 256, 512, 512],
         help="--arch small_cnn の各段の幅。容量がそのまま性能に効くため探索の対象になる",
     )
     parser.add_argument(

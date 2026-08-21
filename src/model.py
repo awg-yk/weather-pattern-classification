@@ -106,16 +106,24 @@ class FeatureFusion(nn.Module):
 
 
 class SmallCNN(nn.Module):
-    """ERA5格子のための小さな畳み込みネット。EfficientNet-B0のおよそ20分の1。
+    """ERA5格子のための、浅くて単純な畳み込みネット。
 
-    格子入力ではEfficientNet-B0(530万パラメータ)が学習データ1147件に対して
-    大きすぎ、極端な過学習に陥る -- 学習側のAPが0.95に達する一方で検証側は
-    横ばいのままで、エポック1の重みのほうがエポック24の重みよりテストで良い、
-    という状態になった。正しくベストエポックを選ぶと、自明な予測を下回る。
+    格子入力ではEfficientNet-B0が極端な過学習に陥る -- 学習側のAPが0.95に達する
+    一方で検証側は横ばいのままで、エポック1の重みのほうがエポック24の重みより
+    テストで良い。正しくベストエポックを選ぶと、自明な予測を下回る(macro F1 0.234
+    に対し、全部を陽性と答えるだけで0.258)。
 
-    天気図画像と違い、ImageNetの事前学習が助けにならないことも分かっている
-    (自然画像のエッジや質感は、滑らかな気圧場には転移しない)。ゼロから学習する
-    以上、データ量に見合う容量にする必要がある。
+    当初これを容量の問題と考えたが、そうではなかった。幅を振ると性能は6万から
+    385万パラメータまで単調に上がり続ける(0.386→0.497)。EfficientNet-B0と
+    ほぼ同じ385万パラメータのこのネットが0.497を出す一方、EfficientNetは0.234。
+    容量を揃えても結果が正反対になるので、効いているのは構造のほうである。
+
+    EfficientNet側の何が悪いのかは、まだ切り分けていない。候補は、深さ(16ブロック
+    対4段)、気圧場には転移しないImageNet重みからの出発、そして2チャンネル入力では
+    意味をなさないSqueeze-and-Excitationブロック。
+
+    幅はcnn_widthsで変えられる。既定の(128,256,512,512)は実測で最も良かった値で、
+    fold間のばらつきも最小(標準偏差0.007)だった。
 
     構造はEfficientNetと同じ約束事に従う -- features / classifier という名前で
     公開し、features[0][0] を最初の畳み込みにする。CoordConv・FeatureFusion・
@@ -123,7 +131,7 @@ class SmallCNN(nn.Module):
     """
 
     def __init__(self, num_classes: int, in_channels: int = 2, dropout: float = 0.3,
-                 widths=(32, 64, 128, 128)):
+                 widths=(128, 256, 512, 512)):
         super().__init__()
         blocks = []
         previous = in_channels
@@ -190,7 +198,7 @@ def build_model(
     num_features: int = 0,
     in_channels: int = 3,
     arch: str = "efficientnet_b0",
-    cnn_widths=(32, 64, 128, 128),
+    cnn_widths=(128, 256, 512, 512),
 ) -> nn.Module:
     """EfficientNet-B0をベースにした転移学習モデル。データが少ない段階に適したサイズ。
 
@@ -369,7 +377,7 @@ def load_model(path, map_location=None):
         num_features=meta_obj.get("num_features", 0),
         in_channels=meta_obj.get("in_channels", 3),
         arch=meta_obj.get("arch", "efficientnet_b0"),
-        cnn_widths=meta_obj.get("cnn_widths") or (32, 64, 128, 128),
+        cnn_widths=meta_obj.get("cnn_widths") or (128, 256, 512, 512),
     )
     meta = load_checkpoint(path, model, map_location=map_location)
     return model, meta

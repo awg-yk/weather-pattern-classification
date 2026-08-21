@@ -187,19 +187,25 @@ def test_macro_ap_rises_as_the_ranking_improves_where_f1_at_a_fixed_threshold_st
     assert f1_score(targets, (sharp > 0.5).astype(float), average="macro", zero_division=0) == 0.0
 
 
-def test_small_cnn_is_far_smaller_than_efficientnet():
-    """ERA5格子でEfficientNet-B0が過学習するため用意した小さい方の実体を確かめる。
+def test_small_cnn_beats_efficientnet_at_a_comparable_size():
+    """勝敗を分けたのは容量ではなく構造だった、という測定結果を固定する。
 
-    正しくベストエポックを選ぶと、EfficientNetでの格子入力は自明な予測を下回った
-    (学習側AP 0.95 に対し検証側は横ばい)。容量をデータ量に合わせるのが目的なので、
-    桁が縮んでいること自体がこのクラスの要件。
+    当初はEfficientNet-B0が大きすぎるのが原因と考えたが、幅を振ると性能は
+    385万パラメータまで単調に上がった。既定の幅はEfficientNet-B0とほぼ同じ規模で、
+    それでいてmacro F1は0.497対0.234(自明な予測は0.258)。容量を揃えて比べられる
+    ことがこの既定値の意味なので、既定を小さい方に戻すとその対比が崩れる。
     """
     def count(model):
         return sum(p.numel() for p in model.parameters())
 
-    small = build_model(pretrained=False, in_channels=2, arch="small_cnn")
-    big = build_model(pretrained=False, in_channels=2)
-    assert count(small) * 10 < count(big)
+    small = count(build_model(pretrained=False, in_channels=2, arch="small_cnn"))
+    efficientnet = count(build_model(pretrained=False, in_channels=2))
+    assert 0.8 < small / efficientnet < 1.25
+
+    # 幅で容量を振れること(6万〜600万を実際に走らせて頂点を探した)
+    narrow = count(build_model(pretrained=False, in_channels=2, arch="small_cnn",
+                               cnn_widths=[16, 32, 64, 64]))
+    assert narrow * 10 < small
 
 
 def test_small_cnn_accepts_any_input_size():
