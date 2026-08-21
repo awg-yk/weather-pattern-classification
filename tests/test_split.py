@@ -242,3 +242,36 @@ def test_blend_weight_stays_neutral_for_labels_with_no_positives():
         np.full((50, 1), 0.5), np.full((50, 1), 0.5), targets, np.array([0.0, 0.5, 1.0])
     )
     assert weights[0] == 0.0
+
+
+def test_preflight_reports_labels_absent_from_validation(tmp_path, capsys):
+    """検証データに1件も出ないラベルを、学習を始める前に知らせること。
+
+    そのラベルについては閾値もモデル選択も混合の重みも決めようがなく、決めれば
+    でたらめになる。実際 okhotsk_high は初夏の型で、既定の--val-mode tail では
+    検証(学習期間の末尾=秋冬)に現れないまま、通年のテストで評価されていた。
+    1foldに数十分かかるので、走らせてから気づくのでは遅い。
+    """
+    import subprocess
+    import sys
+
+    rows = []
+    for date in pd.date_range("2023-01-01", "2025-12-31", freq="D"):
+        labels = ["migratory_high"]
+        if date.month == 6 and date.day % 5 == 0:
+            labels.append("okhotsk_high")  # 初夏にしか出ない
+        rows.append({"filename": f"Js_{date.strftime('%Y%m%d')}00.png", "label": "|".join(labels)})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+
+    def run(*extra):
+        return subprocess.run(
+            [sys.executable, "-m", "scripts.preflight", "--labels", str(labels_csv),
+             "--input-mode", "era5-grid", "--era5-grid-dir", str(tmp_path / "missing"),
+             "--years", "2023", "2024", "2025", *extra],
+            capture_output=True, text=True,
+        ).stdout
+
+    assert "オホーツク海高気圧" in run().split("警告")[1]
+    # 通年から抜き取れば、そのラベルも検証に入る
+    assert "警告" not in run("--val-mode", "spread")
