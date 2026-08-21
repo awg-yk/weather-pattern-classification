@@ -398,3 +398,47 @@ def test_review_cli_saves_each_answer_and_resumes(tmp_path):
     assert list(pd.read_csv(out_csv)["answer"]) == ["yes", "no", "unsure"]
 
     assert "すべて判定済み" in run("").stdout
+
+
+def test_apply_review_touches_only_the_rows_answered_yes():
+    """noとunsureは元のまま。判断がつかなかったものを機械的に倒さない。
+
+    unsureを「なし」に倒すと、「決めなかった」という情報が消える。それは
+    ラベルの基準がどこで曖昧なのかを示す手掛かりでもある。
+    """
+    from scripts.apply_review import updated_labels
+
+    # 置き換えの運用: 対象を付けるとき、置き換えられる側を外す
+    assert updated_labels(["japan_sea_low", "nankigan_low"], "futatsudama_low",
+                          ["japan_sea_low", "nankigan_low"]) == ["futatsudama_low"]
+    # 関係のないラベルは残る
+    assert updated_labels(["japan_sea_low", "nankigan_low", "stationary_front"],
+                          "futatsudama_low", ["japan_sea_low", "nankigan_low"]) == [
+        "futatsudama_low", "stationary_front"]
+    # 既に付いていれば重複しない
+    assert updated_labels(["futatsudama_low", "japan_sea_low"], "futatsudama_low",
+                          ["japan_sea_low"]) == ["futatsudama_low"]
+
+
+def test_apply_review_refuses_a_review_of_a_different_label_file(tmp_path):
+    """見直したCSVと反映先が食い違っていたら止める。
+
+    ラベルCSVの版が複数あると取り違える。実際にlabels.csvとlabels_v2.csvで
+    一日ぶんの実験をやり直したことがある。
+    """
+    import subprocess
+    import sys
+
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame({"filename": ["a.png"], "label": ["japan_sea_low"]}).to_csv(
+        labels_csv, index=False)
+    review = tmp_path / "review.csv"
+    pd.DataFrame({"filename": ["zzz.png"], "answer": ["yes"]}).to_csv(review, index=False)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.apply_review", "--labels", str(labels_csv),
+         "--review", str(review), "--label", "futatsudama_low"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "無いファイル名" in result.stdout + result.stderr
