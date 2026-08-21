@@ -315,8 +315,10 @@ def test_label_stats_counts_the_pair_that_should_imply_a_label(tmp_path, capsys)
     out = subprocess.run(
         [sys.executable, "-m", "scripts.label_stats", "--labels", str(labels_csv),
          "--label", "futatsudama_low",
-         "--implied-by", "japan_sea_low", "nankigan_low"],
+         "--implied-by", "japan_sea_low", "nankigan_low", "--list-exceptions"],
         capture_output=True, text=True,
     ).stdout
     assert "あり: 0件" in out
     assert "なし: 3件" in out
+    # 違反は「組み合わせが揃っていて対象が付いていない」行。多数派か少数派かは関係ない
+    assert out.count("japan_sea_low|nankigan_low") == 3

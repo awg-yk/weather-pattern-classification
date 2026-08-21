@@ -36,6 +36,10 @@ def main():
         "気象の知識で決めるものなので指定式にしている"
         "(例: --label futatsudama_low --implied-by japan_sea_low nankigan_low)",
     )
+    parser.add_argument(
+        "--list-exceptions", action="store_true",
+        help="--implied-by の運用から外れている天気図のファイル名を並べる(見直しの対象)",
+    )
     args = parser.parse_args()
 
     df = pd.read_csv(args.labels)
@@ -83,6 +87,25 @@ def main():
         print(f"  {LABEL_JA[args.label]} なし: {without}件")
         print("  どちらかに大きく偏っていれば運用は一貫している。"
               "混ざっているなら判定が揺れている。")
+
+        if args.list_exceptions:
+            # --implied-by は「これらが揃えば--labelも付くはず」という意味なので、
+            # 揃っていて付いていない行が違反。多数派か少数派かは関係ない。
+            print(f"\n【見直しの候補】{names}が揃っていて{LABEL_JA[args.label]}が"
+                  f"付いていない{without}件")
+            for filename, labels in zip(df["filename"], sets):
+                if expected <= labels and args.label not in labels:
+                    print(f"  {filename}  {'|'.join(sorted(labels))}")
+            # 対象ラベルが付いていて、組み合わせの片方だけを伴う例も揺れている
+            partial = [
+                (filename, labels) for filename, labels in zip(df["filename"], sets)
+                if args.label in labels and 0 < len(expected & labels) < len(expected)
+            ]
+            if partial:
+                print(f"\n【同じく候補】{LABEL_JA[args.label]}に、"
+                      f"{names}の片方だけを伴う{len(partial)}件")
+                for filename, labels in partial:
+                    print(f"  {filename}  {'|'.join(sorted(labels))}")
 
 if __name__ == "__main__":
     main()
