@@ -167,6 +167,10 @@ def main():
     summary_path.write_text(
         json.dumps(
             {
+                # どの条件で出た数字かを結果と一緒に残す。設定を変えて何度も回すため、
+                # 後からsummary.jsonだけを見て「これは事前学習ありだったか」を
+                # 判断できないと、取り違えたまま比較してしまう。
+                "config": vars(args),
                 "folds": results,
                 "mean": {
                     key: statistics.mean([r[key] for r in results])
