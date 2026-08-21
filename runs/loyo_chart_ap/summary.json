@@ -1,0 +1,299 @@
+{
+  "config": {
+    "data_dir": "C:\\Users\\yamaguchi kosuke\\Desktop\\ALL\\02 Ž©•ª‚ÌŒ¤‹†\\github\\vscode\\weather-pattern-classification-data\\processed",
+    "labels": "data/labels.csv",
+    "input_mode": "chart",
+    "era5_grid_dir": "data/raw/era5",
+    "grid_size": 128,
+    "years": [
+      2023,
+      2024,
+      2025
+    ],
+    "out_dir": "runs/loyo_chart_ap",
+    "seed": 42,
+    "epochs": 30,
+    "batch_size": 16,
+    "image_size": 224,
+    "coordconv": false,
+    "cnn_widths": [
+      32,
+      64,
+      128,
+      128
+    ],
+    "arch": "efficientnet_b0",
+    "no_pretrained": false,
+    "era5_features": null,
+    "val_ratio": 0.2,
+    "gap_days": 3,
+    "val_mode": "tail",
+    "skip_existing": false
+  },
+  "folds": [
+    {
+      "weights": "runs\\loyo_chart_ap\\model_test2023.pt",
+      "split": "test",
+      "split_mode": "loyo",
+      "test_year": 2023,
+      "seed": 42,
+      "n_eval": 729,
+      "macro_f1_all_labels": 0.6266804998610997,
+      "macro_f1_evaluable": 0.6266804998610997,
+      "trivial_macro_f1": 0.2733551263809204,
+      "macro_f1_over_trivial": 0.35332537348017934,
+      "micro_f1": 0.6920444824636441,
+      "weighted_f1": 0.6950057130368408,
+      "per_label": {
+        "winter_pressure_pattern": {
+          "f1": 0.7892376681614349,
+          "precision": 0.7394957983193278,
+          "recall": 0.8461538461538461,
+          "support": 104,
+          "trivial_f1": 0.24969987571239471
+        },
+        "nankigan_low": {
+          "f1": 0.63,
+          "precision": 0.5206611570247934,
+          "recall": 0.7974683544303798,
+          "support": 79,
+          "trivial_f1": 0.1955445557832718
+        },
+        "japan_sea_low": {
+          "f1": 0.6160714285714286,
+          "precision": 0.5609756097560976,
+          "recall": 0.6831683168316832,
+          "support": 101,
+          "trivial_f1": 0.24337349832057953
+        },
+        "futatsudama_low": {
+          "f1": 0.2857142857142857,
+          "precision": 0.6666666666666666,
+          "recall": 0.18181818181818182,
+          "support": 33,
+          "trivial_f1": 0.08661417663097382
+        },
+        "typhoon": {
+          "f1": 0.861878453038674,
+          "precision": 0.9397590361445783,
+          "recall": 0.7959183673469388,
+          "support": 98,
+          "trivial_f1": 0.2370011955499649
+        },
+        "migratory_high": {
+          "f1": 0.7099099099099099,
+          "precision": 0.8312236286919831,
+          "recall": 0.6194968553459119,
+          "support": 318,
+          "trivial_f1": 0.6074498891830444
+        },
+        "pacific_high": {
+          "f1": 0.6372549019607843,
+          "precision": 0.5327868852459017,
+          "recall": 0.7926829268292683,
+          "support": 82,
+          "trivial_f1": 0.20221947133541107
+        },
+        "front_passage": {
+          "f1": 0.8145161290322581,
+          "precision": 0.9017857142857143,
+          "recall": 0.7426470588235294,
+          "support": 136,
+          "trivial_f1": 0.31445086002349854
+        },
+        "stationary_front": {
+          "f1": 0.7,
+          "precision": 0.9851851851851852,
+          "recall": 0.5428571428571428,
+          "support": 245,
+          "trivial_f1": 0.5030800700187683
+        },
+        "okhotsk_high": {
+          "f1": 0.2222222222222222,
+          "precision": 0.2,
+          "recall": 0.25,
+          "support": 36,
+          "trivial_f1": 0.0941176488995552
+        }
+      }
+    },
+    {
+      "weights": "runs\\loyo_chart_ap\\model_test2024.pt",
+      "split": "test",
+      "split_mode": "loyo",
+      "test_year": 2024,
+      "seed": 42,
+      "n_eval": 720,
+      "macro_f1_all_labels": 0.6175659815613572,
+      "macro_f1_evaluable": 0.6175659815613572,
+      "trivial_macro_f1": 0.26452746987342834,
+      "macro_f1_over_trivial": 0.3530385116879289,
+      "micro_f1": 0.6939843068875327,
+      "weighted_f1": 0.6954770100907927,
+      "per_label": {
+        "winter_pressure_pattern": {
+          "f1": 0.7211538461538461,
+          "precision": 0.646551724137931,
+          "recall": 0.8152173913043478,
+          "support": 92,
+          "trivial_f1": 0.2266009896993637
+        },
+        "nankigan_low": {
+          "f1": 0.632258064516129,
+          "precision": 0.7903225806451613,
+          "recall": 0.5268817204301075,
+          "support": 93,
+          "trivial_f1": 0.2287822961807251
+        },
+        "japan_sea_low": {
+          "f1": 0.6808510638297872,
+          "precision": 0.631578947368421,
+          "recall": 0.7384615384615385,
+          "support": 130,
+          "trivial_f1": 0.3058823347091675
+        },
+        "futatsudama_low": {
+          "f1": 0.6530612244897959,
+          "precision": 0.6153846153846154,
+          "recall": 0.6956521739130435,
+          "support": 23,
+          "trivial_f1": 0.06191117689013481
+        },
+        "typhoon": {
+          "f1": 0.7346938775510204,
+          "precision": 0.6352941176470588,
+          "recall": 0.8709677419354839,
+          "support": 62,
+          "trivial_f1": 0.15856778621673584
+        },
+        "migratory_high": {
+          "f1": 0.7130124777183601,
+          "precision": 0.8130081300813008,
+          "recall": 0.6349206349206349,
+          "support": 315,
+          "trivial_f1": 0.6086956262588501
+        },
+        "pacific_high": {
+          "f1": 0.4858757062146893,
+          "precision": 0.39090909090909093,
+          "recall": 0.6417910447761194,
+          "support": 67,
+          "trivial_f1": 0.17026682198047638
+        },
+        "front_passage": {
+          "f1": 0.684931506849315,
+          "precision": 0.7425742574257426,
+          "recall": 0.635593220338983,
+          "support": 118,
+          "trivial_f1": 0.28162288665771484
+        },
+        "stationary_front": {
+          "f1": 0.8008565310492506,
+          "precision": 0.935,
+          "recall": 0.700374531835206,
+          "support": 267,
+          "trivial_f1": 0.5410333871841431
+        },
+        "okhotsk_high": {
+          "f1": 0.06896551724137931,
+          "precision": 0.16666666666666666,
+          "recall": 0.043478260869565216,
+          "support": 23,
+          "trivial_f1": 0.06191117689013481
+        }
+      }
+    },
+    {
+      "weights": "runs\\loyo_chart_ap\\model_test2025.pt",
+      "split": "test",
+      "split_mode": "loyo",
+      "test_year": 2025,
+      "seed": 42,
+      "n_eval": 718,
+      "macro_f1_all_labels": 0.6122423538910885,
+      "macro_f1_evaluable": 0.6122423538910885,
+      "trivial_macro_f1": 0.23711267113685608,
+      "macro_f1_over_trivial": 0.3751296827542324,
+      "micro_f1": 0.6852769022962629,
+      "weighted_f1": 0.6753385090119144,
+      "per_label": {
+        "winter_pressure_pattern": {
+          "f1": 0.7890625,
+          "precision": 0.7214285714285714,
+          "recall": 0.8706896551724138,
+          "support": 116,
+          "trivial_f1": 0.2781774699687958
+        },
+        "nankigan_low": {
+          "f1": 0.639344262295082,
+          "precision": 0.5492957746478874,
+          "recall": 0.7647058823529411,
+          "support": 51,
+          "trivial_f1": 0.1326397955417633
+        },
+        "japan_sea_low": {
+          "f1": 0.695364238410596,
+          "precision": 0.660377358490566,
+          "recall": 0.7342657342657343,
+          "support": 143,
+          "trivial_f1": 0.33217188715934753
+        },
+        "futatsudama_low": {
+          "f1": 0.5490196078431373,
+          "precision": 0.9333333333333333,
+          "recall": 0.3888888888888889,
+          "support": 36,
+          "trivial_f1": 0.0954907089471817
+        },
+        "typhoon": {
+          "f1": 0.6949152542372882,
+          "precision": 0.6949152542372882,
+          "recall": 0.6949152542372882,
+          "support": 59,
+          "trivial_f1": 0.1518661379814148
+        },
+        "migratory_high": {
+          "f1": 0.7109634551495017,
+          "precision": 0.622093023255814,
+          "recall": 0.8294573643410853,
+          "support": 258,
+          "trivial_f1": 0.5286885499954224
+        },
+        "pacific_high": {
+          "f1": 0.5827814569536424,
+          "precision": 0.8148148148148148,
+          "recall": 0.4536082474226804,
+          "support": 97,
+          "trivial_f1": 0.23803679645061493
+        },
+        "front_passage": {
+          "f1": 0.6261682242990654,
+          "precision": 0.5234375,
+          "recall": 0.7790697674418605,
+          "support": 86,
+          "trivial_f1": 0.21393033862113953
+        },
+        "stationary_front": {
+          "f1": 0.73224043715847,
+          "precision": 0.5982142857142857,
+          "recall": 0.9436619718309859,
+          "support": 142,
+          "trivial_f1": 0.3302325904369354
+        },
+        "okhotsk_high": {
+          "f1": 0.10256410256410256,
+          "precision": 0.15384615384615385,
+          "recall": 0.07692307692307693,
+          "support": 26,
+          "trivial_f1": 0.06989247351884842
+        }
+      }
+    }
+  ],
+  "mean": {
+    "macro_f1_evaluable": 0.6188296117711818,
+    "macro_f1_all_labels": 0.6188296117711818,
+    "micro_f1": 0.6904352305491466,
+    "weighted_f1": 0.6886070773798493
+  }
+}
