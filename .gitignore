@@ -21,3 +21,7 @@ runs/*/*
 
 # ERA5から再計算できる中間データ(scripts/era5_features.py)
 data/era5_features_all.csv
+
+# scripts/apply_label_rule.py が書き換え前に残す控え。
+# 中身は直前のラベルCSVそのものなので、追跡すると版が二重になる
+*.bak
