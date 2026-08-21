@@ -301,7 +301,7 @@ def main():
             },
         }
         Path(args.json_out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.json_out).write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+        Path(args.json_out).write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"結果を書き出しました: {args.json_out}")
 
 

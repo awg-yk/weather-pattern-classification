@@ -107,7 +107,7 @@ def main():
                  "--optimize-thresholds",
                  "--json-out", result_json])
 
-        payload = json.loads(result_json.read_text())
+        payload = json.loads(result_json.read_text(encoding="utf-8"))
         payload["train_limit"] = limit
         payload["tag"] = tag
         results.append(payload)
@@ -134,7 +134,7 @@ def main():
         print(f"  {LABEL_JA[label]:<22}{row}")
 
     summary = out_dir / "summary.json"
-    summary.write_text(json.dumps(results, indent=2, ensure_ascii=False))
+    summary.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nまとめを書き出しました: {summary}")
 
 

@@ -136,7 +136,7 @@ def main():
                 "--json-out", result_json,
             ])
 
-        results.append(json.loads(result_json.read_text()))
+        results.append(json.loads(result_json.read_text(encoding="utf-8")))
 
     # ---- 集計 ----
     print(f"\n{'=' * 72}\n交差検証のまとめ({len(results)}fold)\n{'=' * 72}")
@@ -185,7 +185,8 @@ def main():
             },
             indent=2,
             ensure_ascii=False,
-        )
+        ),
+        encoding="utf-8",
     )
     print(f"\nまとめを書き出しました: {summary_path}")
 

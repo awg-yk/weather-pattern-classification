@@ -163,3 +163,21 @@ def test_paired_diff_flags_when_folds_disagree():
 
     noisy = paired_diff([0.40, 0.45, 0.42], [0.44, 0.41, 0.46], [2023, 2024, 2025])
     assert "ばらつく" in noisy
+
+
+def test_summary_is_readable_whichever_encoding_it_was_written_in(tmp_path):
+    """Windowsで作られた過去の結果(cp932)も読めること。
+
+    書き出し側でencodingを指定していなかった時期があり、その結果は環境の既定で
+    保存されている。ラベル名が日本語なので、UTF-8決め打ちで読むと落ちる。
+    比較のたびに学習をやり直すわけにはいかない。
+    """
+    import json
+
+    from scripts.compare_runs import load
+
+    payload = {"folds": [], "note": "西高東低（冬型）"}
+    for encoding in ("cp932", "utf-8"):
+        path = tmp_path / f"{encoding}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding=encoding)
+        assert load(path)["note"] == "西高東低（冬型）"

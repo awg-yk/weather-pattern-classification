@@ -24,10 +24,21 @@ from src.labels import LABEL_JA, LABELS
 
 
 def load(run_dir: Path) -> dict:
+    """結果JSONを読む。UTF-8で書かれていないものも読めるようにする。
+
+    書き出し側でencodingを指定していなかった時期があり、Windowsで実行した結果は
+    cp932(Shift-JIS)で保存されている。ラベル名に日本語が入るので、UTF-8として
+    読むと途中のバイトで落ちる。過去の結果を捨てずに比べられるよう、順に試す。
+    """
     path = run_dir / "summary.json" if run_dir.is_dir() else run_dir
     if not path.exists():
         raise SystemExit(f"{path} がありません。先に scripts/cross_validate.py を実行してください。")
-    return json.loads(path.read_text(encoding="utf-8"))
+    for encoding in ("utf-8", "cp932"):
+        try:
+            return json.loads(path.read_text(encoding=encoding))
+        except UnicodeDecodeError:
+            continue
+    raise SystemExit(f"{path} の文字コードを判別できません(utf-8・cp932のどちらでもありません)。")
 
 
 def describe(summary: dict) -> str:
