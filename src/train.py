@@ -1,4 +1,5 @@
 import argparse
+import json
 import random
 from pathlib import Path
 
@@ -367,6 +368,11 @@ def main():
     epochs_without_improvement = 0
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # エポックごとの経過は、後から結果がおかしかったときの唯一の手掛かりになる
+    # (学習側も低いのか=最適化の失敗、学習側だけ高いのか=過学習、で打つ手が違う)。
+    # コンソールに出すだけだと流れて消えるため、重みの隣に残す。
+    history = []
+    history_path = out_path.with_suffix(".history.json")
 
     for epoch in range(1, args.epochs + 1):
         train_loss, train_acc, train_f1 = run_epoch(
@@ -383,6 +389,13 @@ def main():
             f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} val_f1={val_f1:.4f} "
             f"lr={scheduler.get_last_lr()[0]:.2e}"
         )
+        history.append({
+            "epoch": epoch,
+            "train_loss": train_loss, "train_acc": train_acc, "train_f1": train_f1,
+            "val_loss": val_loss, "val_acc": val_acc, "val_f1": val_f1,
+            "lr": scheduler.get_last_lr()[0],
+        })
+        history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
         # 「大きいほど良い」に符号を揃えて一律に比較する
         score = val_f1 if args.select_metric == "macro_f1" else -val_loss
