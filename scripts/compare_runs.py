@@ -84,6 +84,24 @@ def per_fold_macro(summary: dict, labels: list) -> list:
     return scores
 
 
+
+def paired_diff(baseline: list, other: list, test_years: list) -> str:
+    """同じfoldどうしを引き算して差を示す。
+
+    どの実行も同じ年をテストに使うので、平均どうしを別々の標準偏差と見比べるより、
+    fold単位で対応させたほうが小さい差を判定できる -- foldによる難易度の違いが
+    引き算で消えるため。年ごとの差が揃って同符号なら、平均の差が標準偏差より
+    小さくても実質的な改善と読める。逆に符号がばらつくなら、平均が動いていても
+    たまたまである可能性が高い。
+    """
+    diffs = [b - a for a, b in zip(baseline, other)]
+    detail = " ".join(f"{y}:{d:+.3f}" for y, d in zip(test_years, diffs))
+    mean = statistics.mean(diffs)
+    same_sign = all(d > 0 for d in diffs) or all(d < 0 for d in diffs)
+    verdict = "全foldで同符号" if same_sign else "foldで符号がばらつく(差は不確か)"
+    return f"  基準比: {mean:+.3f}  [{detail}]  {verdict}"
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("runs", nargs="+", help="比較したい交差検証の出力ディレクトリ(またはsummary.json)")
@@ -102,6 +120,8 @@ def main():
         raise SystemExit("すべてのラベルを除外しています")
 
     summaries = [(Path(run), load(Path(run))) for run in args.runs]
+    baseline_subset = None
+    test_years = [f.get("test_year", "?") for f in summaries[0][1]["folds"]]
 
     print("=" * 72)
     if args.exclude:
@@ -131,6 +151,11 @@ def main():
         if len(subset) > 1:
             line += f"  (標準偏差 {statistics.stdev(subset):.3f})"
         print(line)
+        if baseline_subset is None:
+            baseline_subset = subset
+            print("  (以降の実行はこれを基準に比較します)")
+        elif len(baseline_subset) == len(subset):
+            print(paired_diff(baseline_subset, subset, test_years))
 
     print(f"\n【ラベル別 F1(平均)】")
     header = "".join(f"{p.name[:14]:>16}" for p, _ in summaries)

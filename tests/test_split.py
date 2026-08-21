@@ -147,3 +147,19 @@ def test_trivial_macro_f1_skips_labels_that_never_occur():
     labels[:20, 0] = 1
     macro, _ = trivial_macro_f1(labels)
     assert macro == pytest.approx(2 * 0.2 / 1.2)
+
+
+def test_paired_diff_flags_when_folds_disagree():
+    """foldごとに対応させた差を見る。符号が揃うかどうかが判断材料になる。
+
+    平均の差が標準偏差より小さくても、全foldで同じ向きなら実質的な改善と読める。
+    逆に符号がばらつくなら、平均が動いていてもたまたまの可能性が高い。
+    """
+    from scripts.compare_runs import paired_diff
+
+    consistent = paired_diff([0.40, 0.41, 0.44], [0.45, 0.42, 0.45], [2023, 2024, 2025])
+    assert "全foldで同符号" in consistent
+    assert "+0.023" in consistent
+
+    noisy = paired_diff([0.40, 0.45, 0.42], [0.44, 0.41, 0.46], [2023, 2024, 2025])
+    assert "ばらつく" in noisy
