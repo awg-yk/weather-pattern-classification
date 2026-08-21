@@ -38,6 +38,29 @@ def _time_name(da) -> str:
     raise KeyError(f"時刻の座標が見つかりません: {list(da.coords)}")
 
 
+_warned_about_downsampling = False
+
+
+def _warn_if_downsampling(native_shape, grid_size: int) -> None:
+    """元の格子より粗くリサイズしていたら知らせる。
+
+    grid_sizeが元の格子点数を下回ると、低気圧の中心付近のような細かい構造から
+    順に失われる。エラーにはならず精度が下がるだけなので、黙っていると
+    「ERA5には情報が無い」と読み違えかねない。年ごとに呼ばれるので一度だけ出す。
+    """
+    global _warned_about_downsampling
+    if _warned_about_downsampling:
+        return
+    native_y, native_x = native_shape
+    if grid_size < min(native_y, native_x):
+        print(
+            f"注意: ERA5の元の格子は{native_y}×{native_x}点ですが、"
+            f"{grid_size}×{grid_size}に縮めています。細かい構造が失われます"
+            f"(--grid-size {max(native_y, native_x)} までは情報が増えます)"
+        )
+    _warned_about_downsampling = True
+
+
 class ERA5GridDataset(Dataset):
     """labels.csvの各行(=1枚の天気図)に対応する日時のERA5格子を返す。
 
@@ -101,6 +124,8 @@ class ERA5GridDataset(Dataset):
                 t850 = (ds["t"] - 273.15).load()
                 if "pressure_level" in t850.dims:
                     t850 = t850.isel(pressure_level=0)
+
+            _warn_if_downsampling(mslp.shape[-2:], grid_size)
 
             mslp_tname, t850_tname = _time_name(mslp), _time_name(t850)
             mslp_index = {pd.Timestamp(v): i for i, v in enumerate(mslp[mslp_tname].values)}
