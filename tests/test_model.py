@@ -8,6 +8,7 @@ import copy
 import pathlib
 import tempfile
 
+import numpy as np
 import pytest
 import torch
 
@@ -149,3 +150,38 @@ def test_grid_weights_survive_the_save_and_load_round_trip():
     restored, _ = load_model(path, map_location="cpu")
     with torch.no_grad():
         assert torch.allclose(expected, restored.eval()(grid), atol=1e-6)
+
+
+def test_macro_ap_ignores_labels_with_no_positives():
+    """検証データに1件も現れないラベルは平均から外す。
+
+    average_precision_scoreは陽性0のとき0を返すため、含めると「予測できなかった」
+    のと区別がつかない。検証は300件足らずで、希少ラベルが1件も出ない回がある。
+    """
+    from src.train import _macro_ap
+
+    targets = np.array([[1.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+    scores = np.array([[0.9, 0.5], [0.1, 0.5], [0.8, 0.5]])
+    # 1列目だけで平均される -- 完全に順位付けできているので1.0
+    assert _macro_ap(targets, scores) == pytest.approx(1.0)
+    # どのラベルにも陽性が無ければ平均のとりようがない
+    assert _macro_ap(np.zeros((3, 2)), scores) != _macro_ap(np.zeros((3, 2)), scores)
+
+
+def test_macro_ap_rises_as_the_ranking_improves_where_f1_at_a_fixed_threshold_stalls():
+    """モデル選択の指標をmacro F1からmacro APに変えた理由そのもの。
+
+    pos_weightで陽性寄りに学習させるため、初期は何でも0.5を超えてF1が高く出る。
+    順位付けが良くなっても出力が0.5未満に寄ればF1@0.5は伸びない。
+    """
+    from sklearn.metrics import f1_score
+
+    from src.train import _macro_ap
+
+    # 2列にするのは、1列だとsklearnが多クラス扱いにして陰性側のF1まで平均に
+    # 入れてしまい、マルチラベルのmacro F1にならないため。
+    targets = np.array([[1.0, 1.0], [1.0, 1.0], [0.0, 0.0], [0.0, 0.0]])
+    # 順位は完璧だが、確率はすべて0.5未満(閾値0.5では1件も陽性と判定されない)
+    sharp = np.array([[0.45, 0.45], [0.40, 0.40], [0.10, 0.10], [0.05, 0.05]])
+    assert _macro_ap(targets, sharp) == pytest.approx(1.0)
+    assert f1_score(targets, (sharp > 0.5).astype(float), average="macro", zero_division=0) == 0.0

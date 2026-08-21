@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from sklearn.metrics import f1_score
+from sklearn.metrics import average_precision_score, f1_score
 from torch import nn, optim
 from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
@@ -62,16 +62,38 @@ def compute_pos_weight(train_subset, num_classes: int, cap: float = 20.0) -> tor
     return weight
 
 
+def _macro_ap(targets, scores) -> float:
+    """ラベルごとのaverage precisionを、そのデータに現れたラベルだけで平均する。
+
+    1件も陽性が無いラベルのAPは定義できない(sklearnは0を返す)。検証データは
+    300件足らずなので、希少ラベルが1件も出ない回がある。それを0として混ぜると
+    「予測できなかった」のと区別がつかず、平均が不当に下がる。
+    """
+    scores_per_label = [
+        average_precision_score(targets[:, i], scores[:, i])
+        for i in range(targets.shape[1])
+        if targets[:, i].sum() > 0
+    ]
+    return float(np.mean(scores_per_label)) if scores_per_label else float("nan")
+
+
 def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshold: float = 0.5):
     """マルチラベル学習: labelsは各クラス0/1のmulti-hotベクトル、BCEで学習する。
 
-    精度は「画像ごとに正解ラベル集合と予測ラベル集合が完全一致した割合」
-    (subset accuracy)と、ラベルごとのF1を平均したmacro F1の両方を返す。
-    完全一致率は数枚のブレで大きく上下するため、モデル選択にはmacro F1を使う。
+    (損失, 完全一致率, macro F1, macro AP)を返す。
+
+    完全一致率は「正解ラベル集合と予測ラベル集合が完全一致した割合」(subset accuracy)。
+    macro F1はthresholdを固定して測るため、モデル選択には向かない -- pos_weightで
+    再現寄りに学習させている以上、学習初期は何でも陽性と予測して0.5を超えやすく、
+    学習が進んで予測が鋭くなるほど0.5超えが減る。順位付けが良くなっていても
+    F1@0.5は下がりうる。最終評価は閾値を最適化して測るので、指標が食い違う。
+
+    そこでmacro AP(ラベルごとのaverage precisionの平均)も返す。閾値を決めずに
+    順位付けの良さだけを測るため、閾値最適化後の性能と素直に対応する。
     """
     model.train() if train else model.eval()
     total_loss, exact_match, total = 0.0, 0, 0
-    all_preds, all_targets = [], []
+    all_preds, all_probs, all_targets = [], [], []
 
     with torch.set_grad_enabled(train):
         for images, features, labels in tqdm(loader, leave=False):
@@ -87,20 +109,20 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshol
                 loss.backward()
                 optimizer.step()
 
-            preds = (torch.sigmoid(outputs) > threshold).float()
+            probs = torch.sigmoid(outputs)
+            preds = (probs > threshold).float()
             exact_match += (preds == labels).all(dim=1).sum().item()
             total_loss += loss.item() * images.size(0)
             total += images.size(0)
             all_preds.append(preds.detach().cpu())
+            all_probs.append(probs.detach().cpu())
             all_targets.append(labels.detach().cpu())
 
+    targets = torch.cat(all_targets).numpy()
     macro_f1 = f1_score(
-        torch.cat(all_targets).numpy(),
-        torch.cat(all_preds).numpy(),
-        average="macro",
-        zero_division=0,
+        targets, torch.cat(all_preds).numpy(), average="macro", zero_division=0,
     )
-    return total_loss / total, exact_match / total, macro_f1
+    return total_loss / total, exact_match / total, macro_f1, _macro_ap(targets, torch.cat(all_probs).numpy())
 
 
 def main():
@@ -229,11 +251,12 @@ def main():
     )
     parser.add_argument(
         "--select-metric",
-        choices=["macro_f1", "val_loss"],
-        default="macro_f1",
+        choices=["macro_ap", "macro_f1", "val_loss"],
+        default="macro_ap",
         help="ベストモデルの保存・早期終了の判定に使う指標。"
-        "val_lossは改善が早く止まりF1のピークを取り逃すことが実測で確認されているため、"
-        "既定はmacro_f1(過去の実験を再現する場合のみval_lossを指定する)",
+        "既定のmacro_apは閾値を決めずに順位付けの良さを測るので、閾値を最適化する"
+        "最終評価と対応する。macro_f1は閾値0.5固定のため、pos_weightで再現寄りに"
+        "学習させると初期エポックが最高値になりやすい(過去の実験の再現用に残している)",
     )
     args = parser.parse_args()
 
@@ -361,9 +384,9 @@ def main():
     # 学習率を徐々に下げることで、終盤の細かい収束と汎化性能を安定させる
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
 
-    # ベストモデルの選択基準。val_lossは早い段階で改善が止まる一方、その後も
-    # macro F1が伸び続けることが実測で確認されているため、既定はmacro F1。
-    # (--select-metric val_loss で従来の挙動に戻せる)
+    # ベストモデルの選択基準。既定はmacro AP(run_epochを参照)。閾値0.5固定の
+    # macro F1で選ぶと、pos_weightで陽性寄りに出力する初期エポックが最高値を取り、
+    # 実質未学習の重みが保存されてしまう(3つのfoldで実際に起きた)。
     best_score = float("-inf")
     epochs_without_improvement = 0
     out_path = Path(args.out)
@@ -375,30 +398,32 @@ def main():
     history_path = out_path.with_suffix(".history.json")
 
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc, train_f1 = run_epoch(
+        train_loss, train_acc, train_f1, train_ap = run_epoch(
             model, train_loader, criterion, optimizer, device, train=True
         )
-        val_loss, val_acc, val_f1 = run_epoch(
+        val_loss, val_acc, val_f1, val_ap = run_epoch(
             model, val_loader, criterion, optimizer, device, train=False
         )
         scheduler.step()
 
         print(
             f"epoch {epoch}/{args.epochs} "
-            f"train_loss={train_loss:.4f} train_acc={train_acc:.4f} train_f1={train_f1:.4f} "
+            f"train_loss={train_loss:.4f} train_f1={train_f1:.4f} train_ap={train_ap:.4f} "
             f"val_loss={val_loss:.4f} val_acc={val_acc:.4f} val_f1={val_f1:.4f} "
-            f"lr={scheduler.get_last_lr()[0]:.2e}"
+            f"val_ap={val_ap:.4f} lr={scheduler.get_last_lr()[0]:.2e}"
         )
         history.append({
             "epoch": epoch,
-            "train_loss": train_loss, "train_acc": train_acc, "train_f1": train_f1,
-            "val_loss": val_loss, "val_acc": val_acc, "val_f1": val_f1,
+            "train_loss": train_loss, "train_acc": train_acc,
+            "train_f1": train_f1, "train_ap": train_ap,
+            "val_loss": val_loss, "val_acc": val_acc,
+            "val_f1": val_f1, "val_ap": val_ap,
             "lr": scheduler.get_last_lr()[0],
         })
         history_path.write_text(json.dumps(history, indent=2), encoding="utf-8")
 
         # 「大きいほど良い」に符号を揃えて一律に比較する
-        score = val_f1 if args.select_metric == "macro_f1" else -val_loss
+        score = {"macro_ap": val_ap, "macro_f1": val_f1}.get(args.select_metric, -val_loss)
         if score > best_score:
             best_score = score
             epochs_without_improvement = 0
