@@ -135,6 +135,7 @@ class SmallCNN(nn.Module):
                 nn.MaxPool2d(2),
             ))
             previous = width
+        self.widths = tuple(widths)
         self.features = nn.Sequential(*blocks)
         # 大域平均プーリングで入力サイズに依存しなくする(EfficientNetと同じ)
         self.pool = nn.AdaptiveAvgPool2d(1)
@@ -189,6 +190,7 @@ def build_model(
     num_features: int = 0,
     in_channels: int = 3,
     arch: str = "efficientnet_b0",
+    cnn_widths=(32, 64, 128, 128),
 ) -> nn.Module:
     """EfficientNet-B0をベースにした転移学習モデル。データが少ない段階に適したサイズ。
 
@@ -200,6 +202,8 @@ def build_model(
 
     arch="small_cnn" にすると、EfficientNetの代わりに小さな畳み込みネットを使う
     (SmallCNNを参照)。ERA5格子のようにデータ量が少なく事前学習も効かない入力向け。
+    cnn_widthsで各段の幅を変えられる。容量が効くことが分かっている以上、既定の
+    (32,64,128,128)が最適とは限らないため。
 
     in_channels!=3 は、天気図画像(RGB)ではなくERA5の格子(気圧・気温など)を
     直接入力するとき用(src/era5_grid.pyを参照)。このとき形が合わないのは
@@ -208,7 +212,8 @@ def build_model(
     """
     if arch == "small_cnn":
         # 事前学習重みは存在しないので、pretrainedは無視する
-        model = SmallCNN(num_classes, in_channels=in_channels, dropout=dropout)
+        model = SmallCNN(num_classes, in_channels=in_channels, dropout=dropout,
+                         widths=tuple(cnn_widths))
         if freeze_backbone:
             for param in model.features.parameters():
                 param.requires_grad = False
@@ -275,6 +280,8 @@ def save_checkpoint(path, model: nn.Module, image_size: int) -> None:
             "num_features": model.num_features if isinstance(model, FeatureFusion) else 0,
             "in_channels": _base_in_channels(model),
             "arch": "small_cnn" if isinstance(backbone(model), SmallCNN) else "efficientnet_b0",
+            # 幅が違えば別の形なので、記録しないと読み戻せない
+            "cnn_widths": list(backbone(model).widths) if isinstance(backbone(model), SmallCNN) else [],
         },
         path,
     )
@@ -362,6 +369,7 @@ def load_model(path, map_location=None):
         num_features=meta_obj.get("num_features", 0),
         in_channels=meta_obj.get("in_channels", 3),
         arch=meta_obj.get("arch", "efficientnet_b0"),
+        cnn_widths=meta_obj.get("cnn_widths") or (32, 64, 128, 128),
     )
     meta = load_checkpoint(path, model, map_location=map_location)
     return model, meta

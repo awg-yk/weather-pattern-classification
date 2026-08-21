@@ -182,6 +182,10 @@ def main():
         "学習データ千件あまりに対して大きすぎ、極端な過学習に陥る",
     )
     parser.add_argument(
+        "--cnn-widths", type=int, nargs="+", default=[32, 64, 128, 128],
+        help="--arch small_cnn の各段の幅。容量がそのまま性能に効くため探索の対象になる",
+    )
+    parser.add_argument(
         "--coordconv",
         action="store_true",
         help="入力に座標(緯度経度に相当)チャンネルを足す。位置で決まる気圧配置の判別を助ける",
@@ -372,6 +376,7 @@ def main():
         num_features=len(train_base.feature_cols),
         in_channels=2 if args.input_mode == "era5-grid" else 3,
         arch=args.arch,
+        cnn_widths=args.cnn_widths,
     ).to(device)
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"モデル: {args.arch} (学習するパラメータ {trainable:,}個 / 学習データ{len(train_ds)}件)")

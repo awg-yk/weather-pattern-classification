@@ -47,6 +47,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--coordconv", action="store_true")
+    parser.add_argument("--cnn-widths", type=int, nargs="+", default=[32, 64, 128, 128])
     parser.add_argument(
         "--arch", default="efficientnet_b0", choices=["efficientnet_b0", "small_cnn"],
         help="small_cnn=データ量に見合う小さな畳み込みネット(src/model.pyのSmallCNNを参照)",
@@ -120,7 +121,7 @@ def main():
                     train_cmd += ["--grid-size", args.grid_size]
                 if args.no_pretrained:
                     train_cmd.append("--no-pretrained")
-                train_cmd += ["--arch", args.arch]
+                train_cmd += ["--arch", args.arch, "--cnn-widths", *args.cnn_widths]
             if train_cmd is not None:
                 if args.coordconv:
                     train_cmd.append("--coordconv")

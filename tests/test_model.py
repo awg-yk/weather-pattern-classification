@@ -227,3 +227,23 @@ def test_small_cnn_survives_the_save_and_load_round_trip_with_coordconv():
     restored, _ = load_model(path, map_location="cpu")
     with torch.no_grad():
         assert torch.allclose(expected, restored.eval()(grid), atol=1e-6)
+
+
+def test_small_cnn_widths_round_trip_through_the_checkpoint():
+    """幅が違えば別の形なので、重みに記録して読み戻せること。
+
+    記録し忘れると、既定の幅で組んだモデルに別の幅の重みを読もうとして落ちる。
+    容量を振って比較する以上、幅の違う重みが並んで存在することになる。
+    """
+    model = build_model(pretrained=False, in_channels=2, arch="small_cnn",
+                        cnn_widths=[16, 32, 64, 64], coordconv=True).eval()
+    grid = torch.randn(2, 2, 64, 64)
+    with torch.no_grad():
+        expected = model(grid)
+
+    path = pathlib.Path(tempfile.mkdtemp()) / "weights.pt"
+    save_checkpoint(path, model, image_size=64)
+    assert torch.load(path, map_location="cpu")["cnn_widths"] == [16, 32, 64, 64]
+    restored, _ = load_model(path, map_location="cpu")
+    with torch.no_grad():
+        assert torch.allclose(expected, restored.eval()(grid), atol=1e-6)
