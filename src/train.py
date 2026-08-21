@@ -146,8 +146,8 @@ def main():
         "--no-pretrained",
         action="store_true",
         help="ImageNetの事前学習重みを使わずゼロから学習する。"
-        "ERA5格子(--input-mode era5-grid)は事前学習を使えないため、"
-        "天気図画像と条件を揃えて比較したいときに指定する",
+        "既定では、ERA5格子(--input-mode era5-grid)でも最初の畳み込みだけ作り直して"
+        "事前学習重みを引き継ぐ。事前学習の寄与そのものを測りたいときに指定する",
     )
     parser.add_argument(
         "--freeze-backbone",
@@ -327,7 +327,7 @@ def main():
         num_features=len(train_base.feature_cols),
         in_channels=2 if args.input_mode == "era5-grid" else 3,
     ).to(device)
-    if args.no_pretrained and args.input_mode == "chart":
+    if args.no_pretrained:
         print("事前学習重みを使わずゼロから学習します(--no-pretrained)")
     if args.coordconv:
         print("CoordConv: 入力に座標チャンネルを追加します(位置に依存する気圧配置の判別用)")

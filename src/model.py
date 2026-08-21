@@ -105,6 +105,41 @@ class FeatureFusion(nn.Module):
         return self.head(torch.cat([image_features, scaled], dim=1))
 
 
+def _adapt_first_conv(model: nn.Module, in_channels: int, pretrained: bool) -> None:
+    """最初の畳み込みを in_channels 入力に差し替える。事前学習重みは引き継ぐ。
+
+    ImageNetの重みでチャンネル数に依存するのは、この最初の畳み込みだけである
+    (3×32×3×3 = 864パラメータ)。EfficientNet-B0全体は約530万パラメータなので、
+    形の合わない0.02%のために残り99.98%を捨てるのは、もったいない。
+    2層目以降が学習しているエッジ・勾配・ブロブの検出は、RGB画像でなくても
+    (気圧場のような滑らかな物理量であっても)初期値としてランダムよりは役に立つ。
+
+    新しい層の重みは、RGB3チャンネル分の平均で全チャンネルを初期化する。
+    衛星のマルチスペクトル画像で標準的に使われる方法で、チャンネル数を水増しして
+    無い情報を捏造する代わりに、重みの側を入力の形に合わせる。さらに 3/in_channels
+    を掛けることで、全チャンネルに同じ値を入れたときの出力が元と一致するようにし、
+    後続の層が前提としている活性の大きさを崩さない。
+    """
+    first_conv = model.features[0][0]
+    replacement = nn.Conv2d(
+        in_channels,
+        first_conv.out_channels,
+        kernel_size=first_conv.kernel_size,
+        stride=first_conv.stride,
+        padding=first_conv.padding,
+        bias=first_conv.bias is not None,
+    )
+    if pretrained:
+        with torch.no_grad():
+            averaged = first_conv.weight.mean(dim=1, keepdim=True)
+            replacement.weight.copy_(averaged.expand(-1, in_channels, -1, -1) * (3.0 / in_channels))
+            if first_conv.bias is not None:
+                replacement.bias.copy_(first_conv.bias)
+        print(f"最初の畳み込みを{in_channels}チャンネル入力に作り直し、"
+              "残りの層はImageNetの事前学習重みを引き継ぎます")
+    model.features[0][0] = replacement
+
+
 def build_model(
     num_classes: int = len(LABELS),
     pretrained: bool = True,
@@ -123,28 +158,15 @@ def build_model(
     num_features>0 にするとERA5の数値特徴を併用する(FeatureFusionを参照)。
 
     in_channels!=3 は、天気図画像(RGB)ではなくERA5の格子(気圧・気温など)を
-    直接入力するとき用(src/era5_grid.pyを参照)。ImageNetの事前学習重みは
-    3チャンネルのRGB画像を前提にしており、気圧場には転用できないため、
-    in_channels!=3 のときは pretrained を強制的に無効にする。
+    直接入力するとき用(src/era5_grid.pyを参照)。このとき形が合わないのは
+    最初の畳み込み1層だけなので、その層だけ作り直し、残りは事前学習重みを
+    引き継ぐ(_adapt_first_conv を参照)。
     """
-    if in_channels != 3 and pretrained:
-        print("in_channelsが3以外のため、ImageNetの事前学習重みは使わずゼロから学習します"
-              "(事前学習はRGB画像を前提にしており、気圧場などの物理量には転用できないため)")
-        pretrained = False
-
     weights = EfficientNet_B0_Weights.DEFAULT if pretrained else None
     model = efficientnet_b0(weights=weights)
 
     if in_channels != 3:
-        first_conv = model.features[0][0]
-        model.features[0][0] = nn.Conv2d(
-            in_channels,
-            first_conv.out_channels,
-            kernel_size=first_conv.kernel_size,
-            stride=first_conv.stride,
-            padding=first_conv.padding,
-            bias=first_conv.bias is not None,
-        )
+        _adapt_first_conv(model, in_channels, pretrained)
 
     if freeze_backbone:
         for param in model.features.parameters():

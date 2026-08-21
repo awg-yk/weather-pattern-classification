@@ -5,12 +5,21 @@
 """
 
 import copy
+import pathlib
+import tempfile
 
 import pytest
 import torch
 
 from src.labels import LABELS
-from src.model import CoordConv, backbone, build_model, load_model, save_checkpoint
+from src.model import (
+    CoordConv,
+    _adapt_first_conv,
+    backbone,
+    build_model,
+    load_model,
+    save_checkpoint,
+)
 
 IMAGE = torch.randn(2, 3, 64, 64)
 
@@ -89,3 +98,54 @@ def test_feature_normalisation_uses_the_supplied_statistics():
     # 標準偏差0の特徴でも0除算にならない
     model.set_feature_stats(mean, torch.zeros(3))
     assert (model.feature_std > 0).all()
+
+
+def test_non_rgb_input_keeps_the_pretrained_weights_past_the_first_layer():
+    """ERA5格子(2ch)でも、形が合わないのは最初の畳み込みだけ。
+
+    ここが壊れて事前学習重みを丸ごと捨てるようになると、精度は下がるが
+    エラーにはならないので、テストしないと気づけない。
+    """
+    reference = build_model(pretrained=False)
+    adapted = copy.deepcopy(reference)
+    _adapt_first_conv(adapted, 2, pretrained=True)
+
+    assert backbone(adapted).features[0][0].in_channels == 2
+    # 2層目以降はそのまま引き継がれている
+    for (name, before), (_, after) in zip(
+        backbone(reference).features[1:].named_parameters(),
+        backbone(adapted).features[1:].named_parameters(),
+    ):
+        assert torch.equal(before, after), name
+
+
+def test_adapted_first_layer_preserves_the_scale_of_the_activations():
+    """全チャンネルに同じ値を入れたとき、3ch版と同じ出力になるようスケールを合わせる。
+
+    これを外すと活性が入力チャンネル数に比例して膨らみ、後続の層が前提と
+    している大きさから外れる。
+    """
+    reference = build_model(pretrained=False).eval()
+    adapted = copy.deepcopy(reference)
+    _adapt_first_conv(adapted, 2, pretrained=True)
+    adapted.eval()
+
+    plane = torch.randn(1, 1, 32, 32)
+    with torch.no_grad():
+        expected = backbone(reference).features[0][0](plane.expand(-1, 3, -1, -1))
+        actual = backbone(adapted).features[0][0](plane.expand(-1, 2, -1, -1))
+    assert torch.allclose(expected, actual, atol=1e-5)
+
+
+def test_grid_weights_survive_the_save_and_load_round_trip():
+    """2チャンネルの重みを、CoordConvと併用しても正しく読み戻せること。"""
+    model = build_model(pretrained=False, in_channels=2, coordconv=True).eval()
+    grid = torch.randn(2, 2, 64, 64)
+    with torch.no_grad():
+        expected = model(grid)
+
+    path = pathlib.Path(tempfile.mkdtemp()) / "weights.pt"
+    save_checkpoint(path, model, image_size=64)
+    restored, _ = load_model(path, map_location="cpu")
+    with torch.no_grad():
+        assert torch.allclose(expected, restored.eval()(grid), atol=1e-6)
