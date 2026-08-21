@@ -5,10 +5,8 @@
 このファイルは、後から読む人(数か月後の自分を含む)が、会話のログを持たない状態で
 同じ地点から再開できるように書いている。数字は再現に必要な条件つきで載せる。
 
-> **先に読むこと**: ここに載っている数字はすべて `data/labels.csv` で測ったもので、
-> オホーツク海高気圧の陽性を6割近く取りこぼしている(「未解決のこと」の1を参照)。
-> 測り方の欠陥3つと、モデル設計についての結論は、ラベルを直しても変わらないはずだが、
-> **具体的な数値は取り直しが要る。**
+> **数字は `data/labels_v2.csv` で測ったもの**(runs/v2_chart・runs/v2_grid)。
+> `labels.csv` で測った旧版との違いは「ラベルを直して何が変わったか」に書いた。
 
 ## 問い
 
@@ -23,8 +21,8 @@ leave-one-year-out 交差検証(2023/2024/2025)、macro F1。
 
 | 入力 | macro F1 | 自明な予測との差 | fold間の標準偏差 |
 |---|---|---|---|
-| 天気図画像 | 0.619 | +0.360 | 0.007 |
-| ERA5格子 | 0.497 | +0.238 | 0.007 |
+| 天気図画像 | 0.626 | +0.359 | 0.006 |
+| ERA5格子 | 0.512 | +0.245 | 0.023 |
 
 「自明な予測」は、全部を陽性と答えるだけで得られる macro F1 (この10ラベルでは0.258)。
 **macro F1 の絶対値だけを見てはいけない。** 出現率pのラベルは何もしなくても 2p/(1+p) を取る。
@@ -36,15 +34,21 @@ leave-one-year-out 交差検証(2023/2024/2025)、macro F1。
 
 | ラベル | 天気図 | ERA5格子 |
 |---|---|---|
-| 台風 | 0.764 | 0.492 |
-| 日本海低気圧 | 0.664 | 0.433 |
-| 南岸低気圧 | 0.634 | 0.433 |
-| 移動性高気圧 | 0.711 | 0.711 |
-| **オホーツク海高気圧** | **0.131** | **0.345** |
+| 台風 | 0.766 | 0.478 |
+| 日本海低気圧 | 0.645 | 0.437 |
+| 南岸低気圧 | 0.597 | 0.489 |
+| 前線通過 | 0.718 | 0.430 |
+| 移動性高気圧 | 0.721 | 0.696 |
+| 西高東低 | 0.754 | 0.723 |
+| **オホーツク海高気圧** | **0.319** | **0.470** |
 
-低気圧・台風は天気図の圧勝、大規模な高気圧は互角、オホーツク海高気圧だけ格子が優る。
+低気圧・台風・前線は天気図の圧勝、大規模な高気圧と冬型は互角、オホーツク海高気圧
+だけ格子が優る。**この逆転は3つのfoldすべてで起きる**(格子 0.50/0.43/0.48 に対し
+天気図 0.30/0.33/0.33)ので、ばらつきの範囲ではない。
+
 オホーツク海高気圧は「オホーツク海にある」という位置が定義そのもので、等圧線の形に
 特徴が乏しい。Grad-CAMでも、天気図モデルは高気圧本体ではなく下流の等圧線を見ていた。
+格子側は座標チャンネル(`--coordconv`)で位置を直接参照できる。
 
 ## 測り方の欠陥を3つ直した。直す前の数字は使えない
 
@@ -133,13 +137,14 @@ EfficientNetでは効果がなかった(0.473→0.473)。滑らかな気圧場�
 
 ## 未解決のこと
 
-### 1. 【重要】このページの数字は、すべて古いラベルで出したもの
+### (解決済み) ラベルの版
 
-今日の全実験は `data/labels.csv` で回した。だが手元にはその翌日の版がある
-(どちらもgitには入っていない。`labels.csv` のみ追跡されている)。
+当初の実験は `data/labels.csv` で回していた。その翌日の版が手元にあったが、
+gitに入っておらず(追跡されていたのは `labels.csv` だけ)、READMEにも記載がなく、
+結果JSONにもどのラベルで測ったかが残っていなかったため、丸一日気づかなかった。
 
 ```
-labels.csv                2026/08/19 14:17   ← 今日使ったのはこちら
+labels.csv                2026/08/19 14:17   ← 当初使っていたのはこちら
 review_okhotsk_full.csv   2026/08/20 15:55
 review_okhotsk_final.csv  2026/08/20 16:34
 labels_v2.csv             2026/08/20 16:52
@@ -158,9 +163,30 @@ labels_v2.csv             2026/08/20 16:52
 影響が最も大きいのは当然オホーツク海高気圧(天気図0.131 / 格子0.345)だが、
 macro F1 は全ラベルの平均なので、総合値 0.619 / 0.497 も動く。
 
-`labels_v2.csv` で交差検証を取り直すこと。天気図・格子の2本と、混合1本。
-その際 `labels_v2.csv` をgitに追加しておくこと(今の `labels.csv` だけが追跡された
-状態では、どの版で出した数字なのか後から判別できない)。
+**取り直した。このページの数字は `labels_v2.csv` のもの。** `labels_v2.csv` と
+見直しの記録(`review_okhotsk*.csv`)はgitに入れた。
+
+学習の前に `python -m scripts.preflight --labels <ファイル> --years ...` を流せば、
+どのラベルファイルに何件入っているかが数秒で分かる。今回はこれが無かったために
+丸一日ぶんの実行を古いラベルでやり直すことになった。
+
+#### ラベルを直して何が変わったか
+
+okhotsk_high の陽性が 85 → 199(同じ2432行)。
+
+| | labels.csv | labels_v2.csv |
+|---|---|---|
+| 天気図 全体 | 0.619 | 0.626 |
+| ERA5格子 全体 | 0.497 | 0.512 |
+| 天気図 okhotsk_high | 0.131 ± 0.081 | **0.319 ± 0.019** |
+| ERA5格子 okhotsk_high | 0.345 ± 0.150 | **0.470 ± 0.033** |
+
+天気図のokhotsk_highは2.4倍になった。**0.131という値はモデルの能力ではなく、
+ラベルの欠落を測っていた。** fold間の標準偏差も両方とも4分の1以下になり、
+初めて報告できる数字になった。
+
+一方で全体の差(0.122 → 0.114)と、okhotsk_highで格子が上回るという関係は変わらない。
+**ラベルの不備で説明できたのは差の一部だけで、残りは実際の性能差。**
 
 ### 2. オホーツク海高気圧のラベルには、それでも見落としが残りうる
 
@@ -186,21 +212,25 @@ macro F1 は全ラベルの平均なので、総合値 0.619 / 0.497 も動く�
 ## 再現に使うコマンド
 
 ```bash
+# 学習の前に。設定の不備を数秒で洗い出す
+python -m scripts.preflight --data-dir <画像> --labels data/labels_v2.csv \
+    --years 2023 2024 2025
+
 # 天気図
-python -m scripts.cross_validate --data-dir <画像> --labels data/labels.csv \
-    --years 2023 2024 2025 --out-dir runs/loyo_chart_ap
+python -m scripts.cross_validate --data-dir <画像> --labels data/labels_v2.csv \
+    --years 2023 2024 2025 --out-dir runs/v2_chart
 
 # ERA5格子
 python -m scripts.cross_validate --input-mode era5-grid --arch small_cnn --coordconv \
-    --labels data/labels.csv --years 2023 2024 2025 --out-dir runs/loyo_grid_w128
+    --labels data/labels_v2.csv --years 2023 2024 2025 --out-dir runs/v2_grid
 
 # 比較(ラベルを絞って平均を取り直せる。基準も同じラベルで取り直される)
-python -m scripts.compare_runs runs/loyo_chart_ap runs/loyo_grid_w128 \
+python -m scripts.compare_runs runs/v2_chart runs/v2_grid \
     --exclude front_passage stationary_front
 
 # 混合(学習済みの重みを使う。再学習は不要)
-python -m scripts.ensemble_chart_grid --data-dir <画像> --labels data/labels.csv \
-    --chart-weights runs/loyo_chart_ap --grid-weights runs/loyo_grid_w128 \
+python -m scripts.ensemble_chart_grid --data-dir <画像> --labels data/labels_v2.csv \
+    --chart-weights runs/v2_chart --grid-weights runs/v2_grid \
     --years 2023 2024 2025
 ```
 
