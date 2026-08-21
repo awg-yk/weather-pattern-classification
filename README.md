@@ -84,7 +84,7 @@ python scripts/predict.py --date 2025-01-01 --hour 0
 既存の`labels.csv`を`scripts/merge_labels.py`で書き換える。
 
 ```bash
-python scripts/merge_labels.py --labels data/labels.csv --from zonal_high --to migratory_high
+python scripts/merge_labels.py --labels data/labels_v2.csv --from zonal_high --to migratory_high
 ```
 
 自動でバックアップ(`.bak`)が作られる。**ラベル数(クラス数)が変わるとモデルの
@@ -98,23 +98,39 @@ python scripts/merge_labels.py --labels data/labels.csv --from zonal_high --to m
 ```
 data/
   raw/            # ダウンロードした元画像・元データ（gitignore対象）
-  processed/      # 学習用に前処理した画像
-  labels.csv      # ファイル名とラベルの対応表
+  processed/      # 学習用に前処理した画像（gitignore対象）
+  labels_v2.csv   # ファイル名とラベルの対応表。**学習・評価にはこちらを使う**
+  labels.csv      # 旧版。okhotsk_highの陽性が85件しかない(v2は199件)
+  review_okhotsk*.csv  # okhotsk_highを見直したときの判定記録
 scripts/
+  preflight.py        # **学習を始める前の設定チェック(数秒)**
+  cross_validate.py   # leave-one-year-out交差検証。報告用の数値はこれ
+  compare_runs.py     # 実行どうしの比較。ラベルを絞って平均を取り直せる
+  ensemble_chart_grid.py  # 天気図モデルと格子モデルの確率を混ぜる
   collect_jma.py      # 気象庁天気図画像の収集スクリプト
   download_era5.py    # ERA5データ取得スクリプト（CDS API）
-  era5_to_image.py    # ERA5気圧場を天気図風画像に変換
+  label_tool.py       # ラベル付け・見直し(盲検レビュー)
   auto_label_era5.py  # ERA5気圧場からの規則ベース自動ラベリング
 src/
-  dataset.py      # PyTorch Dataset/DataLoader定義
-  model.py         # CNNモデル定義（転移学習）
-  train.py         # 学習スクリプト
-  evaluate.py       # 評価スクリプト
-  labels.py         # ラベル定義
+  dataset.py      # 天気図画像のDataset
+  era5_grid.py    # ERA5格子を直接入力にするDataset
+  model.py        # EfficientNet / SmallCNN / CoordConv / FeatureFusion
+  train.py        # 学習スクリプト
+  evaluate.py     # 評価スクリプト
+  split.py        # train/val/testの分け方
+  labels.py       # ラベル定義
+docs/
+  2026-08-21-chart-vs-era5-grid.md  # 天気図とERA5格子の比較。結論と未解決の課題
+runs/             # 交差検証の出力。summary.jsonだけ追跡する
 webapp/
-  backend/          # FastAPI推論API
-  frontend/          # シンプルなアップロードUI
+  backend/        # FastAPI推論API
+  frontend/       # シンプルなアップロードUI
 ```
+
+**天気図画像はこのリポジトリには入っていない。** 気象庁から取得する場合は
+`scripts/collect_jma.py`、2000〜2022年分は
+[weather-pattern-classification-data](https://github.com/awg-yk/weather-pattern-classification-data)
+にある。`--data-dir` には画像を置いた実際のディレクトリを渡すこと。
 
 ## セットアップ
 
@@ -161,10 +177,16 @@ python scripts/preprocess_jma.py --in-dir data/raw/jma/png --out-dir data/proces
 
 ### ラベリング（マルチラベル対応）
 
+> **どのラベルファイルを使うかを毎回確かめること。** いま学習・評価に使うのは
+> `data/labels_v2.csv`。`data/labels.csv` は okhotsk_high の見直し前の版で、
+> 陽性が85件しかない(v2は199件)。両方が手元にある状態で古いほうを使ってしまい、
+> 丸一日ぶんの実験をやり直したことがある。`python -m scripts.preflight --labels <ファイル>
+> --years ...` を流せば、そのファイルのラベルごとの件数が数秒で出る。
+
 パターンラベルは付いていないため、`scripts/label_tool.py` を使ってColab上で
 チェックボックスでラベル付けする。1枚の天気図に複数のパターンが同時に
 当てはまることがある（例: 西高東低かつ日本海低気圧）ため、複数選択に対応している。
-`data/labels.csv` の label列にはパイプ区切りで保存される
+`data/labels_v2.csv` の label列にはパイプ区切りで保存される
 (例: `winter_pressure_pattern|japan_sea_low`)。
 
 ```python
@@ -174,17 +196,17 @@ from scripts.label_tool import run_labeling_session, run_review_session
 
 # 1) 未ラベルの新しい画像にラベルを付ける
 run_labeling_session(
-    images_dir="data/processed/jma",
-    labels_csv="data/labels.csv",
+    images_dir="<画像のディレクトリ>",
+    labels_csv="data/labels_v2.csv",
 )
 ```
 
-- `data/labels.csv` に追記していく形式なので、途中で中断しても再開時にラベル済みの
+- ラベルCSVに追記していく形式なので、途中で中断しても再開時にラベル済みの
   画像は自動でスキップされる
 - チェックボックスで複数選択後「決定」ボタンで次の画像に進む
 - 「戻る」ボタンで直前の1件を取り消せる
 - 判断に迷う画像は「わからない/該当なし」で `unclassified` として記録し、後でまとめて見直す
-- ラベル付け作業もColabのランタイムが切れると`data/labels.csv`が消えるため、
+- ラベル付け作業もColabのランタイムが切れるとラベルCSVが消えるため、
   こまめにGoogle Driveへコピーするか、`labels_csv`引数を直接Drive上のパスにする
 
 少数派のラベル（例: `futatsudama_low`）を増やしたい場合は、新規収集の代わりに
@@ -193,8 +215,8 @@ run_labeling_session(
 ```python
 # 2) 既にラベル済みの画像を見直して、追加のタグを付け足す
 run_review_session(
-    images_dir="data/processed/jma",
-    labels_csv="data/labels.csv",
+    images_dir="<画像のディレクトリ>",
+    labels_csv="data/labels_v2.csv",
     filter_labels=["japan_sea_low", "nankigan_low"],  # この中のどれかが付いている画像だけ対象
 )
 ```
@@ -212,15 +234,21 @@ APIキーを `~/.cdsapirc` に設定した上で `scripts/download_era5.py` を�
 ## 学習
 
 ```bash
-python -m src.train --data-dir data/processed --labels data/labels.csv --epochs 30
+python -m src.train --data-dir <画像のディレクトリ> --labels data/labels_v2.csv --epochs 30
 ```
 
 主なオプション:
 
 | オプション | 既定 | 説明 |
 |---|---|---|
-| `--image-size` | 224 | 入力解像度。天気図は等圧線・前線記号が細かく224では潰れやすい。384程度まで上げると精度が改善しうるが、VRAMを解像度の2乗で消費するので`--batch-size`を併せて下げること |
-| `--select-metric` | `macro_f1` | ベストモデルの保存・早期終了の判定指標。`val_loss`は改善が早く止まりF1のピークを取り逃すことが実測で確認されているため既定はmacro F1。過去の実験を再現する場合のみ`val_loss`を指定する |
+| `--input-mode` | `chart` | `chart`=天気図の画像。`era5-grid`=ERA5の海面更正気圧・850hPa気温の格子をそのまま入力する |
+| `--arch` | `efficientnet_b0` | `small_cnn`は浅い自作ネット。**ERA5格子ではこちらを使う**(EfficientNetは同じパラメータ数でも自明な予測を下回る。`src/model.py`の`SmallCNN`を参照) |
+| `--coordconv` | なし | 入力に座標チャンネルを足す。位置で決まる気圧配置(オホーツク海高気圧など)の判別を助ける |
+| `--grid-size` | 128 | `--input-mode era5-grid`のときの格子の一辺。ERA5の元データは181×221点なので、128は粗い |
+| `--cnn-widths` | 128 256 512 512 | `--arch small_cnn`の各段の幅。実測で最良かつfold間のばらつきも最小だった値 |
+| `--image-size` | 224 | 天気図の入力解像度。VRAMを解像度の2乗で消費するので`--batch-size`を併せて下げること |
+| `--select-metric` | `macro_ap` | ベストモデルの保存・早期終了の判定指標。**閾値0.5固定のmacro F1で選ぶと、pos_weightで陽性寄りに学習させる都合で初期エポックが最高値を取り、実質未学習の重みが保存される**(実際に起きた)。既定のmacro APは閾値を決めずに順位付けの良さを測るので、閾値を最適化する最終評価と対応する |
+| `--val-mode` | `tail` | 検証データの取り方。`tail`=学習期間の末尾、`spread`=1年を通して等間隔に週を抜き取る。`tail`だと検証が秋冬に偏り、夏の型(オホーツク海高気圧・太平洋高気圧)の閾値やモデル選択がその季節を見ないまま決まる |
 | `--split-mode` | `temporal` | train/val/testの分け方。`temporal`=日付順のブロック、`by_year`=年ごと、`random`=従来のランダム分割 |
 | `--test-ratio` | 0.0 | 最終報告用に取り分けるテストデータの割合。学習にも閾値探索にも使わない |
 | `--seed` | 42 | 分割と乱数の固定。件数を変えて比較する際は必ず揃えること |
@@ -237,7 +265,7 @@ python -m src.train --data-dir data/processed --labels data/labels.csv --epochs 
 重ならないようにしている。手元のデータでリーク量を確認するには:
 
 ```bash
-python -m scripts.check_leakage --labels data/labels.csv
+python -m scripts.check_leakage --labels data/labels_v2.csv
 ```
 
 季節の偏りが気になる場合(テスト期間が冬だけになる等)は `--split-mode by_year` を使うと、
@@ -264,10 +292,27 @@ python -m scripts.check_leakage --labels data/labels.csv
 全ラベルが評価対象に入る。さらにfoldごとに推定値が得られるので、
 **平均±標準偏差**で報告でき、差が誤差かどうかを判断できる。
 
+**始める前に必ず `preflight` を流すこと。** 1foldに数十分かかるので、設定の不備に
+学習を始めてから気づくと損失が大きい。数秒で終わる。
+
+```bash
+python -m scripts.preflight \
+    --data-dir <画像のディレクトリ> --labels data/labels_v2.csv \
+    --years 2023 2024 2025
+```
+
+どのラベルファイルに何件入っているか、画像やERA5が全行そろっているか、foldごとの
+分割、そして**検証データに1件も現れないラベル**が出る。最後は特に効く——そのラベルに
+ついては閾値もモデル選択も決めようがなく、決めればでたらめになる。
+
 ```bash
 python -m scripts.cross_validate \
-    --data-dir data/processed --labels data/labels.csv \
-    --years 2023 2024 2025 --out-dir runs/loyo
+    --data-dir <画像のディレクトリ> --labels data/labels_v2.csv \
+    --years 2023 2024 2025 --out-dir runs/v2_chart
+
+# ERA5の格子を入力にする場合
+python -m scripts.cross_validate --input-mode era5-grid --arch small_cnn --coordconv \
+    --labels data/labels_v2.csv --years 2023 2024 2025 --out-dir runs/v2_grid
 ```
 
 | fold | 学習 | テスト |
@@ -288,6 +333,47 @@ python -m scripts.cross_validate \
 実力を過小評価する。`evaluate.py` は出現したラベルだけに絞ったmacro F1も併記する。
 報告にはそちらを使い、評価できなかったラベルは明示すること。
 
+### macro F1 の絶対値を、そのまま読まないこと
+
+出現率 p のラベルは、**全部を陽性と答えるだけで** F1 = 2p/(1+p) を取る。移動性高気圧
+(出現率41%)なら0.59。この10ラベルの平均で0.26〜0.28になるため、macro F1の絶対値は
+学習の成果を表さない。
+
+`evaluate.py` は毎回この基準と、そこからの上積みを出力する。下回っていれば警告する。
+
+```
+全部を陽性と答えるだけで得られる macro F1: 0.281  → このモデルの上積み: +0.342
+```
+
+**この基準を出していなかったために、自明な予測を下回る結果(0.250 対 0.258)を
+「低いが学習はできている」と読み違えたことがある。** 報告には上積みを併記すること。
+
+### 実行どうしを比べる
+
+```bash
+python -m scripts.compare_runs runs/v2_chart runs/v2_grid \
+    --exclude front_passage stationary_front
+```
+
+`--exclude` で指定したラベルを外して平均を取り直す(基準も同じラベルで取り直される)。
+ERA5格子には前線の記号が含まれないので、その不利を除いて比べたいときに使う。
+
+foldは実行どうしで共通なので、平均どうしではなく**fold単位で対応させた差**も出る。
+年ごとの差が揃って同符号なら、平均の差が標準偏差より小さくても実質的な改善と読める。
+
+### 天気図とERA5格子を組み合わせる
+
+```bash
+python -m scripts.ensemble_chart_grid --data-dir <画像> --labels data/labels_v2.csv \
+    --chart-weights runs/v2_chart --grid-weights runs/v2_grid \
+    --years 2023 2024 2025 --out runs/v2_ensemble.json
+```
+
+学習済みの重みを使うので再学習は不要。両者の確率を `p = (1-w)*天気図 + w*格子` で
+混ぜる。**wはラベルごとに決める**——天気図が強い台風と格子が強いオホーツク海高気圧を
+ひとつのwで妥協させると、両方が損をする。wと閾値はどちらも検証データで決め、
+テストには一度も触れずに適用する。
+
 学習した重みには入力解像度とラベル一覧が同梱される。`predict.py`・`evaluate.py`・Grad-CAM・
 Web UIはこれを読んで前処理を自動的に合わせるため、`--image-size`を変えても推論側の指定は不要。
 (EfficientNetは適応的プーリングを使うため、サイズが食い違ってもエラーにならず「黙って精度が
@@ -297,6 +383,27 @@ Web UIはこれを読んで前処理を自動的に合わせるため、`--image
 残したい場合は、再学習のたびに `--out weights/model_YYYYMMDD.pt` のように日付やバージョンを
 含めたファイル名を指定すること。上書きしてしまうと、その時点の重みは復元できない。
 
+## いまの結果
+
+leave-one-year-out 交差検証(2023/2024/2025)、`data/labels_v2.csv`、macro F1。
+詳細と、そこに至るまでに直した測定上の欠陥は
+[`docs/2026-08-21-chart-vs-era5-grid.md`](docs/2026-08-21-chart-vs-era5-grid.md)。
+
+| 入力 | macro F1 | 自明な予測との差 | fold間の標準偏差 |
+|---|---|---|---|
+| 天気図画像 | 0.626 | +0.359 | 0.006 |
+| ERA5格子 | 0.512 | +0.245 | 0.023 |
+| 両方(確率を混ぜる) | **0.640** | **+0.374** | 0.022 |
+
+**ERA5の気圧場は天気図画像の代わりにならない。** 出発点の「格子は天気図の元データ
+なのだから上位互換のはず」という仮説は否定された。前線2ラベルを除いても差は0.089残り、
+全foldで同じ向き。前線記号だけでは説明できない。
+
+**ただし、位置で定義される型では逆転する。** オホーツク海高気圧は格子0.470 対
+天気図0.319で、3つのfoldすべてで格子が上。混合時にこのラベルへ選ばれる重みは0.93
+(0=天気図のみ / 1=格子のみ)で、台風の0.02と対照的。**得意分野が違うので、
+両方使うのが最良。**
+
 ### 論文の図として出す(ラベルを指定して成功例・失敗例を並べる)
 
 `scripts/gradcam_report.py` は、ラベルを1つ指定して、そのラベルが正解となっている
@@ -304,15 +411,15 @@ Web UIはこれを読んで前処理を自動的に合わせるため、`--image
 ラベルを対比させると、何を手がかりにしているのかが読み取りやすい。
 
 ```bash
-# 得意な例(台風)
+# 得意な例(台風。天気図0.766 対 ERA5格子0.478)
 python -m scripts.gradcam_report \
-    --data-dir data/processed --labels data/labels.csv \
-    --weights runs/loyo/model_test2025.pt \
+    --data-dir <画像のディレクトリ> --labels data/labels_v2.csv \
+    --weights runs/v2_chart/model_test2025.pt \
     --years 2023 2024 2025 --split-mode loyo --test-year 2025 \
-    --label typhoon --out runs/loyo/gradcam_typhoon.png
+    --label typhoon --out runs/v2_chart/gradcam_typhoon.png
 
-# 苦手な例(オホーツク海高気圧)
-python -m scripts.gradcam_report ... --label okhotsk_high --out runs/loyo/gradcam_okhotsk.png
+# 苦手な例(オホーツク海高気圧。天気図0.319 対 ERA5格子0.470と、唯一格子が上回る)
+python -m scripts.gradcam_report ... --label okhotsk_high --out runs/v2_chart/gradcam_okhotsk.png
 ```
 
 分割の指定(`--years` / `--split-mode` / `--test-year` など)は学習時と同じ値にすること。
@@ -344,7 +451,11 @@ H/Lの記号や前線・等圧線のあたりに反応が集中していれば�
 ## 進捗
 
 - [x] プロジェクト雛形作成
-- [ ] データ収集スクリプトの実装・実行
-- [ ] ラベリング（初期セット数百枚）
-- [ ] モデル学習・評価
+- [x] データ収集スクリプトの実装・実行（2023〜2026年、2432枚）
+- [x] ラベリング（2401枚。okhotsk_highは盲検レビューで見直し済み）
+- [x] モデル学習・評価（leave-one-year-out交差検証。`docs/2026-08-21-chart-vs-era5-grid.md`）
+- [x] 天気図画像とERA5格子の比較
+- [ ] futatsudama_lowのラベル見直し（10ラベル中もっとも不安定。0.433 ± 0.135）
+- [ ] ERA5のチャンネル追加（いまは海面更正気圧と850hPa気温だけ。500hPa高度・風を足せば前線の判別が変わりうる）
+- [ ] 2000〜2022年のラベリング（天気図15,522枚は取得済み、ERA5も取得可能。必要なのはラベルだけ）
 - [ ] 推論APIとWeb UI
