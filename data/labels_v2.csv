@@ -643,7 +643,7 @@ Js_2024061400.png,migratory_high|stationary_front,jma_manual,20240614
 Js_2024061412.png,migratory_high|stationary_front|okhotsk_high,jma_manual,20240614
 Js_2024061500.png,nankigan_low|stationary_front|okhotsk_high,jma_manual,20240615
 Js_2024061512.png,nankigan_low|stationary_front,jma_manual,20240615
-Js_2024061600.png,nankigan_low|japan_sea_low|stationary_front,jma_manual,20240616
+Js_2024061600.png,futatsudama_low|stationary_front,jma_manual,20240616
 Js_2024061612.png,japan_sea_low|stationary_front,jma_manual,20240616
 Js_2024061700.png,japan_sea_low|migratory_high|stationary_front,jma_manual,20240617
 Js_2024061712.png,nankigan_low|japan_sea_low|stationary_front,jma_manual,20240617
@@ -1382,7 +1382,7 @@ Js_2026020612.png,winter_pressure_pattern|front_passage|stationary_front,jma_man
 Js_2026020712.png,winter_pressure_pattern|japan_sea_low,jma_manual,20260207
 Js_2026020812.png,winter_pressure_pattern,jma_manual,20260208
 Js_2026020912.png,winter_pressure_pattern|migratory_high,jma_manual,20260209
-Js_2026021012.png,nankigan_low|japan_sea_low,jma_manual,20260210
+Js_2026021012.png,futatsudama_low,jma_manual,20260210
 Js_2026021112.png,winter_pressure_pattern,jma_manual,20260211
 Js_2026021212.png,migratory_high,jma_manual,20260212
 Js_2026021312.png,migratory_high,jma_manual,20260213
@@ -1568,7 +1568,7 @@ Js_2023022212.png,migratory_high,jma_manual,2023022212
 Js_2023022300.png,migratory_high,jma_manual,2023022300
 Js_2023022312.png,nankigan_low|front_passage,jma_manual,2023022312
 Js_2023022400.png,stationary_front,jma_manual,2023022400
-Js_2023022412.png,nankigan_low|japan_sea_low|front_passage,jma_manual,2023022412
+Js_2023022412.png,front_passage|futatsudama_low,jma_manual,2023022412
 Js_2023022500.png,winter_pressure_pattern,jma_manual,2023022500
 Js_2023022512.png,winter_pressure_pattern,jma_manual,2023022512
 Js_2023022600.png,winter_pressure_pattern,jma_manual,2023022600
@@ -2323,8 +2323,8 @@ Js_2024030600.png,nankigan_low|front_passage,jma_manual,2024030600
 Js_2024030612.png,migratory_high,jma_manual,2024030612
 Js_2024030700.png,migratory_high,jma_manual,2024030700
 Js_2024030712.png,migratory_high,jma_manual,2024030712
-Js_2024030800.png,nankigan_low|japan_sea_low,jma_manual,2024030800
-Js_2024030812.png,nankigan_low|japan_sea_low,jma_manual,2024030812
+Js_2024030800.png,futatsudama_low,jma_manual,2024030800
+Js_2024030812.png,futatsudama_low,jma_manual,2024030812
 Js_2024030900.png,winter_pressure_pattern,jma_manual,2024030900
 Js_2024030912.png,migratory_high,jma_manual,2024030912
 Js_2024031000.png,migratory_high,jma_manual,2024031000
@@ -2403,7 +2403,7 @@ Js_2024041500.png,migratory_high|stationary_front|okhotsk_high,jma_manual,202404
 Js_2024041512.png,migratory_high|stationary_front|okhotsk_high,jma_manual,2024041512
 Js_2024041600.png,japan_sea_low|migratory_high,jma_manual,2024041600
 Js_2024041612.png,japan_sea_low,jma_manual,2024041612
-Js_2024041700.png,nankigan_low|japan_sea_low|stationary_front,jma_manual,2024041700
+Js_2024041700.png,futatsudama_low|stationary_front,jma_manual,2024041700
 Js_2024041712.png,migratory_high|front_passage,jma_manual,2024041712
 Js_2024041800.png,nankigan_low|migratory_high|front_passage,jma_manual,2024041800
 Js_2024041812.png,nankigan_low,jma_manual,2024041812
