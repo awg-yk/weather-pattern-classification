@@ -322,3 +322,40 @@ def test_label_stats_counts_the_pair_that_should_imply_a_label(tmp_path, capsys)
     assert "なし: 3件" in out
     # 違反は「組み合わせが揃っていて対象が付いていない」行。多数派か少数派かは関係ない
     assert out.count("japan_sea_low|nankigan_low") == 3
+
+
+def test_apply_label_rule_leaves_untouched_rows_exactly_as_they_were(tmp_path):
+    """規約を当てる対象でない行は、一文字も変えないこと。
+
+    ラベルCSVは人手の積み重ねなので、機械的な書き換えが余計な行に及ぶと
+    何が失われたのか分からなくなる。
+    """
+    from scripts.apply_label_rule import apply_rule
+
+    # 対象のラベルが付いていれば、指定したものだけ外れる
+    assert apply_rule(["futatsudama_low", "japan_sea_low"], "futatsudama_low",
+                      ["japan_sea_low", "nankigan_low"]) == ["futatsudama_low"]
+    # 付いていなければ何も変わらない
+    assert apply_rule(["japan_sea_low", "nankigan_low"], "futatsudama_low",
+                      ["japan_sea_low", "nankigan_low"]) == ["japan_sea_low", "nankigan_low"]
+    # 指定していないラベルは残る
+    assert apply_rule(["futatsudama_low", "front_passage"], "futatsudama_low",
+                      ["japan_sea_low"]) == ["futatsudama_low", "front_passage"]
+
+
+def test_apply_label_rule_writes_nothing_without_apply(tmp_path):
+    """--apply を付けるまでファイルを書き換えないこと。"""
+    import subprocess
+    import sys
+
+    labels_csv = tmp_path / "labels.csv"
+    original = "filename,label\nJs_2023010100.png,futatsudama_low|japan_sea_low\n"
+    labels_csv.write_text(original, encoding="utf-8")
+
+    subprocess.run(
+        [sys.executable, "-m", "scripts.apply_label_rule", "--labels", str(labels_csv),
+         "--when", "futatsudama_low", "--drop", "japan_sea_low"],
+        capture_output=True, text=True,
+    )
+    assert labels_csv.read_text(encoding="utf-8") == original
+    assert not labels_csv.with_suffix(".csv.bak").exists()

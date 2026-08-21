@@ -37,6 +37,11 @@ def main():
         "(例: --label futatsudama_low --implied-by japan_sea_low nankigan_low)",
     )
     parser.add_argument(
+        "--out-csv", default=None,
+        help="見直しの候補をCSVに書き出す。kind列で「判定が要るもの」と"
+        "「規約を当てるだけのもの」を分ける",
+    )
+    parser.add_argument(
         "--list-exceptions", action="store_true",
         help="--implied-by の運用から外れている天気図のファイル名を並べる(見直しの対象)",
     )
@@ -106,6 +111,25 @@ def main():
                       f"{names}の片方だけを伴う{len(partial)}件")
                 for filename, labels in partial:
                     print(f"  {filename}  {'|'.join(sorted(labels))}")
+
+        if args.out_csv:
+            # 2種類の候補は作業が違う。混ぜて渡すと、片方に不要な判定をさせてしまう。
+            #   needs_judgement … そのラベルを付けるべきか、天気図を見て決める必要がある
+            #   rule_only       … 付けるべきなのは確定していて、規約に合わせるだけ
+            rows = [
+                {"filename": filename, "label": "|".join(sorted(labels)),
+                 "kind": "needs_judgement"}
+                for filename, labels in zip(df["filename"], sets)
+                if expected <= labels and args.label not in labels
+            ] + [
+                {"filename": filename, "label": "|".join(sorted(labels)), "kind": "rule_only"}
+                for filename, labels in zip(df["filename"], sets)
+                if args.label in labels and 0 < len(expected & labels) < len(expected)
+            ]
+            out = Path(args.out_csv)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            pd.DataFrame(rows).to_csv(out, index=False, encoding="utf-8")
+            print(f"\n見直しの候補{len(rows)}件を書き出しました: {out}")
 
 if __name__ == "__main__":
     main()
