@@ -170,6 +170,17 @@ def make_splits(
             )
         splits = {"train": train_rows, "val": val_rows, "test": test_rows}
 
+        # 空の分割があると、この先の日付整形が NaT で落ちて理由が分からなくなる。
+        # テスト年しか渡していない(=学習に回す年が無い)ときに起きる。
+        empty = [name for name, rows in splits.items() if not len(rows)]
+        if empty:
+            raise ValueError(
+                f"loyo分割(テスト={test_year}年)で {'・'.join(empty)} が0件になりました。"
+                f"渡された年は {sorted(set(dates.dt.year))} です。\n"
+                "テスト年のほかに、学習に回す年も --years に含めてください"
+                f"(例: --years 2023 2024 2025 {test_year} --test-year {test_year})。"
+            )
+
         dates_all = df["parsed_datetime"]
         val_months = sorted(set(dates_all.iloc[val_rows].dt.month))
         print(

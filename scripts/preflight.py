@@ -94,6 +94,34 @@ def check_era5(df, era5_dir) -> list:
     return problems
 
 
+
+def check_folds(df, counts, args) -> list:
+    """foldごとの分割を作り、検証データに現れないラベルを集めて返す。
+
+    そのラベルについては閾値もモデル選択も混合の重みも決めようがなく、決めれば
+    でたらめになる(実際 okhotsk_high で起きた)。
+    """
+    empty_in_val = []
+    for test_year in args.years:
+        splits = make_splits(
+            df, mode="loyo", val_ratio=args.val_ratio, test_ratio=0.0,
+            seed=args.seed, test_year=test_year, gap_days=args.gap_days,
+            val_mode=args.val_mode,
+        )
+        sizes = {key: len(rows) for key, rows in splits.items()}
+        months = sorted({d.month for d in df.loc[splits["val"], "parsed_datetime"]})
+        print(f"  テスト={test_year}年: train {sizes['train']} / val {sizes['val']}"
+              f" / test {sizes['test']}   検証が含む月 {months}")
+        for label in LABELS:
+            if counts[label] == 0:
+                continue
+            in_val = sum(label in ls for ls in df.loc[splits["val"], "parsed_labels"])
+            if in_val == 0:
+                in_test = sum(label in ls for ls in df.loc[splits["test"], "parsed_labels"])
+                empty_in_val.append((test_year, label, in_test))
+    return empty_in_val
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", default=None)
@@ -135,23 +163,13 @@ def main():
     )
 
     print(f"\n【foldごとの分割】")
-    empty_in_val = []
-    for test_year in args.years:
-        splits = make_splits(
-            df, mode="loyo", val_ratio=args.val_ratio, test_ratio=0.0,
-            seed=args.seed, test_year=test_year, gap_days=args.gap_days, val_mode=args.val_mode,
-        )
-        sizes = {k: len(v) for k, v in splits.items()}
-        months = sorted({d.month for d in df.loc[splits["val"], "parsed_datetime"]})
-        print(f"  テスト={test_year}年: train {sizes['train']} / val {sizes['val']} / test {sizes['test']}"
-              f"   検証が含む月 {months}")
-        for label in LABELS:
-            if counts[label] == 0:
-                continue
-            in_val = sum(label in ls for ls in df.loc[splits["val"], "parsed_labels"])
-            in_test = sum(label in ls for ls in df.loc[splits["test"], "parsed_labels"])
-            if in_val == 0:
-                empty_in_val.append((test_year, label, in_test))
+    empty_in_val = check_folds(df, counts, args) if len(args.years) > 1 else []
+    if len(args.years) < 2:
+        print("  年が1つだけなので、leave-one-year-outの分割は作れません"
+              "(その年をテストに回すと、学習に使う年が残らない)。")
+        print("  取っておいた年で評価したいなら、学習に使う年も一緒に渡します:")
+        print(f"    python -m src.train ... --years <学習に使う年...> {args.years[0]}"
+              f" --split-mode loyo --test-year {args.years[0]}")
 
     if empty_in_val:
         print(f"\n  警告: 検証データに1件も現れないラベルがあります。"

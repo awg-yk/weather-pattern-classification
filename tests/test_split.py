@@ -275,3 +275,18 @@ def test_preflight_reports_labels_absent_from_validation(tmp_path, capsys):
     assert "オホーツク海高気圧" in run().split("警告")[1]
     # 通年から抜き取れば、そのラベルも検証に入る
     assert "警告" not in run("--val-mode", "spread")
+
+
+def test_loyo_says_which_years_are_missing_instead_of_failing_on_a_date(tmp_path):
+    """テスト年しか渡していないとき、理由の分かる形で止めること。
+
+    学習に回す年が無いと分割が空になり、その先の日付整形が
+    「NaTType does not support strftime」で落ちる。何が悪いのか読み取れない。
+    """
+    dates = pd.date_range("2026-01-01", "2026-04-30", freq="D")
+    df = pd.DataFrame({
+        "filename": [f"Js_{d.strftime('%Y%m%d')}00.png" for d in dates],
+        "parsed_datetime": dates,
+    })
+    with pytest.raises(ValueError, match="学習に回す年"):
+        make_splits(df, mode="loyo", val_ratio=0.2, test_ratio=0.0, test_year=2026)
