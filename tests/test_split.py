@@ -181,3 +181,23 @@ def test_summary_is_readable_whichever_encoding_it_was_written_in(tmp_path):
         path = tmp_path / f"{encoding}.json"
         path.write_text(json.dumps(payload, ensure_ascii=False), encoding=encoding)
         assert load(path)["note"] == "西高東低（冬型）"
+
+
+def test_ensemble_refuses_to_blend_rows_that_do_not_line_up():
+    """天気図と格子で行の並びが揃っていなければ止めること。
+
+    揃っていない状態で混ぜると、ある日の天気図の予測を別の日の気圧場の予測と
+    足すことになる。エラーにはならず、静かに無意味な数字が出るので、
+    ここで気づけないと最後まで気づけない。
+    """
+    from scripts.ensemble_chart_grid import require_aligned
+
+    stamps = pd.to_datetime(["2023-01-01", "2023-01-02", "2023-01-03"])
+    aligned = pd.DataFrame({"parsed_datetime": stamps})
+    require_aligned(aligned, pd.DataFrame({"parsed_datetime": stamps}))
+
+    with pytest.raises(SystemExit, match="行数が違います"):
+        require_aligned(aligned, pd.DataFrame({"parsed_datetime": stamps[:2]}))
+
+    with pytest.raises(SystemExit, match="並びが揃っていません"):
+        require_aligned(aligned, pd.DataFrame({"parsed_datetime": stamps[::-1]}))
