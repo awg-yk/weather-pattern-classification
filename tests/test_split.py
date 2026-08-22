@@ -578,3 +578,46 @@ def test_review_cli_can_target_particular_months(tmp_path):
     )
     judged = list(pd.read_csv(out_csv)["filename"])
     assert judged == ["Js_2025040100.png", "Js_2025070100.png"]
+
+
+def test_besttrack_parser_keeps_only_typhoon_grade_records(tmp_path):
+    """TS未満と温帯低気圧化後は除く。
+
+    grade 2・9はTD、6は温帯低気圧化後。天気図に「台風」と明記されるのは3〜5
+    (TS/STS/TY)なので、そこに揃える。含める階級を変えるならここが基準になる。
+    """
+    from scripts.typhoon_from_besttrack import parse_besttrack
+
+    path = tmp_path / "bst.txt"
+    path.write_text(
+        "66666 2410  4 2410 2024         0 TESTNAME             20240902\n"
+        "24090100 002 2  200 1350  1004     0     0     0    0\n"  # TD
+        "24090112 002 3  210 1340   998     0     0     0    0\n"  # TS
+        "24090200 002 5  280 1300   950     0     0     0    0\n"  # TY
+        "24090212 002 6  340 1360   990     0     0     0    0\n",  # 温帯低気圧化後
+        encoding="utf-8")
+
+    track = parse_besttrack(path)
+    assert list(track["grade"]) == [3, 5]
+    assert track["lat"].tolist() == [21.0, 28.0]
+    assert track["lon"].tolist() == [134.0, 130.0]
+
+
+def test_besttrack_region_decides_what_counts(tmp_path):
+    """「日本に影響しているか」を、中心位置の範囲で置き換える。
+
+    この置き換えが要点。天気図を見た判定は、範囲が書かれていないと揺れる
+    (同じ2024年9月で12日と30日に分かれ、κ 0.400だった)。
+    """
+    import pandas as pd
+
+    from scripts.typhoon_from_besttrack import stamps_with_typhoon
+
+    track = pd.DataFrame({
+        "datetime": pd.to_datetime(["2024-09-01", "2024-09-02", "2024-09-03"]),
+        "lat": [25.0, 26.0, 18.0],    # 3件目は南に外れる
+        "lon": [140.0, 156.0, 130.0],  # 2件目は東に外れる
+        "grade": [5, 5, 5],
+    })
+    inside = stamps_with_typhoon(track, (20.0, 46.0, 123.0, 154.0))
+    assert inside == {pd.Timestamp("2024-09-01")}
