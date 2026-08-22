@@ -10,22 +10,45 @@
 
 ## いま走っていること / 次にやること
 
-**`--val-mode spread` の交差検証を実行中**(2026-08-21 時点で1fold目)。
+**`--val-mode spread` の交差検証**。天気図側は完了、格子側が残っている。
 
 ```bash
-python -m scripts.cross_validate --data-dir <画像> --labels data/labels_v2.csv \
-    --years 2023 2024 2025 --val-mode spread --out-dir runs/v2_chart_spread
+# 残っているのはこれ
 python -m scripts.cross_validate --input-mode era5-grid --arch small_cnn --coordconv \
     --labels data/labels_v2.csv --years 2023 2024 2025 --val-mode spread \
     --out-dir runs/v2_grid_spread
-python -m scripts.compare_runs runs/v2_chart runs/v2_chart_spread \
-    runs/v2_grid runs/v2_grid_spread --exclude front_passage stationary_front
+
+python -m scripts.compare_runs runs/v2_chart_spread runs/v2_grid_spread \
+    --exclude front_passage stationary_front
 ```
 
-見たいのは2つ。**結論(天気図>格子、okhotsk_highだけ逆転)が変わらないこと**と、
-**前線2ラベルが改善すること**。検証の季節偏り(下の「欠陥3」)は一日で4回問題を
-起こしており、`spread` でも同じ結論なら「検証の取り方に依存しない」と書ける。
-学習データは1147→900件程度に減るので、全体は少し下がるかもしれない。
+天気図側の結果(`runs/v2_chart_spread`): macro F1 **0.636 ± 0.022**。
+`tail` の0.626 ± 0.006 より高い。学習データは1147→900件程度に減るので下がると
+思っていたが、逆だった。
+
+**ただしこの比較には交絡がある。** `spread` の実行は、`tail` の実行のあとで直した
+ラベル15件を含んでいる(futatsudama_low の support が 33/23/36 → 34/27/36 に増えて
+いるのがその印)。`tail`→`spread` とラベル修正が同時に変わっているので、
+どちらの効果かは分けられない。
+
+ラベル別に大きく動いたもの:
+
+| ラベル | tail(旧ラベル) | spread(新ラベル) |
+|---|---|---|
+| futatsudama_low | 0.433 | **0.518** |
+| stationary_front | 0.749 | **0.803** |
+| typhoon | 0.766 | 0.707 |
+| front_passage | 0.718 | **0.656** |
+| okhotsk_high | 0.319 | 0.318 |
+
+futatsudama_low の+0.085は、大半がラベル修正の効果と思われる(矛盾した9件が消え、
+正例が6件増えた)。一方 **front_passage は下がった** -- 「通年の検証なら前線の閾値が
+安定する」という予想は外れた。stationary_front は上がっているので、前線一般の話では
+なさそうだが、理由は分かっていない。
+
+**報告する数値は `spread` にするのが筋。** 検証もテストも通年という設計で、
+`tail` の「検証が秋冬に偏る」弱点が無い。`tail` を新しいラベルで取り直す必要は
+薄い(目的は結論が変わらないことの確認であって、両者の差を精密に測ることではない)。
 
 その後の優先順位:
 
