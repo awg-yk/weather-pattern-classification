@@ -442,3 +442,36 @@ def test_apply_review_refuses_a_review_of_a_different_label_file(tmp_path):
     )
     assert result.returncode != 0
     assert "無いファイル名" in result.stdout + result.stderr
+
+
+def test_label_stats_flags_a_year_whose_rate_stands_apart(tmp_path):
+    """ある年だけ出現率が大きく違えば印を付けること。
+
+    2024年foldでは天気図モデルと格子モデルの両方がokhotsk_highで崩れた
+    (0.19と0.24、他のfoldは0.38〜0.52)。別々のモデルが同じfoldで同じように
+    崩れるなら、疑うべきはモデルではなくその年のラベル。
+    """
+    import subprocess
+    import sys
+
+    rows = []
+    for year, every in ((2023, 5), (2024, 40), (2025, 5)):
+        for i in range(200):
+            labels = ["migratory_high"]
+            if i % every == 0:
+                labels.append("okhotsk_high")
+            rows.append({"filename": f"Js_{year}{i // 28 + 1:02d}{i % 28 + 1:02d}00.png",
+                         "label": "|".join(labels)})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+
+    out = subprocess.run(
+        [sys.executable, "-m", "scripts.label_stats", "--labels", str(labels_csv), "--by-year"],
+        capture_output=True, text=True,
+    ).stdout
+    # 「オホーツク」を含む行は件数の表にもある。年ごとの節に絞ってから探す
+    by_year = out.split("【年ごとの出現率】")[1].split("【1枚に付く")[0]
+    okhotsk = next(line for line in by_year.splitlines() if "オホーツク" in line)
+    migratory = next(line for line in by_year.splitlines() if "移動性" in line)
+    assert "←" in okhotsk
+    assert "←" not in migratory  # 全年で同じものには印を付けない

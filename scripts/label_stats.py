@@ -37,6 +37,11 @@ def main():
         "(例: --label futatsudama_low --implied-by japan_sea_low nankigan_low)",
     )
     parser.add_argument(
+        "--by-year", action="store_true",
+        help="年ごとの出現率を並べる。ある年だけ大きく違えば、その年の判定基準が"
+        "ずれている疑いがある",
+    )
+    parser.add_argument(
         "--out-csv", default=None,
         help="見直しの候補をCSVに書き出す。kind列で「判定が要るもの」と"
         "「規約を当てるだけのもの」を分ける",
@@ -62,6 +67,27 @@ def main():
     for label in LABELS:
         count = sum(label in s for s in sets)
         print(f"  {LABEL_JA[label]:<24}{count:>6}件  ({count / len(df):>5.1%})")
+
+    if args.by_year:
+        stamps = df["filename"].str.extract(r"(\d{10})")[0]
+        year_of = pd.to_datetime(stamps, format="%Y%m%d%H", errors="coerce").dt.year
+        years_present = sorted(year_of.dropna().unique())
+        print("\n【年ごとの出現率】")
+        header = "".join(f"{int(y):>10}" for y in years_present)
+        print(f"  {'ラベル':<24}{header}      幅")
+        print("  " + "-" * (24 + 10 * len(years_present) + 8))
+        for label in LABELS:
+            rates = []
+            for year in years_present:
+                rows = [s for s, y in zip(sets, year_of) if y == year]
+                rates.append(sum(label in s for s in rows) / len(rows) if rows else 0.0)
+            cells = "".join(f"{rate:>9.1%} " for rate in rates)
+            spread = max(rates) - min(rates)
+            mark = "  ←" if spread > 0.5 * max(rates) and max(rates) > 0.02 else ""
+            print(f"  {LABEL_JA[label]:<24}{cells}{spread:>7.1%}{mark}")
+        print("\n  幅 = 最大の年と最小の年の差。← は幅が最大値の半分を超えるもの。")
+        print("  気候の年々変動でも動くが、極端なものは判定基準がその年だけ"
+              "ずれている疑いがある。")
 
     print("\n【1枚に付くラベル数】")
     for size, count in sorted(Counter(len(s) for s in sets).items()):
