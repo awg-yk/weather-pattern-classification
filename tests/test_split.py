@@ -544,3 +544,37 @@ def test_label_stats_shows_a_month_by_year_table(tmp_path):
     january = next(line for line in table.splitlines() if line.strip().startswith("1月"))
     assert june.split() == ["6月", "88%", "88%", "28%"]   # 梅雨だけ2025年が低い
     assert january.split() == ["1月", "16%", "16%", "16%"]  # 他の月は変わらない
+
+
+def test_review_cli_can_target_particular_months(tmp_path):
+    """付け忘れが疑われる月だけを見直せること。
+
+    stationary_front は2025年の1・2・4・6・7・11月だけが他の年と大きく違う
+    (4月は37%・53%に対し2%)。3・8・10・12月は同水準なので、718件すべてを
+    見る必要はない。陰性も対象に含める -- 拾いたいのは付け忘れなので。
+    """
+    import subprocess
+    import sys
+
+    from PIL import Image
+
+    images = tmp_path / "imgs"
+    images.mkdir()
+    rows = []
+    for year in (2024, 2025):
+        for month in (1, 4, 7):
+            name = f"Js_{year}{month:02d}0100.png"
+            Image.new("RGB", (8, 8)).save(images / name)
+            rows.append({"filename": name, "label": "migratory_high"})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+    out_csv = tmp_path / "out.csv"
+
+    subprocess.run(
+        [sys.executable, "-m", "scripts.review_cli", "--images-dir", str(images),
+         "--label", "stationary_front", "--labels-csv", str(labels_csv),
+         "--years", "2025", "--months", "4", "7", "--out-csv", str(out_csv)],
+        input="y\ny\n", capture_output=True, text=True,
+    )
+    judged = list(pd.read_csv(out_csv)["filename"])
+    assert judged == ["Js_2025040100.png", "Js_2025070100.png"]

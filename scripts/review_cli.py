@@ -56,6 +56,16 @@ def main():
         help="--candidates のうち、この kind の行だけを対象にする",
     )
     parser.add_argument("--filenames", nargs="+", default=None, help="対象を直接指定する")
+    parser.add_argument(
+        "--labels-csv", default=None,
+        help="--years/--months で絞るときに読むラベルCSV。答えは書き込まない",
+    )
+    parser.add_argument("--years", type=int, nargs="+", default=None, help="対象の年")
+    parser.add_argument(
+        "--months", type=int, nargs="+", default=None,
+        help="対象の月。付け忘れが疑われる月だけに絞れる"
+        "(scripts/label_stats.py --by-month で見当を付ける)",
+    )
     args = parser.parse_args()
 
     if args.label not in LABELS:
@@ -66,8 +76,27 @@ def main():
         targets = candidates.loc[candidates["kind"] == args.kind, "filename"].tolist()
     elif args.filenames:
         targets = list(args.filenames)
+    elif args.labels_csv:
+        # 年・月で絞る。付け忘れを拾うには陰性も見る必要があるので、
+        # そのラベルが付いている行だけに絞ったりはしない。
+        frame = pd.read_csv(args.labels_csv)
+        stamps = frame["filename"].str.extract(r"(\d{10})")[0]
+        parsed = pd.to_datetime(stamps, format="%Y%m%d%H", errors="coerce")
+        keep = parsed.notna()
+        if args.years:
+            keep &= parsed.dt.year.isin(set(args.years))
+        if args.months:
+            keep &= parsed.dt.month.isin(set(args.months))
+        targets = frame.loc[keep, "filename"].tolist()
+        if not targets:
+            raise SystemExit(f"年{args.years}・月{args.months} に該当する行がありません")
     else:
-        raise SystemExit("--candidates か --filenames のどちらかを指定してください")
+        raise SystemExit(
+            "対象の指定が必要です:\n"
+            "  --candidates <CSV>            … label_stats --out-csv が書いた候補\n"
+            "  --filenames <名前...>          … 直接指定\n"
+            "  --labels-csv <CSV> --years/--months … 年・月で絞る"
+        )
 
     images_dir = Path(args.images_dir)
     out_path = Path(args.out_csv)
