@@ -22,6 +22,7 @@ import torch
 from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
+from src import calibration as calib
 from src.labels import INDEX_TO_LABEL, LABEL_JA
 from src.model import load_model
 from src.train import get_transforms
@@ -35,7 +36,19 @@ def main():
     parser.add_argument("--date", help="YYYY-MM-DD形式。指定すると気象庁アーカイブから直接取得する")
     parser.add_argument("--hour", type=int, default=0, choices=[0, 12], help="--date指定時のUTC時刻(0または12)")
     parser.add_argument("--weights", default=str(DEFAULT_WEIGHTS), help="モデルの重みファイル")
-    parser.add_argument("--threshold", type=float, default=0.5, help="このしきい値を超えたラベルを表示")
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="このしきい値を超えたラベルを表示。既定は校正ファイルに入っている"
+        "ラベルごとのしきい値(校正ファイルが無い場合は一律0.5)",
+    )
+    parser.add_argument(
+        "--raw",
+        action="store_true",
+        help="校正前の生の確信度を表示する。校正の前後を見比べるとき以外は不要"
+        "(生の値は学習時のpos_weightのぶん高く出る。src/calibration.py を参照)",
+    )
     parser.add_argument(
         "--no-preprocess",
         action="store_true",
@@ -57,6 +70,14 @@ def main():
     elif not args.image:
         parser.error("画像パスまたは --date のどちらかを指定してください")
 
+    # 確信度の校正(<重み名>.calib.json)。無ければ生の値のまま動く。
+    # --raw のときは校正なしの Calibration を使うので、以降の経路は同じ形になる。
+    calibration = calib.Calibration.identity() if args.raw else calib.load_for_weights(args.weights)
+    thresholds = {
+        label: (args.threshold if args.threshold is not None else calibration[label].threshold)
+        for label in INDEX_TO_LABEL.values()
+    }
+
     if args.save_gradcam:
         from scripts.gradcam import explain_top_predictions
 
@@ -68,6 +89,7 @@ def main():
             weights_path=args.weights,
             top_k=args.top_k,
             apply_preprocess=not args.no_preprocess,
+            calibration=calibration,
         )
         for rank, (label, prob, overlay) in enumerate(top_overlays, start=1):
             out_path = out_dir / f"{rank}_{label}.png"
@@ -91,20 +113,31 @@ def main():
         input_tensor = transform(image).unsqueeze(0).to(device)
 
         with torch.no_grad():
-            probs = torch.sigmoid(model(input_tensor))[0].cpu()
+            logits = model(input_tensor)[0].cpu().numpy()
+
+        probs = calibration.probabilities(logits)
 
         ranked = sorted(
-            ((INDEX_TO_LABEL[i], p.item()) for i, p in enumerate(probs)),
+            ((INDEX_TO_LABEL[i], float(p)) for i, p in enumerate(probs)),
             key=lambda x: x[1],
             reverse=True,
         )
 
-    predicted = [label for label, p in ranked if p > args.threshold]
+    predicted = [label for label, p in ranked if p > thresholds[label]]
     print("予測:", " / ".join(LABEL_JA[l] for l in predicted) if predicted else "該当なし")
+    if not predicted:
+        top_label, top_prob = ranked[0]
+        print(
+            f"  どのラベルもしきい値に届きませんでした。最も高いのは"
+            f"{LABEL_JA[top_label]}({top_prob * 100:.1f}% / しきい値"
+            f"{thresholds[top_label] * 100:.1f}%)ですが、この確信度では"
+            "自動判定に使わず人が見た方が確実です。"
+        )
     print()
-    print("--- 全ラベルの確信度 ---")
+    print("--- 全ラベルの確信度" + ("(校正前の生の値)" if args.raw else "") + " ---")
     for label, p in ranked:
-        print(f"{LABEL_JA[label]}: {p * 100:.1f}%")
+        mark = " ✓" if p > thresholds[label] else ""
+        print(f"{LABEL_JA[label]}: {p * 100:.1f}%(しきい値 {thresholds[label] * 100:.1f}%){mark}")
 
 
 if __name__ == "__main__":

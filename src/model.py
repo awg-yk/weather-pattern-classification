@@ -147,12 +147,16 @@ def backbone(model: nn.Module):
     return model
 
 
-def save_checkpoint(path, model: nn.Module, image_size: int) -> None:
+def save_checkpoint(path, model: nn.Module, image_size: int, pos_weight=None) -> None:
     """重みと一緒に、その重みが前提とする入力サイズ・ラベル一覧も保存する。
 
     EfficientNetは適応的プーリングを使うため、学習時と違う入力サイズを与えても
     エラーにならず「黙って精度が落ちる」。サイズを重みに同梱しておくことで、
     推論側が学習時と同じ前処理を自動で再現できるようにする。
+
+    pos_weightも同梱する。BCEWithLogitsLoss(pos_weight=w)で学習した出力は
+    真の確率よりw倍ぶん高く出る(詳細はsrc/calibration.py)。この値が分かれば
+    ロジットからlog wを引くだけで解析的に戻せるため、確信度の校正に必要になる。
     """
     torch.save(
         {
@@ -161,6 +165,7 @@ def save_checkpoint(path, model: nn.Module, image_size: int) -> None:
             "labels": list(LABELS),
             "coordconv": _has(model, CoordConv),
             "num_features": model.num_features if isinstance(model, FeatureFusion) else 0,
+            "pos_weight": None if pos_weight is None else [float(w) for w in pos_weight],
         },
         path,
     )
@@ -182,12 +187,16 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
         labels = obj.get("labels", list(LABELS))
         coordconv = obj.get("coordconv", False)
         num_features = obj.get("num_features", 0)
+        # pos_weightを記録する前に作られた重みでは None になる。その場合は
+        # 解析的な補正ができないので、校正は検証データへの当てはめだけで行う。
+        pos_weight = obj.get("pos_weight")
     else:  # 旧形式: state_dictがそのまま保存されている
         state_dict = obj
         image_size = DEFAULT_IMAGE_SIZE
         labels = list(LABELS)
         coordconv = False
         num_features = 0
+        pos_weight = None
 
     if labels != list(LABELS):
         raise ValueError(
@@ -212,6 +221,7 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
         "labels": labels,
         "coordconv": coordconv,
         "num_features": num_features,
+        "pos_weight": pos_weight,
     }
 
 

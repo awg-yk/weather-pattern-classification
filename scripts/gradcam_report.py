@@ -27,9 +27,9 @@ import numpy as np
 import pandas as pd
 import torch
 from PIL import Image
-from torch.utils.data import DataLoader, Subset
 
 from scripts.gradcam import GradCAM, _load_model, _overlay_heatmap
+from src import calibration as calib
 from src.dataset import WeatherMapDataset
 from src.labels import LABEL_JA, LABEL_TO_INDEX, LABELS
 from src.split import SPLIT_MODES, make_splits
@@ -45,7 +45,13 @@ def main():
     parser.add_argument("--n", type=int, default=3, help="成功例・失敗例をそれぞれ何枚並べるか")
     parser.add_argument("--out", required=True, help="出力する画像ファイル")
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--threshold", type=float, default=0.5, help="成功/失敗の判定に使う閾値")
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help="成功/失敗の判定に使う閾値。既定は校正ファイルに入っているそのラベルの"
+        "しきい値(校正ファイルが無ければ0.5)",
+    )
     # 分割の再現用(train.pyと同じ値を渡す)
     parser.add_argument("--years", type=int, nargs="+", default=None)
     parser.add_argument("--split-mode", choices=list(SPLIT_MODES), default="temporal")
@@ -80,15 +86,18 @@ def main():
 
     class_idx = LABEL_TO_INDEX[args.label]
 
-    # テストセット全体を推論し、対象ラベルの確信度と正解を集める
-    loader = DataLoader(Subset(dataset, test_rows), batch_size=args.batch_size)
-    probs, truths = [], []
-    with torch.no_grad():
-        for images, targets in loader:
-            probs.append(torch.sigmoid(model(images.to(device)))[:, class_idx].cpu())
-            truths.append(targets[:, class_idx])
-    probs = torch.cat(probs).numpy()
-    truths = torch.cat(truths).numpy()
+    # テストセット全体を推論し、対象ラベルの確信度と正解を集める。
+    # 確信度は校正済みの値を使う(生の値は学習時のpos_weightのぶん高く出るため、
+    # 一律0.5で成功/失敗を切ると実態とずれる。src/calibration.py を参照)。
+    calibration = calib.load_for_weights(args.weights)
+    logits, truths_all = calib.collect_logits(
+        model, dataset, test_rows, device, args.batch_size
+    )
+    probs = calibration.probabilities(logits)[:, class_idx]
+    truths = truths_all[:, class_idx]
+    threshold = (
+        args.threshold if args.threshold is not None else calibration[args.label].threshold
+    )
 
     positive = np.where(truths == 1)[0]
     if len(positive) == 0:
@@ -96,8 +105,8 @@ def main():
 
     # 正解例のうち、確信度が高い順=当てられた例、低い順=見逃した例
     ordered = positive[np.argsort(-probs[positive])]
-    hits = [i for i in ordered if probs[i] > args.threshold][: args.n]
-    misses = [i for i in ordered[::-1] if probs[i] <= args.threshold][: args.n]
+    hits = [i for i in ordered if probs[i] > threshold][: args.n]
+    misses = [i for i in ordered[::-1] if probs[i] <= threshold][: args.n]
 
     chosen = [("正解", i) for i in hits] + [("見逃し", i) for i in misses]
     if not chosen:
@@ -105,7 +114,7 @@ def main():
 
     print(
         f"{LABEL_JA[args.label]}: テスト{len(test_rows)}件中 正解ラベルあり{len(positive)}件 "
-        f"→ 当てられた{sum(probs[positive] > args.threshold)}件 / 見逃し{sum(probs[positive] <= args.threshold)}件"
+        f"→ 当てられた{sum(probs[positive] > threshold)}件 / 見逃し{sum(probs[positive] <= threshold)}件"
     )
 
     gradcam = GradCAM(model)

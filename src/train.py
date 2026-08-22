@@ -10,9 +10,10 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from tqdm import tqdm
 
+from src import calibration as calib
 from src.dataset import WeatherMapDataset
 from src.labels import LABELS
-from src.model import DEFAULT_IMAGE_SIZE, build_model, save_checkpoint
+from src.model import DEFAULT_IMAGE_SIZE, build_model, load_model, save_checkpoint
 from src.split import SPLIT_MODES, make_splits
 
 IMAGE_SIZE = DEFAULT_IMAGE_SIZE
@@ -134,6 +135,12 @@ def main():
         help="クラス不均衡対策のpos_weightの上限。大きいほど少数ラベルのrecallを稼ぐ代わりにprecisionが下がりやすい",
     )
     parser.add_argument("--out", default="weights/model.pt")
+    parser.add_argument(
+        "--no-calibration",
+        action="store_true",
+        help="学習後の確信度の校正(<重み名>.calib.json の作成)を行わない。"
+        "校正は重みを変えず表示%の意味だけを直すものなので、通常は付けなくてよい",
+    )
     parser.add_argument(
         "--seed",
         type=int,
@@ -317,13 +324,65 @@ def main():
         if score > best_score:
             best_score = score
             epochs_without_improvement = 0
-            save_checkpoint(out_path, model, image_size=args.image_size)
+            save_checkpoint(out_path, model, image_size=args.image_size, pos_weight=pos_weight.cpu())
             print(f"  saved best model to {out_path} ({args.select_metric}={abs(score):.4f})")
         else:
             epochs_without_improvement += 1
             if epochs_without_improvement >= args.patience:
                 print(f"  {args.select_metric}が{args.patience}エポック改善しなかったため早期終了します")
                 break
+
+    if not args.no_calibration:
+        fit_calibration(out_path, eval_base, splits["val"], device, args.batch_size)
+
+
+def fit_calibration(weights_path, dataset, val_rows, device, batch_size):
+    """学習の最後に、確信度の校正を検証データへ当てはめて重みの隣に保存する。
+
+    生の sigmoid 出力は学習時のpos_weightのぶん構造的に高く出るため、そのまま
+    確信度として表示すると実際の的中率と大きくずれる(src/calibration.py)。
+    ここで作った <重み名>.calib.json を推論側が自動で読み、表示%を実態に合わせる。
+
+    校正は学習済みの重みを一切変えない。確率への直し方だけを調整するので、
+    F1などの評価指標は(しきい値を揃えるかぎり)これによって変化しない。
+    """
+    best_model, meta = load_model(weights_path, map_location=device)
+    best_model.to(device).eval()
+
+    logits, targets = calib.collect_logits(best_model, dataset, val_rows, device, batch_size)
+    pos_weight = meta.get("pos_weight")
+    calibration = calib.fit(
+        logits,
+        targets,
+        pos_weight=None if pos_weight is None else np.asarray(pos_weight, dtype="float64"),
+    )
+    calibration.source = {
+        "weights": str(weights_path),
+        "fitted_on": "val",
+        "n_fit": int(len(val_rows)),
+        "pos_weight_available": pos_weight is not None,
+    }
+
+    summary = calib.summarize(logits, targets, calibration)
+    calibration.metrics = {
+        "report_split": "val",
+        "n": summary["n"],
+        "top1_accuracy": summary["top1_accuracy"],
+        "ece_raw": summary["raw"]["ece"],
+        "ece_calibrated": summary["calibrated"]["ece"],
+    }
+
+    out_path = calib.default_path(weights_path)
+    calibration.save(out_path)
+    print(
+        f"\n確信度の校正を保存しました: {out_path}\n"
+        f"  1位ラベルの平均確信度 {summary['raw']['mean_confidence'] * 100:.1f}% -> "
+        f"{summary['calibrated']['mean_confidence'] * 100:.1f}% "
+        f"(実際の的中率 {summary['top1_accuracy'] * 100:.1f}%)\n"
+        f"  ECE {summary['raw']['ece']:.3f} -> {summary['calibrated']['ece']:.3f}"
+        "(0に近いほど、表示%がそのまま当たる確率として読める)\n"
+        "  信頼度図など詳しい内訳は python -m scripts.calibrate で確認できます。"
+    )
 
 
 if __name__ == "__main__":

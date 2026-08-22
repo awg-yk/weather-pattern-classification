@@ -94,6 +94,7 @@ import torch.nn.functional as F
 from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
+from src import calibration as calib
 from src.labels import INDEX_TO_LABEL, LABEL_JA
 from src.model import backbone, load_model
 from src.train import get_transforms
@@ -144,6 +145,23 @@ def _load_model(weights_path: str, device: torch.device):
     return model, meta
 
 
+def _probabilities(model, input_tensor, weights_path, calibration=None):
+    """校正済みの確信度を返す。校正ファイルが無ければ生の値のまま。
+
+    生のsigmoid出力は学習時のpos_weightのぶん高く出るうえ、そのかさ上げ量が
+    ラベルごとに違う。校正しないと、ヒートマップに添える%だけでなく
+    「上位k件」の並び順まで少数ラベル寄りに歪む(src/calibration.py)。
+
+    calibration を渡すとそれを使う(呼び出し側が既に読み込んでいる場合や、
+    校正前の値をあえて見たい場合)。省略時は重みの隣の校正ファイルを探す。
+    """
+    with torch.no_grad():
+        logits = model(input_tensor)[0].cpu().numpy()
+    if calibration is None:
+        calibration = calib.load_for_weights(weights_path, verbose=False)
+    return torch.tensor(calibration.probabilities(logits), dtype=torch.float32)
+
+
 def _overlay_heatmap(base_image: Image.Image, cam: np.ndarray, max_alpha: float = 0.6) -> Image.Image:
     """CAMの強さに応じて透明度を変えながら重ねる。
 
@@ -163,7 +181,8 @@ def _overlay_heatmap(base_image: Image.Image, cam: np.ndarray, max_alpha: float 
 
 
 def explain_top_predictions(
-    image_path: str, weights_path: str, top_k: int = 3, apply_preprocess: bool = True
+    image_path: str, weights_path: str, top_k: int = 3, apply_preprocess: bool = True,
+    calibration=None,
 ):
     """確信度が高い上位top_k件についてヒートマップ画像を作り、
 
@@ -184,8 +203,7 @@ def explain_top_predictions(
     transform = get_transforms(train=False, image_size=meta["image_size"])
     input_tensor = transform(display_image).unsqueeze(0).to(device)
 
-    with torch.no_grad():
-        probs = torch.sigmoid(model(input_tensor))[0].cpu()
+    probs = _probabilities(model, input_tensor, weights_path, calibration)
     sorted_indices = torch.argsort(probs, descending=True).tolist()
     ranked = [(INDEX_TO_LABEL[i], probs[i].item()) for i in sorted_indices]
 
@@ -199,9 +217,14 @@ def explain_top_predictions(
 
 
 def explain_predictions_above_threshold(
-    image_path: str, weights_path: str, threshold: float = 0.5, apply_preprocess: bool = True
+    image_path: str, weights_path: str, threshold: float = None, apply_preprocess: bool = True,
+    calibration=None,
 ):
     """確信度がthresholdを超えたラベルすべてについてヒートマップ画像を作る。
+
+    threshold を省略すると、校正ファイルに入っているラベルごとのしきい値を使う
+    (校正ファイルが無ければ一律0.5)。校正後の確率は少数ラベルほど小さい値に
+    収まるため、一律0.5のままだとそれらが一切表示されなくなる。
 
     件数は固定せず、しきい値を超えた分だけ動的に変わる(0件になることもある)。
     (前処理後の元画像, [(ラベル, 確信度, ヒートマップ画像), ...しきい値超え・確信度降順],
@@ -220,15 +243,21 @@ def explain_predictions_above_threshold(
     transform = get_transforms(train=False, image_size=meta["image_size"])
     input_tensor = transform(display_image).unsqueeze(0).to(device)
 
-    with torch.no_grad():
-        probs = torch.sigmoid(model(input_tensor))[0].cpu()
+    probs = _probabilities(model, input_tensor, weights_path, calibration)
     sorted_indices = torch.argsort(probs, descending=True).tolist()
     ranked = [(INDEX_TO_LABEL[i], probs[i].item()) for i in sorted_indices]
 
+    if calibration is None:
+        calibration = calib.load_for_weights(weights_path, verbose=False)
+
     overlays = []
     for idx in sorted_indices:
-        if probs[idx].item() <= threshold:
-            break
+        label_threshold = (
+            threshold if threshold is not None else calibration[INDEX_TO_LABEL[idx]].threshold
+        )
+        if probs[idx].item() <= label_threshold:
+            # 確率の降順に見ているが、しきい値はラベルごとに違うので打ち切らず次を見る
+            continue
         cam = gradcam.generate(input_tensor, idx)
         overlay = _overlay_heatmap(display_image, cam)
         overlays.append((INDEX_TO_LABEL[idx], probs[idx].item(), overlay))
@@ -242,6 +271,7 @@ def show_gradcam(
     top_k: int = 3,
     apply_preprocess: bool = True,
     figsize_per_panel: float = 4.0,
+    calibration=None,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, meta = _load_model(weights_path, device)
@@ -256,8 +286,7 @@ def show_gradcam(
     transform = get_transforms(train=False, image_size=meta["image_size"])
     input_tensor = transform(display_image).unsqueeze(0).to(device)
 
-    with torch.no_grad():
-        probs = torch.sigmoid(model(input_tensor))[0].cpu()
+    probs = _probabilities(model, input_tensor, weights_path, calibration)
     top_indices = torch.argsort(probs, descending=True)[:top_k].tolist()
 
     fig, axes = plt.subplots(1, top_k + 1, figsize=(figsize_per_panel * (top_k + 1), figsize_per_panel))

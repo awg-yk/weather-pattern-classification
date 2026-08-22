@@ -29,6 +29,9 @@ python scripts/predict.py --date 2025-01-01 --hour 0
 
 気象庁の生のPDF変換画像(枠・座標グリッド・日時スタンプ付き)であれば自動で前処理される。
 既に前処理済みの画像を渡す場合は `--no-preprocess` を付ける。
+
+表示される確信度については[確信度(表示する%)の校正](#確信度表示するの校正)も参照。
+重みの隣に校正ファイルが無い場合、確信度は学習時の`pos_weight`のぶん実際より高く出る。
 `--date`で指定できるのは気象庁JSMAPアーカイブの範囲(2022年10月1日以降)のみ。
 
 **2000年〜2022年9月分について**: 国立国会図書館デジタルコレクション(NDL)にも
@@ -105,11 +108,13 @@ scripts/
   download_era5.py    # ERA5データ取得スクリプト（CDS API）
   era5_to_image.py    # ERA5気圧場を天気図風画像に変換
   auto_label_era5.py  # ERA5気圧場からの規則ベース自動ラベリング
+  calibrate.py        # 確信度の校正を作る（<重み名>.calib.json）
 src/
   dataset.py      # PyTorch Dataset/DataLoader定義
   model.py         # CNNモデル定義（転移学習）
   train.py         # 学習スクリプト
   evaluate.py       # 評価スクリプト
+  calibration.py    # 確信度の校正（表示%を実際の的中率に合わせる）
   labels.py         # ラベル定義
 webapp/
   backend/          # FastAPI推論API
@@ -254,6 +259,102 @@ python -m scripts.check_leakage --labels data/labels.csv
 `--test-ratio 0.2` のように指定すると `src/evaluate.py --split test` で最終評価できる。
 `--optimize-thresholds` と併用した場合、**閾値はvalで決めてtestに適用**されるため、
 閾値をテストデータに合わせ込むことによる水増しが起きない。
+
+## 確信度(表示する%)の校正
+
+### 何が問題だったか
+
+学習済みモデルの生の出力をそのまま確信度として表示すると、**人が見れば明らかに違う
+判定に60%前後の数字が付く**ことがあった。これはモデルの実力の問題ではなく、
+確率の読み方の問題である。
+
+原因は学習時の`pos_weight`。`src/train.py`は少数ラベルの取りこぼしを防ぐため
+`BCEWithLogitsLoss(pos_weight=w)`で学習している。この損失を最小にする出力は、
+真の確率 p に対して
+
+```
+sigmoid(z) = w·p / (w·p + (1 - p))        逆に解くと    p = sigmoid(z - log w)
+```
+
+となり、**構造的に p より大きい**。既定の`--pos-weight-cap 8`が効いているラベルなら、
+
+```
+表示 60%  →  実体は sigmoid(logit(0.6) - log 8) ≒ 16%
+```
+
+でしかない。さらに`w`はラベルごとに違うので、かさ上げの量もラベルごとに違い、
+ラベル間で確信度を比較すること自体が成り立っていなかった
+(10ラベルの最大値を取る`scripts/classify_dates.py`は、この歪みを直接受ける)。
+
+これに、データが少ないCNNにありがちな自信過剰が上乗せされる。
+
+### どう直したか
+
+検証データを使い、ラベルごとに `p = sigmoid(a·z + b)` の a, b を当てはめ直す
+(Platt scaling)。`a=1, b=-log w`が上の`pos_weight`の補正そのものなので、この形は
+解析的な補正を含んでいる。検証データに陽性がほとんど無いラベルは当てはめが
+過学習するため、`-log w`の解析的な補正だけを使う。
+
+**学習済みの重みは一切変えない。** 確率への直し方(と判定しきい値)だけを調整する。
+
+```bash
+# 学習すると自動で <重み名>.calib.json が作られる（--no-calibration で無効化できる）
+python -m src.train --data-dir data/processed --labels data/labels.csv --test-ratio 0.1
+
+# 既存の重みに後から校正を付ける / 効き目を確認する
+python -m scripts.calibrate \
+    --data-dir data/processed --labels data/labels.csv \
+    --weights weights/model.pt --test-ratio 0.1 --report-split test
+```
+
+`scripts/predict.py`・`webapp`・`scripts/classify_dates.py`・Grad-CAMは、重みの隣に
+`<重み名>.calib.json`があれば自動的に読み込む。無ければ従来どおり生の値を表示し、
+未校正である旨を出力する(既存の重みがそのまま動く)。
+
+### 効き目の見かた
+
+`scripts/calibrate.py`と`src/evaluate.py`が、**1位に出したラベルの確信度**と
+**それが実際に正解だった割合**を突き合わせた表(信頼度図)を出す。
+
+```
+[校正前] 平均確信度 75.9% / ECE 0.759
+  確信度の範囲       件数    平均確信度   実際の正解率      ズレ
+   70%〜 80%        39      75.9%       0.0%    +75.9pt  ←表示が高すぎる
+```
+
+ECEは「表示した%」と「実際に当たった割合」のズレの平均で、0に近いほど画面の数字が
+そのまま当たる確率として読める。校正後にこの値が下がっていれば、60%と書いてある
+判定はおよそ10回に6回当たる、という意味になっている。
+
+### 確信度が低いときは判定を出さない
+
+校正すると、自信の無い判定が正直に低い数字で出るようになる。それを使って、
+しきい値に届かない事例は答えを断定しない。
+
+- `scripts/predict.py` / Web UI: どのラベルもしきい値を超えなければ「判定保留」と表示する
+- `scripts/classify_dates.py`: `判定`列が`要確認`になり、集計でも確定分と分けて数える
+  (`--min-confidence`でしきい値を上書き、`--drop-uncertain`で気圧配置列を空にできる)
+
+しきい値はラベルごとに、校正後の確率でF1が最大になる値を検証データから選んでいる。
+校正後の確率は少数ラベルほど小さい値に収まるため、一律0.5では拾えなくなるため。
+
+### 注意
+
+- 校正は**確信度の意味を直すもので、当たる・当たらないを改善するものではない**。
+  モデルが自信を持って間違える事例は残る。ただし校正後はそれが件数として見えるので、
+  信頼度図の「高い確信度の帯で正解率が低い」行を見れば、どのくらい残っているかが分かる。
+- 重みごとに校正が必要(foldごとの重みは、それぞれのvalで当てはめる)。
+  `scripts/classify_dates.py`に複数の重みを渡す場合、一部だけ校正済みだと確率の意味が
+  揃わないためエラーになる。
+- 同梱の`weights/model.pt`にはまだ校正ファイルが付いていない。上のコマンドで
+  `weights/model.calib.json`を作ってコミットすると、Colabノートブックでも効くようになる。
+
+### テスト
+
+```bash
+python tests/test_calibration.py        # pytest不要
+python -m pytest tests/ -q              # pytestがあれば
+```
 
 ## 交差検証(報告用の数値はこれで出す)
 

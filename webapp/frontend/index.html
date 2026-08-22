@@ -55,10 +55,36 @@
         }
         const data = await res.json();
         const sorted = Object.entries(data.all_probabilities_ja).sort((a, b) => b[1] - a[1]);
-        const predictedText = data.labels_ja.length > 0 ? data.labels_ja.join(" / ") : "該当なし";
+        const top = data.top;
+
+        // しきい値を1つも超えなかったときは、無理に1位を答えとして出さない。
+        // 低い確信度のまま断定するのが「人が見れば明らかに違う判定」の出どころなので、
+        // ここでは判定保留であることをはっきり書く。
+        let header;
+        if (data.labels_ja.length > 0) {
+          header = `予測: ${data.labels_ja.join(" / ")}`;
+        } else {
+          header =
+            `予測: 判定保留（該当なし）\n` +
+            `  最も高いのは${top.label_ja} ${(top.probability * 100).toFixed(1)}%` +
+            `（しきい値 ${(top.threshold * 100).toFixed(1)}%）。` +
+            `この確信度では自動判定に使わず、人の目で確認してください。`;
+        }
+
+        const note = data.calibrated
+          ? "確信度は検証データで校正済み（表示%＝実際に当たる割合の目安）"
+          : "※未校正の生の値です。pos_weightのぶん高めに出ます（scripts/calibrate.py で校正できます）";
+
         resultEl.textContent =
-          `予測: ${predictedText}\n\n` +
-          sorted.map(([label, p]) => `${label}: ${(p * 100).toFixed(1)}%`).join("\n");
+          `${header}\n\n` +
+          sorted
+            .map(([label, p]) => {
+              const t = data.thresholds_ja[label];
+              const mark = p > t ? " ✓" : "";
+              return `${label}: ${(p * 100).toFixed(1)}%（しきい値 ${(t * 100).toFixed(1)}%）${mark}`;
+            })
+            .join("\n") +
+          `\n\n${note}`;
       } catch (e) {
         resultEl.textContent = `通信エラー: ${e}`;
       }

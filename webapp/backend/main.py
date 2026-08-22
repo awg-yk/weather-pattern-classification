@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
+from src import calibration as calib
 from src.labels import INDEX_TO_LABEL, LABEL_JA
 from src.model import load_model as load_weights
 from src.train import get_transforms
@@ -47,11 +48,14 @@ model = None
 # 前処理は重みに記録された入力サイズに合わせる。重みを読むまで確定しないため、
 # 起動時のload_model()で差し替える(未学習時のフォールバックとして既定値を入れておく)。
 transform = get_transforms(train=False)
+# 確信度の校正。重みの隣に <重み名>.calib.json があれば起動時に読み込む。
+# 無ければ「校正なし」として動く(生の出力をそのまま返す従来の挙動)。
+calibration = calib.Calibration.identity()
 
 
 @app.on_event("startup")
 def load_model():
-    global model, transform
+    global model, transform, calibration
     if not os.path.exists(WEIGHTS_PATH):
         # モデル未学習の段階でもAPIサーバー自体は起動できるようにしておく
         print(f"warning: weights not found at {WEIGHTS_PATH}. /predict will fail until trained.")
@@ -60,12 +64,17 @@ def load_model():
     m.eval()
     m.to(device)
     transform = get_transforms(train=False, image_size=meta["image_size"])
+    calibration = calib.load_for_weights(WEIGHTS_PATH)
     model = m
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": model is not None}
+    return {
+        "status": "ok",
+        "model_loaded": model is not None,
+        "calibrated": calibration.is_fitted,
+    }
 
 
 @app.post("/predict")
@@ -85,17 +94,41 @@ async def predict(file: UploadFile = File(...)):
     tensor = transform(image).unsqueeze(0).to(device)
 
     with torch.no_grad():
-        logits = model(tensor)
-        probs = torch.sigmoid(logits)[0]
+        logits = model(tensor)[0].cpu().numpy()
 
-    # マルチラベル: しきい値を超えたラベルをすべて「該当する」として返す
-    threshold = 0.5
-    labels_above_threshold = [
-        INDEX_TO_LABEL[i] for i, p in enumerate(probs) if p.item() > threshold
-    ]
+    # 生のsigmoid出力は学習時のpos_weightのぶん系統的に高く出るため、そのまま
+    # 確信度として見せると「明らかに違うのに60%」が起きる。校正を通してから返す
+    # (校正ファイルが無ければ素通し。詳細は src/calibration.py)。
+    probs = calibration.probabilities(logits)
+
+    # マルチラベル: しきい値を超えたラベルをすべて「該当する」として返す。
+    # しきい値は校正時にラベルごとにF1が最大になる値を選んである。
+    labels_above_threshold = calibration.predicted_labels(probs)
+    ranking = sorted(
+        ((INDEX_TO_LABEL[i], float(p)) for i, p in enumerate(probs)),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+    top_label, top_prob = ranking[0]
+
     return {
         "labels": labels_above_threshold,
         "labels_ja": [LABEL_JA[l] for l in labels_above_threshold],
+        # 校正済みかどうかで画面の注意書きを変えられるようにする
+        "calibrated": calibration.is_fitted,
+        # しきい値を1つも超えなかった場合、無理に1位を答えにせず「判定保留」として扱う。
+        # 確信度が低いまま自信ありげに1つ選ぶのが、人が見て明らかに違う判定の出どころ。
+        "top": {
+            "label": top_label,
+            "label_ja": LABEL_JA[top_label],
+            "probability": top_prob,
+            "threshold": calibration[top_label].threshold,
+            "confident": bool(labels_above_threshold),
+        },
+        "thresholds": {label: calibration[label].threshold for label in INDEX_TO_LABEL.values()},
+        "thresholds_ja": {
+            LABEL_JA[label]: calibration[label].threshold for label in INDEX_TO_LABEL.values()
+        },
         "all_probabilities": {
             INDEX_TO_LABEL[i]: float(p) for i, p in enumerate(probs)
         },

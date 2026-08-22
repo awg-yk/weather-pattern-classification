@@ -3,6 +3,11 @@
 事例日(風替わりが起きた日など)のリストに対して、モデルが最も高い確信度を
 出した気圧配置を付け、パターンごとの件数を数える。
 
+確信度は校正済みの値を使う(重みの隣の <重み名>.calib.json を自動で読む)。
+しきい値に届かなかった日は「判定」列が『要確認』になり、集計でも確定分と分けて
+数える。生のsigmoid出力をそのまま使うと、学習時のpos_weightのぶん実際より高い
+確信度が出て、明らかに違う判定が確信度60%として並ぶ(src/calibration.py を参照)。
+
 天気図は日付に応じて自動的に取得元が切り替わる:
     2022-10-01以降 : 気象庁JSMAPアーカイブ
     それ以前        : 手動アーカイブ(weather-pattern-classification-data)
@@ -31,6 +36,7 @@ from sklearn.preprocessing import StandardScaler
 
 from scripts.fetch_and_predict import fetch_chart
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
+from src import calibration as calib
 from src.dataset import parse_labels
 from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
 from src.model import load_model
@@ -59,10 +65,12 @@ def _build_era5_model(features_csv: str, labels_csv: str) -> dict:
 
     X = train[columns].to_numpy(dtype="float64")
     fitted = []
+    prior_shift = []   # class_weight="balanced" のかさ上げを戻すためのロジットの補正量
     for label in LABELS:
         y = train["parsed"].apply(lambda ls, l=label: l in ls).to_numpy(dtype=int)
         if y.sum() < 2 or y.sum() == len(y):
             fitted.append(None)   # 学習できないラベルは確率0を返す
+            prior_shift.append(0.0)
             continue
         fitted.append(
             make_pipeline(
@@ -70,10 +78,16 @@ def _build_era5_model(features_csv: str, labels_csv: str) -> dict:
                 LogisticRegression(max_iter=2000, class_weight="balanced"),
             ).fit(X, y)
         )
+        # class_weight="balanced" は少数クラスの重みを n_neg/n_pos 倍にするので、
+        # 出力される確率も同じ倍率でかさ上げされる(CNN側のpos_weightと同じ現象。
+        # src/calibration.py を参照)。ロジットから log(n_neg/n_pos) を引いて戻す。
+        n_pos = int(y.sum())
+        prior_shift.append(float(np.log((len(y) - n_pos) / max(n_pos, 1))))
 
     def predict(vector):
         row = vector.reshape(1, -1)
-        return np.array([0.0 if m is None else m.predict_proba(row)[0, 1] for m in fitted])
+        raw = np.array([0.0 if m is None else m.predict_proba(row)[0, 1] for m in fitted])
+        return calib.remove_class_weight_bias(raw, np.exp(prior_shift))
 
     # 日時(YYYYMMDDHH)で引けるようにしておく
     stamps = feats["filename"].str.extract(r"(\d{10})")[0]
@@ -146,10 +160,24 @@ def main():
         action="store_true",
         help="全ラベルの確信度も列として出力する",
     )
+    parser.add_argument(
+        "--min-confidence",
+        type=float,
+        default=None,
+        help="この確信度に届かない日を「判定保留」にする(0〜1)。"
+        "既定は校正ファイルに入っているラベルごとのしきい値。"
+        "保留の日もCSVには残るが、判定列が『要確認』になり集計から分けて数える",
+    )
+    parser.add_argument(
+        "--drop-uncertain",
+        action="store_true",
+        help="判定保留の日の気圧配置列を空にする。確信度の低い判定を下流に"
+        "そのまま流したくない場合に使う",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    models, image_size = [], None
+    models, calibrations, image_size = [], [], None
     for path in args.weights:
         model, meta = load_model(path, map_location=device)
         model.to(device).eval()
@@ -166,7 +194,30 @@ def main():
                 "このスクリプトは天気図の画像だけで判定するため使えません。"
             )
         models.append(model)
+        # 校正は重みごとに違う(foldごとに別のvalで当てはめている)ので、重みと対で持つ
+        calibrations.append(calib.load_for_weights(path, verbose=False))
     transform = get_transforms(train=False, image_size=image_size)
+
+    if any(c.is_fitted for c in calibrations):
+        missing = [p for p, c in zip(args.weights, calibrations) if not c.is_fitted]
+        if missing:
+            raise SystemExit(
+                "一部の重みにだけ校正ファイルがあります。混ぜると確率の意味が"
+                "揃わないため、次の重みについても python -m scripts.calibrate を"
+                "実行してください:\n  " + "\n  ".join(missing)
+            )
+        print("確信度: 校正済み(表示%は実際に当たる割合の目安)")
+    else:
+        print(
+            "警告: 校正ファイル(<重み名>.calib.json)が見つかりません。確信度は未校正の"
+            "生の値で、学習時のpos_weightのぶん実際より高く出ます。"
+            "python -m scripts.calibrate で作成してください。"
+        )
+
+    # 判定しきい値はラベルごと。重みを複数使う場合は平均を取る。
+    thresholds = np.mean([c.thresholds() for c in calibrations], axis=0)
+    if args.min_confidence is not None:
+        thresholds = np.full(len(LABELS), args.min_confidence)
     if len(models) == 1:
         print(f"モデル: {args.weights[0]}(入力解像度 {image_size})")
     else:
@@ -199,7 +250,13 @@ def main():
         image = mask_stamp_box(autocrop_to_content(image), DEFAULT_STAMP_BOX)
         tensor = transform(image).unsqueeze(0).to(device)
         with torch.no_grad():
-            probs = torch.stack([torch.sigmoid(m(tensor))[0].cpu() for m in models]).mean(dim=0)
+            # 重みごとに校正してから平均する。校正の係数はモデルごとに違うので、
+            # 生の確率を平均してから校正すると意味がずれる。
+            per_model = [
+                c.probabilities(m(tensor)[0].cpu().numpy())
+                for m, c in zip(models, calibrations)
+            ]
+        probs = torch.tensor(np.mean(per_model, axis=0), dtype=torch.float32)
 
         if era5 is None:
             return probs
@@ -217,6 +274,7 @@ def main():
     failures = []
     disagreements = 0
     both_hours = 0
+    uncertain_days = 0
     third_label = 0   # 統合結果がどちらの時刻の判定とも違ってしまった件数
     for i, stamp in enumerate(df[args.date_column], start=1):
         target = stamp.date()
@@ -242,6 +300,9 @@ def main():
 
             best = int(torch.argmax(probs))
             label = INDEX_TO_LABEL[best]
+            confidence = float(probs[best])
+            threshold = float(thresholds[best])
+            uncertain = confidence <= threshold
 
             note = ""
             if len(by_hour) == 2:
@@ -261,18 +322,26 @@ def main():
             elif hours == [0, 12]:
                 row["備考"] = f"{'12' if 0 in by_hour else '00'}Zは取得できず片方のみ"
                 note = "  ※" + row["備考"]
-            row["気圧配置"] = LABEL_JA[label]
-            row["ラベル"] = label
-            row["確信度"] = round(float(probs[best]), 4)
+            if uncertain:
+                uncertain_days += 1
+                note += f"  ⚠確信度が低い(しきい値{threshold * 100:.0f}%未満)"
+            # 保留の日も、どのラベルが最も近かったかは残す(--drop-uncertain で消せる)
+            row["気圧配置"] = "" if (uncertain and args.drop_uncertain) else LABEL_JA[label]
+            row["ラベル"] = "" if (uncertain and args.drop_uncertain) else label
+            row["確信度"] = round(confidence, 4)
+            row["しきい値"] = round(threshold, 4)
+            row["判定"] = "要確認" if uncertain else "確定"
             if args.all_probabilities:
                 for idx, name in INDEX_TO_LABEL.items():
                     row[f"p_{name}"] = round(float(probs[idx]), 4)
             print(f"[{i:>3}/{len(df)}] {target} -> {LABEL_JA[label]} "
-                  f"({probs[best] * 100:.1f}%){note}")
+                  f"({confidence * 100:.1f}%){note}")
         except Exception as e:
             row["気圧配置"] = ""
             row["ラベル"] = ""
             row["確信度"] = ""
+            row["しきい値"] = ""
+            row["判定"] = ""
             row["備考"] = f"取得失敗: {e}"
             failures.append((target, str(e)))
             print(f"[{i:>3}/{len(df)}] {target} -> 取得できませんでした")
@@ -294,6 +363,20 @@ def main():
         bar = "█" * round(count / total * 30)
         print(f"  {name:<22}{count:>4}件 ({count / total * 100:>5.1f}%) {bar}")
     print(f"  {'合計':<22}{total:>4}件")
+
+    # 確信度がしきい値に届かなかった日を、確定した日と分けて数える。
+    # 低い確信度の判定をそのまま件数に混ぜると、パターンの分布が実際より
+    # はっきりしているように見えてしまう。
+    if uncertain_days:
+        confident = out[out["判定"] == "確定"]
+        print(f"\n確信度がしきい値に届かなかった日: {uncertain_days}件"
+              f"({uncertain_days / max(len(out) - len(failures), 1) * 100:.0f}%)")
+        print("  この日は判定列が『要確認』になっています。人が天気図を見て確認するか、"
+              "分布を出すときは除いてください。")
+        print(f"\n  確定分だけの内訳({len(confident)}件)")
+        confident_counts = collections.Counter(confident["気圧配置"])
+        for name, count in confident_counts.most_common():
+            print(f"    {name:<22}{count:>4}件 ({count / max(len(confident), 1) * 100:>5.1f}%)")
 
     if len(hours) == 2 and both_hours:
         rate = disagreements / both_hours
