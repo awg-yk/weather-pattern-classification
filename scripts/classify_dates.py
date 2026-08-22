@@ -195,7 +195,7 @@ def main():
             )
         models.append(model)
         # 校正は重みごとに違う(foldごとに別のvalで当てはめている)ので、重みと対で持つ
-        calibrations.append(calib.load_for_weights(path, verbose=False))
+        calibrations.append(calib.load_for_weights_cli(path, verbose=False))
     transform = get_transforms(train=False, image_size=image_size)
 
     if any(c.is_fitted for c in calibrations):

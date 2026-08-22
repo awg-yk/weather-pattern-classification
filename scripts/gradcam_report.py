@@ -89,7 +89,7 @@ def main():
     # テストセット全体を推論し、対象ラベルの確信度と正解を集める。
     # 確信度は校正済みの値を使う(生の値は学習時のpos_weightのぶん高く出るため、
     # 一律0.5で成功/失敗を切ると実態とずれる。src/calibration.py を参照)。
-    calibration = calib.load_for_weights(args.weights)
+    calibration = calib.load_for_weights_cli(args.weights)
     logits, truths_all = calib.collect_logits(
         model, dataset, test_rows, device, args.batch_size
     )

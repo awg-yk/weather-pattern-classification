@@ -51,6 +51,8 @@ transform = get_transforms(train=False)
 # 確信度の校正。重みの隣に <重み名>.calib.json があれば起動時に読み込む。
 # 無ければ「校正なし」として動く(生の出力をそのまま返す従来の挙動)。
 calibration = calib.Calibration.identity()
+# 校正ファイルが今の重みと食い違っていた場合の理由。起動時に埋まる。
+calibration_error = None
 
 
 @app.on_event("startup")
@@ -64,7 +66,18 @@ def load_model():
     m.eval()
     m.to(device)
     transform = get_transforms(train=False, image_size=meta["image_size"])
-    calibration = calib.load_for_weights(WEIGHTS_PATH)
+
+    # 校正ファイルが別の重み用のものだった場合、未校正の値を黙って返すより
+    # 配信しない方が安全なので、モデルを読み込まないまま起動する
+    # (/health と /predict が理由を返す)。
+    try:
+        calibration = calib.load_for_weights(WEIGHTS_PATH)
+    except calib.StaleCalibrationError as e:
+        global calibration_error
+        calibration_error = str(e)
+        print(f"error: {e}")
+        return
+
     model = m
 
 
@@ -74,13 +87,18 @@ def health():
         "status": "ok",
         "model_loaded": model is not None,
         "calibrated": calibration.is_fitted,
+        "calibration_error": calibration_error,
     }
 
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
     if model is None:
-        raise HTTPException(status_code=503, detail="Model is not loaded yet. Train and place weights first.")
+        raise HTTPException(
+            status_code=503,
+            detail=calibration_error
+            or "Model is not loaded yet. Train and place weights first.",
+        )
 
     content = await file.read()
     image = Image.open(io.BytesIO(content)).convert("RGB")

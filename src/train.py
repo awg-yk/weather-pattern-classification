@@ -333,10 +333,10 @@ def main():
                 break
 
     if not args.no_calibration:
-        fit_calibration(out_path, eval_base, splits["val"], device, args.batch_size)
+        fit_calibration(out_path, eval_base, splits["val"], device, args.batch_size, args)
 
 
-def fit_calibration(weights_path, dataset, val_rows, device, batch_size):
+def fit_calibration(weights_path, dataset, val_rows, device, batch_size, args=None):
     """学習の最後に、確信度の校正を検証データへ当てはめて重みの隣に保存する。
 
     生の sigmoid 出力は学習時のpos_weightのぶん構造的に高く出るため、そのまま
@@ -356,12 +356,25 @@ def fit_calibration(weights_path, dataset, val_rows, device, batch_size):
         targets,
         pos_weight=None if pos_weight is None else np.asarray(pos_weight, dtype="float64"),
     )
-    calibration.source = {
-        "weights": str(weights_path),
-        "fitted_on": "val",
-        "n_fit": int(len(val_rows)),
-        "pos_weight_available": pos_weight is not None,
-    }
+    calibration.source = calib.build_source(
+        weights_path=weights_path,
+        labels_csv=None if args is None else args.labels,
+        image_size=meta["image_size"],
+        pos_weight=pos_weight,
+        pos_weight_source="checkpoint",
+        pos_weight_cap=None if args is None else args.pos_weight_cap,
+        split={} if args is None else {
+            "mode": args.split_mode,
+            "val_ratio": args.val_ratio,
+            "test_ratio": args.test_ratio,
+            "seed": args.seed,
+            "years": args.years,
+            "test_year": args.test_year,
+            "gap_days": args.gap_days,
+        },
+        fitted_on="val",
+        n_fit=len(val_rows),
+    )
 
     summary = calib.summarize(logits, targets, calibration)
     calibration.metrics = {

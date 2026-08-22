@@ -159,7 +159,7 @@ def main():
 
     # 確信度の校正。--raw なら素通し(生のsigmoid出力)になる。
     calibration = (
-        calib.Calibration.identity() if args.raw else calib.load_for_weights(args.weights)
+        calib.Calibration.identity() if args.raw else calib.load_for_weights_cli(args.weights)
     )
 
     def infer(rows):

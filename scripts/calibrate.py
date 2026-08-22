@@ -28,8 +28,31 @@ from src import calibration as calib
 from src.dataset import WeatherMapDataset
 from src.labels import LABEL_JA, LABELS
 from src.model import load_model
-from src.split import SPLIT_MODES, make_splits
+from src.split import SPLIT_MODES, make_splits, min_days_to_other_split
 from src.train import compute_pos_weight, get_transforms
+
+
+
+def _report_boundary_leak(df, splits, gap_days: int) -> None:
+    """valとtestが、学習データからどれだけ時間的に離れているかを数える。
+
+    近すぎる行があっても勝手に除外はしない(除外すると、これまでの実験と
+    分割が変わって数値を比較できなくなる)。件数を出して判断材料にする。
+    """
+    for name in ("val", "test"):
+        rows = splits.get(name) or []
+        if not rows or not splits["train"]:
+            continue
+        distance = min_days_to_other_split(df, rows, splits["train"])
+        close = int((distance <= gap_days).sum())
+        if close:
+            print(
+                f"  時間的リークの目安: {name} {len(rows)}件のうち{close}件"
+                f"({close / len(rows) * 100:.1f}%)が学習データと{gap_days}日以内。"
+                f"最短{distance.min():.0f}日"
+            )
+        else:
+            print(f"  時間的リークの目安: {name}は学習データから{gap_days}日以上離れています")
 
 
 def main():
@@ -87,6 +110,7 @@ def main():
     print(f"重み: {args.weights}(入力解像度 {meta['image_size']})")
 
     pos_weight = meta.get("pos_weight")
+    pos_weight_source = "checkpoint" if pos_weight is not None else "recomputed"
     if pos_weight is not None:
         pos_weight = np.asarray(pos_weight, dtype="float64")
         print("学習時のpos_weight(重みに記録された値):",
@@ -137,6 +161,14 @@ def main():
         )
         print("再計算したpos_weight:", {l: round(w, 2) for l, w in zip(LABELS, pos_weight)})
 
+    # ---- 時間的リークの診断 ----
+    # temporal分割は日付順に train → val → test と切るだけなので、境界の前後
+    # (学習の最終日と検証の初日など)は1日しか離れていない。天気図は隣り合う日が
+    # 極めて似ているため、その数件は学習済みの画像を当てているのに近い。
+    # 校正パラメータもECEも、その分だけ実力より良い方向に出る。
+    # gap_daysで除外されるのは loyo のときだけなので、ここでは件数を数えて示す。
+    _report_boundary_leak(dataset.df, splits, args.gap_days)
+
     # 当てはめは必ずvalで行う。テストセットに当てはめて同じテストセットで
     # 報告すると、校正の効き目が実際より良く見える。
     val_logits, val_targets = calib.collect_logits(
@@ -147,14 +179,25 @@ def main():
     calibration = calib.fit(
         val_logits, val_targets, pos_weight=pos_weight, min_positives=args.min_positives
     )
-    calibration.source = {
-        "weights": str(args.weights),
-        "fitted_on": "val",
-        "n_fit": int(len(splits["val"])),
-        "split_mode": args.split_mode,
-        "seed": args.seed,
-        "pos_weight_available": pos_weight is not None,
-    }
+    calibration.source = calib.build_source(
+        weights_path=args.weights,
+        labels_csv=args.labels,
+        image_size=meta["image_size"],
+        pos_weight=pos_weight,
+        pos_weight_source=pos_weight_source,
+        pos_weight_cap=args.pos_weight_cap if pos_weight_source == "recomputed" else None,
+        split={
+            "mode": args.split_mode,
+            "val_ratio": args.val_ratio,
+            "test_ratio": args.test_ratio,
+            "seed": args.seed,
+            "years": args.years,
+            "test_year": args.test_year,
+            "gap_days": args.gap_days,
+        },
+        fitted_on="val",
+        n_fit=len(splits["val"]),
+    )
 
     print("\nラベルごとの校正")
     print(f"  {'ラベル':<20}{'方法':>8}{'陽性数':>7}{'a':>8}{'b':>9}{'しきい値':>10}")

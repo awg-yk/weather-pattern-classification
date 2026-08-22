@@ -72,7 +72,7 @@ def main():
 
     # 確信度の校正(<重み名>.calib.json)。無ければ生の値のまま動く。
     # --raw のときは校正なしの Calibration を使うので、以降の経路は同じ形になる。
-    calibration = calib.Calibration.identity() if args.raw else calib.load_for_weights(args.weights)
+    calibration = calib.Calibration.identity() if args.raw else calib.load_for_weights_cli(args.weights)
     thresholds = {
         label: (args.threshold if args.threshold is not None else calibration[label].threshold)
         for label in INDEX_TO_LABEL.values()

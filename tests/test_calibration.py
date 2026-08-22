@@ -174,6 +174,94 @@ def test_ece_is_zero_for_perfectly_calibrated_scores():
     assert calib.expected_calibration_error(conf, correct) < 0.02
 
 
+
+# ---- 校正ファイルの取り違え対策 ----
+
+
+def _make_weights_and_calibration(tmp_path, weights_name="model.pt"):
+    """指紋つきの校正ファイルと、その元になった「重み」を作る。
+
+    中身は指紋を取るだけなので、テストでは本物の重みである必要はない。
+    """
+    weights = Path(tmp_path) / weights_name
+    weights.write_bytes(b"weights-content-v1")
+
+    calibration = calib.Calibration(
+        per_label={l: calib.LabelCalibration(a=1.0, b=-2.0, threshold=0.3, method="prior")
+                   for l in LABELS}
+    )
+    calibration.source = calib.build_source(
+        weights_path=weights,
+        labels_csv=None,
+        image_size=224,
+        pos_weight=np.full(len(LABELS), 8.0),
+        pos_weight_source="checkpoint",
+        pos_weight_cap=8.0,
+        split={"mode": "temporal", "seed": 42},
+        fitted_on="val",
+        n_fit=100,
+    )
+    calibration.save(calib.default_path(weights))
+    return weights, calibration
+
+
+def test_fingerprint_changes_with_content(tmp_path=None):
+    tmp_path = Path(tmp_path) if tmp_path else Path("/tmp")
+    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
+    a.write_bytes(b"same")
+    b.write_bytes(b"same")
+    assert calib.file_fingerprint(a) == calib.file_fingerprint(b)
+    b.write_bytes(b"different")
+    assert calib.file_fingerprint(a) != calib.file_fingerprint(b)
+
+
+def test_matching_calibration_loads(tmp_path=None):
+    tmp_path = Path(tmp_path) if tmp_path else Path("/tmp")
+    weights, original = _make_weights_and_calibration(tmp_path)
+    loaded = calib.load_for_weights(weights, verbose=False)
+    assert loaded.is_fitted
+    np.testing.assert_allclose(loaded.thresholds(), original.thresholds())
+
+
+def test_stale_calibration_is_rejected(tmp_path=None):
+    """重みを学習し直したのに古い校正ファイルが残っている状態を検出する。"""
+    tmp_path = Path(tmp_path) if tmp_path else Path("/tmp")
+    weights, _ = _make_weights_and_calibration(tmp_path)
+    weights.write_bytes(b"weights-content-v2")   # 学習し直した
+
+    try:
+        calib.load_for_weights(weights, verbose=False)
+    except calib.StaleCalibrationError as e:
+        assert "作り直す" in str(e)
+        return
+    raise AssertionError("古い校正ファイルが検出されずに読み込まれた")
+
+
+def test_calibration_without_fingerprint_still_loads(tmp_path=None):
+    """指紋を記録する前に作られた校正ファイルは、警告つきで読めること。"""
+    tmp_path = Path(tmp_path) if tmp_path else Path("/tmp")
+    weights = Path(tmp_path) / "old.pt"
+    weights.write_bytes(b"weights")
+    calibration = calib.Calibration(
+        per_label={l: calib.LabelCalibration(a=1.0, b=-1.0, method="prior") for l in LABELS}
+    )
+    calibration.source = {"weights": str(weights)}    # 指紋なし
+    calibration.save(calib.default_path(weights))
+
+    loaded = calib.load_for_weights(weights, verbose=False)
+    assert loaded.is_fitted
+
+
+def test_source_records_what_it_was_built_from(tmp_path=None):
+    tmp_path = Path(tmp_path) if tmp_path else Path("/tmp")
+    weights, calibration = _make_weights_and_calibration(tmp_path)
+    source = calibration.source
+    for key in ("weights_sha256", "image_size", "pos_weight", "pos_weight_source",
+                "pos_weight_cap", "split", "fitted_on", "n_fit", "created_at"):
+        assert key in source, f"{key} が記録されていない"
+    assert source["weights_sha256"] == calib.file_fingerprint(weights)
+
+
 if __name__ == "__main__":
     import inspect
     import tempfile

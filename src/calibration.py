@@ -51,6 +51,7 @@ a=1, b=-log w が上の1)の補正そのものなので、この形は pos_weigh
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -274,6 +275,19 @@ class Calibration:
         return cls(per_label={label: LabelCalibration() for label in LABELS})
 
 
+def file_fingerprint(path, chunk_size: int = 1 << 20) -> str:
+    """ファイルの内容のSHA-256(先頭16桁)。校正が「どの重み・どのラベルで作られたか」の記録用。
+
+    パスや更新時刻ではなく中身を見る。重みを学習し直すと必ず変わるので、
+    古い校正ファイルが新しい重みの隣に残っていても検出できる。
+    """
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:16]
+
+
 def default_path(weights_path) -> Path:
     """重みファイルに対応する校正ファイルの既定の置き場所。
 
@@ -285,11 +299,20 @@ def default_path(weights_path) -> Path:
     return path.with_suffix(".calib.json")
 
 
+class StaleCalibrationError(RuntimeError):
+    """校正ファイルが、隣にある重みとは別の重みから作られている。"""
+
+
 def load_for_weights(weights_path, verbose: bool = True) -> Calibration:
     """重みに対応する校正ファイルがあれば読む。無ければ校正なしを返す。
 
     校正ファイルが無い状態でも、これまで通り動くことを優先する
     (ただし表示は「未校正」と分かるようにする)。
+
+    校正は重みごとに違うので、重みを学習し直したら作り直さなければならない。
+    古い校正ファイルが新しい重みの隣に残っていると、確率の直し方だけが古いまま
+    という「静かに間違った」状態になる。それを防ぐため、校正ファイルに記録した
+    重みの指紋と実際の重みを突き合わせ、食い違えば例外にする。
     """
     path = default_path(weights_path)
     if not path.exists():
@@ -299,10 +322,82 @@ def load_for_weights(weights_path, verbose: bool = True) -> Calibration:
                 "(pos_weightのぶん高めに出ます)。scripts/calibrate.py で作成できます。"
             )
         return Calibration.identity()
+
     calibration = Calibration.load(path)
+    recorded = calibration.source.get("weights_sha256")
+    if recorded is None:
+        if verbose:
+            print(
+                f"校正: {path}\n"
+                "  警告: この校正ファイルには重みの指紋が記録されていません"
+                "(指紋を記録する前に作られたファイル)。今の重みから作られたものか"
+                "確認できないため、scripts/calibrate.py で作り直すことを勧めます。"
+            )
+        return calibration
+
+    actual = file_fingerprint(weights_path)
+    if actual != recorded:
+        raise StaleCalibrationError(
+            f"校正ファイルが、隣にある重みとは別の重みから作られています。\n"
+            f"  重み        : {weights_path}(指紋 {actual})\n"
+            f"  校正ファイル: {path}(指紋 {recorded} の重み用)\n"
+            f"  校正を作った日時: {calibration.source.get('created_at', '不明')}\n"
+            f"  校正を作ったラベル: {calibration.source.get('labels_csv', '不明')}\n"
+            "この状態で推論すると、確率の直し方だけが古いまま静かに間違った"
+            "確信度が出ます。次のどちらかを行ってください:\n"
+            "  1) python -m scripts.calibrate で校正を作り直す(推奨)\n"
+            f"  2) {path} を削除する(未校正の生の値に戻る)"
+        )
+
     if verbose:
-        print(f"校正: {path}")
+        print(f"校正: {path}(重みの指紋 {actual} と一致)")
     return calibration
+
+
+def build_source(
+    weights_path,
+    labels_csv,
+    image_size,
+    pos_weight,
+    pos_weight_source: str,
+    pos_weight_cap,
+    split: dict,
+    fitted_on: str,
+    n_fit: int,
+) -> dict:
+    """校正が「何から作られたか」の記録。古い校正ファイルの取り違えを防ぐ要。
+
+    重みとラベルCSVは中身の指紋(SHA-256の先頭16桁)を取る。どちらかを作り直せば
+    指紋が変わるので、あとから食い違いを機械的に検出できる。
+    """
+    from datetime import datetime, timezone
+
+    source = {
+        "weights": str(weights_path),
+        "weights_sha256": file_fingerprint(weights_path),
+        "image_size": int(image_size),
+        "pos_weight": None if pos_weight is None else [float(w) for w in pos_weight],
+        # "checkpoint" = 重みに記録されていた値 / "recomputed" = 学習データから計算し直した値
+        "pos_weight_source": pos_weight_source,
+        "pos_weight_cap": None if pos_weight_cap is None else float(pos_weight_cap),
+        "split": dict(split),
+        "fitted_on": fitted_on,
+        "n_fit": int(n_fit),
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
+    if labels_csv is not None:
+        source["labels_csv"] = str(labels_csv)
+        source["labels_sha256"] = file_fingerprint(labels_csv)
+    return source
+
+
+def load_for_weights_cli(weights_path, verbose: bool = True) -> Calibration:
+    """load_for_weights のコマンドライン用。取り違えを、traceback ではなく
+    そのまま読めるエラーメッセージにして終了する。"""
+    try:
+        return load_for_weights(weights_path, verbose=verbose)
+    except StaleCalibrationError as e:
+        raise SystemExit(f"\nエラー: {e}\n")
 
 
 def fit(
