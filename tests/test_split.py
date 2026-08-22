@@ -507,3 +507,40 @@ def test_label_stats_measures_the_spread_over_whole_years_only(tmp_path):
     by_year = out.split("【年ごとの出現率】")[1].split("【1枚に付く")[0]
     # 2024年で0%になるのは季節のせいなので、印は付かない
     assert "←" not in next(line for line in by_year.splitlines() if "台風" in line)
+
+
+def test_label_stats_shows_a_month_by_year_table(tmp_path):
+    """年ごとの差が季節に集中しているか、一様かを読めること。
+
+    stationary_front は 33.6% / 37.1% / 19.8% と2025年に半減している。梅雨が
+    短ければ実際に減るので、それだけでは判定基準のずれとは言えない。減り方が
+    6〜7月に集中していれば気候、どの月でも一様なら基準のずれを疑う。
+    """
+    import subprocess
+    import sys
+
+    rows = []
+    for year in (2023, 2024, 2025):
+        for month in range(1, 13):
+            for day in range(1, 26):
+                labels = ["migratory_high"]
+                rate = 0.9 if month in (6, 7) else 0.2
+                if year == 2025 and month in (6, 7):
+                    rate = 0.3  # 梅雨だけ減る = 気候の変動
+                if day / 25 < rate:
+                    labels.append("stationary_front")
+                rows.append({"filename": f"Js_{year}{month:02d}{day:02d}00.png",
+                             "label": "|".join(labels)})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+
+    out = subprocess.run(
+        [sys.executable, "-m", "scripts.label_stats", "--labels", str(labels_csv),
+         "--label", "stationary_front", "--by-month"],
+        capture_output=True, text=True,
+    ).stdout
+    table = out.split("(月×年)】")[1]
+    june = next(line for line in table.splitlines() if line.strip().startswith("6月"))
+    january = next(line for line in table.splitlines() if line.strip().startswith("1月"))
+    assert june.split() == ["6月", "88%", "88%", "28%"]   # 梅雨だけ2025年が低い
+    assert january.split() == ["1月", "16%", "16%", "16%"]  # 他の月は変わらない

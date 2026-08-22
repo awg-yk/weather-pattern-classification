@@ -37,6 +37,11 @@ def main():
         "(例: --label futatsudama_low --implied-by japan_sea_low nankigan_low)",
     )
     parser.add_argument(
+        "--by-month", action="store_true",
+        help="--label の出現率を、月×年の表で出す。年ごとの差が特定の季節に集中して"
+        "いれば気候の変動、どの月でも一様に違えば判定基準のずれ",
+    )
+    parser.add_argument(
         "--by-year", action="store_true",
         help="年ごとの出現率を並べる。ある年だけ大きく違えば、その年の判定基準が"
         "ずれている疑いがある",
@@ -119,6 +124,27 @@ def main():
         raise SystemExit(f"知らないラベルです: {args.label}\n使えるのは: {LABELS}")
 
     target = [s for s in sets if args.label in s]
+    if args.by_month:
+        stamps = df["filename"].str.extract(r"(\d{10})")[0]
+        parsed = pd.to_datetime(stamps, format="%Y%m%d%H", errors="coerce")
+        year_of, month_of = parsed.dt.year, parsed.dt.month
+        years_present = sorted(year_of.dropna().unique())
+        has_label = [args.label in labels for labels in sets]
+
+        print(f"\n【{LABEL_JA[args.label]} の出現率(月×年)】")
+        print(f"  {'月':<6}" + "".join(f"{int(y):>9}" for y in years_present))
+        print("  " + "-" * (6 + 9 * len(years_present)))
+        for month in range(1, 13):
+            cells = ""
+            for year in years_present:
+                rows = [flag for flag, y, m in zip(has_label, year_of, month_of)
+                        if y == year and m == month]
+                cells += f"{sum(rows) / len(rows):>8.0%} " if rows else f"{'-':>8} "
+            print(f"  {month:>2}月  {cells}")
+        print("\n  年ごとの差が特定の月に集中していれば気候の変動、"
+              "どの月でも一様に違えば判定基準のずれを疑う。")
+        print("  '-' はその月のデータが無い(年の途中までしか無い場合)。")
+
     print(f"\n【{LABEL_JA[args.label]} と同時に付いているラベル】({len(target)}件)")
     combos = Counter(tuple(sorted(s - {args.label})) for s in target)
     for combo, count in combos.most_common(args.top):
