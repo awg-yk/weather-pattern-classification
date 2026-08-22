@@ -10,45 +10,51 @@
 
 ## いま走っていること / 次にやること
 
-**`--val-mode spread` の交差検証**。天気図側は完了、格子側が残っている。
+**`--val-mode spread` での確認は完了した。結論は変わらない。**
+
+| | tail | spread |
+|---|---|---|
+| 天気図 | 0.626 ± 0.006 | **0.636 ± 0.022** |
+| ERA5格子 | 0.512 ± 0.023 | **0.503 ± 0.011** |
+| 差 | 0.114 | **0.133** |
+
+okhotsk_high の逆転も残る(格子0.396 対 天気図0.318)。fold別では
+格子 0.52/0.24/0.42 に対し天気図 0.39/0.19/0.38 で、**3foldすべてで格子が上**。
+差は0.151→0.078に縮んだが向きは一貫している。
+
+**検証の取り方にもラベルの微修正にも依存しない結論として確定。** 報告する数値は
+`spread` にするのが筋(検証もテストも通年で、`tail` の「検証が秋冬に偏る」弱点が無い)。
+
+残っているのは混合の再測定(再学習不要、数分):
 
 ```bash
-# 残っているのはこれ
-python -m scripts.cross_validate --input-mode era5-grid --arch small_cnn --coordconv \
-    --labels data/labels_v2.csv --years 2023 2024 2025 --val-mode spread \
-    --out-dir runs/v2_grid_spread
-
-python -m scripts.compare_runs runs/v2_chart_spread runs/v2_grid_spread \
-    --exclude front_passage stationary_front
+python -m scripts.ensemble_chart_grid --data-dir <画像> --labels data/labels_v2.csv \
+    --chart-weights runs/v2_chart_spread --grid-weights runs/v2_grid_spread \
+    --years 2023 2024 2025 --val-mode spread --out runs/v2_ensemble_spread.json
 ```
 
-天気図側の結果(`runs/v2_chart_spread`): macro F1 **0.636 ± 0.022**。
-`tail` の0.626 ± 0.006 より高い。学習データは1147→900件程度に減るので下がると
-思っていたが、逆だった。
+### 2024年foldだけ、両モデルともokhotsk_highが崩れる
 
-**ただしこの比較には交絡がある。** `spread` の実行は、`tail` の実行のあとで直した
-ラベル15件を含んでいる(futatsudama_low の support が 33/23/36 → 34/27/36 に増えて
-いるのがその印)。`tail`→`spread` とラベル修正が同時に変わっているので、
-どちらの効果かは分けられない。
+格子0.24・天気図0.19。他のfoldは0.38〜0.52。supportは62件あるので件数の問題ではない。
+**別々のモデルが同じfoldで同じように崩れるなら、原因はモデル側ではなくラベル側。**
+2024年に付けたokhotsk_highの判定基準が、他の年とずれている疑いがある。
 
-ラベル別に大きく動いたもの:
+futatsudama_low でも「2025年3月以降に付け方が変わっていた」ことが分かっている
+(9件が規約から外れ、うち6件が2026年)。**同種の問題で、他のラベルにもありうる。**
+確かめるなら、年ごとの陽性率と、見直しの記録(`data/review_okhotsk*.csv`)の
+判定順を突き合わせる。
 
-| ラベル | tail(旧ラベル) | spread(新ラベル) |
-|---|---|---|
-| futatsudama_low | 0.433 | **0.518** |
-| stationary_front | 0.749 | **0.803** |
-| typhoon | 0.766 | 0.707 |
-| front_passage | 0.718 | **0.656** |
-| okhotsk_high | 0.319 | 0.318 |
+### tailとspreadの比較には交絡がある
 
-futatsudama_low の+0.085は、大半がラベル修正の効果と思われる(矛盾した9件が消え、
-正例が6件増えた)。一方 **front_passage は下がった** -- 「通年の検証なら前線の閾値が
-安定する」という予想は外れた。stationary_front は上がっているので、前線一般の話では
-なさそうだが、理由は分かっていない。
+`spread` の実行は、`tail` の実行のあとで直したラベル15件を含む(futatsudama_low の
+supportが33/23/36→34/27/36に増えているのが印)。検証の取り方とラベルが同時に
+変わっているので、+0.010がどちらの効果かは分けられない。結論の確認が目的なので
+`tail` の取り直しはしない。
 
-**報告する数値は `spread` にするのが筋。** 検証もテストも通年という設計で、
-`tail` の「検証が秋冬に偏る」弱点が無い。`tail` を新しいラベルで取り直す必要は
-薄い(目的は結論が変わらないことの確認であって、両者の差を精密に測ることではない)。
+ラベル別に大きく動いたもの(天気図、tail旧ラベル → spread新ラベル):
+futatsudama_low 0.433→0.518、stationary_front 0.749→0.803、
+typhoon 0.766→0.707、**front_passage 0.718→0.656**。
+front_passage が下がったのは予想と逆で、理由は分かっていない。
 
 その後の優先順位:
 
