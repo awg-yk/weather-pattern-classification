@@ -456,12 +456,13 @@ def test_label_stats_flags_a_year_whose_rate_stands_apart(tmp_path):
 
     rows = []
     for year, every in ((2023, 5), (2024, 40), (2025, 5)):
-        for i in range(200):
-            labels = ["migratory_high"]
-            if i % every == 0:
-                labels.append("okhotsk_high")
-            rows.append({"filename": f"Js_{year}{i // 28 + 1:02d}{i % 28 + 1:02d}00.png",
-                         "label": "|".join(labels)})
+        for month in range(1, 13):
+            for day in range(1, 26):
+                labels = ["migratory_high"]
+                if (month * 25 + day) % every == 0:
+                    labels.append("okhotsk_high")
+                rows.append({"filename": f"Js_{year}{month:02d}{day:02d}00.png",
+                             "label": "|".join(labels)})
     labels_csv = tmp_path / "labels.csv"
     pd.DataFrame(rows).to_csv(labels_csv, index=False)
 
@@ -475,3 +476,34 @@ def test_label_stats_flags_a_year_whose_rate_stands_apart(tmp_path):
     migratory = next(line for line in by_year.splitlines() if "移動性" in line)
     assert "←" in okhotsk
     assert "←" not in migratory  # 全年で同じものには印を付けない
+
+
+def test_label_stats_measures_the_spread_over_whole_years_only(tmp_path):
+    """途中までの年を幅の計算に混ぜないこと。
+
+    夏が入っていない年では台風が0%になるが、それは判定基準のずれではなく
+    季節が揃っていないだけ。混ぜると、そういう年が全部の印を引きずる。
+    """
+    import subprocess
+    import sys
+
+    rows = []
+    for year, months in ((2023, range(1, 13)), (2024, range(1, 5))):
+        for month in months:
+            for day in range(1, 26):
+                labels = ["migratory_high"]
+                if month in (7, 8, 9):
+                    labels.append("typhoon")
+                rows.append({"filename": f"Js_{year}{month:02d}{day:02d}00.png",
+                             "label": "|".join(labels)})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+
+    out = subprocess.run(
+        [sys.executable, "-m", "scripts.label_stats", "--labels", str(labels_csv), "--by-year"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "(1〜4月のみ)" in out
+    by_year = out.split("【年ごとの出現率】")[1].split("【1枚に付く")[0]
+    # 2024年で0%になるのは季節のせいなので、印は付かない
+    assert "←" not in next(line for line in by_year.splitlines() if "台風" in line)
