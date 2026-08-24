@@ -1,0 +1,623 @@
+"""データ分割のテスト。
+
+ここが壊れると、学習した画像で評価してしまい、実力より高いスコアが出る。
+しかも学習も評価も正常に完了するので、数字を見ても気づけない。
+実際に最初の0.75はそれで出た値だった。止まるバグより危険なので、
+分割については「重ならないこと」を機械的に確かめておく。
+"""
+
+import pandas as pd
+import pytest
+
+from src.split import make_splits, min_days_to_other_split
+
+YEARS = (2023, 2024, 2025)
+
+
+@pytest.fixture
+def frame():
+    """1日2回(00Z/12Z)、3年分の観測日時を持つDataFrame。"""
+    stamps = pd.date_range("2023-01-01", "2025-12-31 12:00", freq="12h")
+    return pd.DataFrame(
+        {"filename": [f"Js_{t:%Y%m%d%H}.png" for t in stamps], "parsed_datetime": stamps}
+    )
+
+
+def _assert_disjoint(splits):
+    train, val, test = (set(splits[k]) for k in ("train", "val", "test"))
+    assert not train & val, "学習と検証が重複している"
+    assert not train & test, "学習とテストが重複している"
+    assert not val & test, "検証とテストが重複している"
+
+
+@pytest.mark.parametrize("val_mode", ["tail", "spread"])
+@pytest.mark.parametrize("test_year", YEARS)
+def test_loyo_splits_are_disjoint(frame, val_mode, test_year):
+    splits = make_splits(frame, mode="loyo", test_year=test_year, val_mode=val_mode)
+    _assert_disjoint(splits)
+
+
+@pytest.mark.parametrize("val_mode", ["tail", "spread"])
+def test_loyo_test_set_is_exactly_the_held_out_year(frame, val_mode):
+    splits = make_splits(frame, mode="loyo", test_year=2024, val_mode=val_mode)
+    years = frame["parsed_datetime"].dt.year
+    assert set(years.iloc[splits["test"]]) == {2024}
+    assert 2024 not in set(years.iloc[splits["train"]])
+    assert 2024 not in set(years.iloc[splits["val"]])
+
+
+@pytest.mark.parametrize("val_mode", ["tail", "spread"])
+def test_training_data_keeps_its_distance_from_the_test_year(frame, val_mode):
+    gap = 3
+    splits = make_splits(
+        frame, mode="loyo", test_year=2024, gap_days=gap, val_mode=val_mode
+    )
+    distance = min_days_to_other_split(frame, splits["train"], splits["test"])
+    assert distance.min() > gap, "テスト年の直前直後の日が学習に残っている"
+
+
+def test_spread_validation_covers_every_month(frame):
+    """tailは学習期間の末尾しか取らないので、必ず秋冬に偏る。
+
+    夏に集中するラベル(オホーツク海高気圧・太平洋高気圧型)は検証データに
+    ほとんど現れず、閾値もモデル選択もその季節を見ないまま決まってしまう。
+    """
+    spread = make_splits(frame, mode="loyo", test_year=2023, val_mode="spread")
+    months = set(frame["parsed_datetime"].iloc[spread["val"]].dt.month)
+    assert months == set(range(1, 13)), f"検証データに欠けている月がある: {sorted(months)}"
+
+    tail = make_splits(frame, mode="loyo", test_year=2023, val_mode="tail")
+    tail_months = set(frame["parsed_datetime"].iloc[tail["val"]].dt.month)
+    assert len(tail_months) < 12, "tailが通年になっている(前提が変わった)"
+
+
+def test_spread_validation_is_separated_from_training(frame):
+    """抜いた週の前後を学習から除いていないと、隣接日で実質的に学習してしまう。"""
+    gap = 3
+    splits = make_splits(
+        frame, mode="loyo", test_year=2023, gap_days=gap, val_mode="spread"
+    )
+    distance = min_days_to_other_split(frame, splits["train"], splits["val"])
+    assert distance.min() > gap
+
+
+def test_same_day_charts_stay_together(frame):
+    """同じ日の00Zと12Zはほぼ同じ絵なので、別々の分割に入ってはいけない。"""
+    splits = make_splits(frame, mode="temporal", val_ratio=0.2, test_ratio=0.2)
+    days = frame["parsed_datetime"].dt.normalize()
+    seen = {}
+    for name in ("train", "val", "test"):
+        for row in splits[name]:
+            day = days.iloc[row]
+            assert seen.setdefault(day, name) == name, f"{day:%Y-%m-%d} が分割をまたいでいる"
+
+
+def test_every_row_is_used_exactly_once(frame):
+    splits = make_splits(frame, mode="temporal", val_ratio=0.2, test_ratio=0.2)
+    assigned = [row for name in ("train", "val", "test") for row in splits[name]]
+    assert sorted(assigned) == list(range(len(frame)))
+
+
+def test_by_year_gives_each_split_whole_years(frame):
+    splits = make_splits(frame, mode="by_year", val_ratio=0.34, test_ratio=0.33)
+    years = frame["parsed_datetime"].dt.year
+    groups = [set(years.iloc[splits[name]]) for name in ("train", "val", "test")]
+    assert all(groups), "空の分割がある"
+    assert not groups[0] & groups[1] and not groups[1] & groups[2]
+
+
+def test_loyo_rejects_a_year_with_no_data(frame):
+    with pytest.raises(ValueError, match="2019"):
+        make_splits(frame, mode="loyo", test_year=2019)
+
+
+def test_missing_dates_are_reported_not_ignored():
+    """日付が取れない行を黙って捨てると、分割が意図と違うものになる。"""
+    df = pd.DataFrame({"filename": ["broken.png"], "parsed_datetime": [pd.NaT]})
+    with pytest.raises(ValueError, match="日付"):
+        make_splits(df, mode="temporal")
+
+
+def test_trivial_macro_f1_matches_the_all_positive_baseline():
+    """macro F1には「全部を陽性と答える」だけで得られる下駄がある。
+
+    これを引かずに絶対値だけを見ていたため、自明な予測を下回った実行(macro F1
+    0.250 に対して基準 0.29)を「低いが学習はできている」と読み違えていた。
+    """
+    import numpy as np
+
+    from src.evaluate import trivial_macro_f1
+
+    labels = np.zeros((1000, 2))
+    labels[:420, 0] = 1  # 出現率0.42 → 2p/(1+p) = 0.592
+    labels[:100, 1] = 1  # 出現率0.10 → 0.182
+    macro, per_label = trivial_macro_f1(labels)
+    assert per_label[0] == pytest.approx(2 * 0.42 / 1.42)
+    assert per_label[1] == pytest.approx(2 * 0.10 / 1.10)
+    assert macro == pytest.approx((per_label[0] + per_label[1]) / 2)
+
+
+def test_trivial_macro_f1_skips_labels_that_never_occur():
+    """1件も出現しないラベルは基準の平均から外す(F1を測れないため)。"""
+    import numpy as np
+
+    from src.evaluate import trivial_macro_f1
+
+    labels = np.zeros((100, 2))
+    labels[:20, 0] = 1
+    macro, _ = trivial_macro_f1(labels)
+    assert macro == pytest.approx(2 * 0.2 / 1.2)
+
+
+def test_paired_diff_flags_when_folds_disagree():
+    """foldごとに対応させた差を見る。符号が揃うかどうかが判断材料になる。
+
+    平均の差が標準偏差より小さくても、全foldで同じ向きなら実質的な改善と読める。
+    逆に符号がばらつくなら、平均が動いていてもたまたまの可能性が高い。
+    """
+    from scripts.compare_runs import paired_diff
+
+    consistent = paired_diff([0.40, 0.41, 0.44], [0.45, 0.42, 0.45], [2023, 2024, 2025])
+    assert "全foldで同符号" in consistent
+    assert "+0.023" in consistent
+
+    noisy = paired_diff([0.40, 0.45, 0.42], [0.44, 0.41, 0.46], [2023, 2024, 2025])
+    assert "ばらつく" in noisy
+
+
+def test_summary_is_readable_whichever_encoding_it_was_written_in(tmp_path):
+    """Windowsで作られた過去の結果(cp932)も読めること。
+
+    書き出し側でencodingを指定していなかった時期があり、その結果は環境の既定で
+    保存されている。ラベル名が日本語なので、UTF-8決め打ちで読むと落ちる。
+    比較のたびに学習をやり直すわけにはいかない。
+    """
+    import json
+
+    from scripts.compare_runs import load
+
+    payload = {"folds": [], "note": "西高東低（冬型）"}
+    for encoding in ("cp932", "utf-8"):
+        path = tmp_path / f"{encoding}.json"
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding=encoding)
+        assert load(path)["note"] == "西高東低（冬型）"
+
+
+def test_ensemble_refuses_to_blend_rows_that_do_not_line_up():
+    """天気図と格子で行の並びが揃っていなければ止めること。
+
+    揃っていない状態で混ぜると、ある日の天気図の予測を別の日の気圧場の予測と
+    足すことになる。エラーにはならず、静かに無意味な数字が出るので、
+    ここで気づけないと最後まで気づけない。
+    """
+    from scripts.ensemble_chart_grid import require_aligned
+
+    stamps = pd.to_datetime(["2023-01-01", "2023-01-02", "2023-01-03"])
+    aligned = pd.DataFrame({"parsed_datetime": stamps})
+    require_aligned(aligned, pd.DataFrame({"parsed_datetime": stamps}))
+
+    with pytest.raises(SystemExit, match="行数が違います"):
+        require_aligned(aligned, pd.DataFrame({"parsed_datetime": stamps[:2]}))
+
+    with pytest.raises(SystemExit, match="並びが揃っていません"):
+        require_aligned(aligned, pd.DataFrame({"parsed_datetime": stamps[::-1]}))
+
+
+def test_blend_weight_is_chosen_per_label():
+    """得意分野が逆のラベルを、ひとつの重みで妥協させないこと。
+
+    一律の重みだと、天気図が強い台風(0.764対0.492)と格子が強いオホーツク海高気圧
+    (0.131対0.345)が同じ値を共有し、両方が損をした -- 混合0.607は天気図単独0.619を
+    下回った。ラベルごとに選べば、弱いほうのモデルは検証の時点で自然に外れる。
+    """
+    import numpy as np
+
+    from scripts.ensemble_chart_grid import per_label_weights
+
+    targets = np.zeros((200, 2))
+    targets[:80, 0] = 1
+    targets[:60, 1] = 1
+    # 1列目は天気図が当て格子が外す、2列目はその逆。外すほうは単に無情報なのでは
+    # なく正解の逆を出す -- 無情報(定数)だと、ごく小さい重みでも分離できてしまい
+    # 最適な重みが一意に決まらない。
+    chart = np.stack([targets[:, 0], 1 - targets[:, 1]], axis=1)
+    grid = np.stack([1 - targets[:, 0], targets[:, 1]], axis=1)
+
+    weights, thresholds = per_label_weights(
+        chart, grid, targets, np.round(np.arange(0, 1.01, 0.05), 2)
+    )
+    assert weights[0] < 0.5, "天気図が当てているラベルで格子に寄っている"
+    assert weights[1] > 0.5, "格子が当てているラベルで天気図に寄っている"
+    assert (thresholds > 0).all()
+
+
+def test_blend_weight_stays_neutral_for_labels_with_no_positives():
+    """検証データに1件も出ないラベルは、選びようがないので混ぜない。"""
+    import numpy as np
+
+    from scripts.ensemble_chart_grid import per_label_weights
+
+    targets = np.zeros((50, 1))
+    weights, _ = per_label_weights(
+        np.full((50, 1), 0.5), np.full((50, 1), 0.5), targets, np.array([0.0, 0.5, 1.0])
+    )
+    assert weights[0] == 0.0
+
+
+def test_preflight_reports_labels_absent_from_validation(tmp_path, capsys):
+    """検証データに1件も出ないラベルを、学習を始める前に知らせること。
+
+    そのラベルについては閾値もモデル選択も混合の重みも決めようがなく、決めれば
+    でたらめになる。実際 okhotsk_high は初夏の型で、既定の--val-mode tail では
+    検証(学習期間の末尾=秋冬)に現れないまま、通年のテストで評価されていた。
+    1foldに数十分かかるので、走らせてから気づくのでは遅い。
+    """
+    import subprocess
+    import sys
+
+    rows = []
+    for date in pd.date_range("2023-01-01", "2025-12-31", freq="D"):
+        labels = ["migratory_high"]
+        if date.month == 6 and date.day % 5 == 0:
+            labels.append("okhotsk_high")  # 初夏にしか出ない
+        rows.append({"filename": f"Js_{date.strftime('%Y%m%d')}00.png", "label": "|".join(labels)})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+
+    def run(*extra):
+        return subprocess.run(
+            [sys.executable, "-m", "scripts.preflight", "--labels", str(labels_csv),
+             "--input-mode", "era5-grid", "--era5-grid-dir", str(tmp_path / "missing"),
+             "--years", "2023", "2024", "2025", *extra],
+            capture_output=True, text=True,
+        ).stdout
+
+    assert "オホーツク海高気圧" in run().split("警告")[1]
+    # 通年から抜き取れば、そのラベルも検証に入る
+    assert "警告" not in run("--val-mode", "spread")
+
+
+def test_loyo_says_which_years_are_missing_instead_of_failing_on_a_date(tmp_path):
+    """テスト年しか渡していないとき、理由の分かる形で止めること。
+
+    学習に回す年が無いと分割が空になり、その先の日付整形が
+    「NaTType does not support strftime」で落ちる。何が悪いのか読み取れない。
+    """
+    dates = pd.date_range("2026-01-01", "2026-04-30", freq="D")
+    df = pd.DataFrame({
+        "filename": [f"Js_{d.strftime('%Y%m%d')}00.png" for d in dates],
+        "parsed_datetime": dates,
+    })
+    with pytest.raises(ValueError, match="学習に回す年"):
+        make_splits(df, mode="loyo", val_ratio=0.2, test_ratio=0.0, test_year=2026)
+
+
+def test_label_stats_counts_the_pair_that_should_imply_a_label(tmp_path, capsys):
+    """「この2つが揃うなら本来こう付くはず」を数えられること。
+
+    件数だけを見ても、そのラベルが難しいのか基準が揺れているのかは分からない。
+    futatsudama_low は106件あるが japan_sea_low と nankigan_low の両方が付いた
+    ものは0件で、個別の2ラベルを置き換える運用になっていた -- こういう規約は
+    気象の知識で決まるので、引数で指定する。
+    """
+    import subprocess
+    import sys
+
+    rows = (["futatsudama_low"] * 5
+            + ["japan_sea_low"] * 4
+            + ["japan_sea_low|nankigan_low"] * 3)
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame({
+        "filename": [f"Js_2023{i // 28 + 1:02d}{i % 28 + 1:02d}00.png" for i in range(len(rows))],
+        "label": rows,
+    }).to_csv(labels_csv, index=False)
+
+    out = subprocess.run(
+        [sys.executable, "-m", "scripts.label_stats", "--labels", str(labels_csv),
+         "--label", "futatsudama_low",
+         "--implied-by", "japan_sea_low", "nankigan_low", "--list-exceptions"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "あり: 0件" in out
+    assert "なし: 3件" in out
+    # 違反は「組み合わせが揃っていて対象が付いていない」行。多数派か少数派かは関係ない
+    assert out.count("japan_sea_low|nankigan_low") == 3
+
+
+def test_apply_label_rule_leaves_untouched_rows_exactly_as_they_were(tmp_path):
+    """規約を当てる対象でない行は、一文字も変えないこと。
+
+    ラベルCSVは人手の積み重ねなので、機械的な書き換えが余計な行に及ぶと
+    何が失われたのか分からなくなる。
+    """
+    from scripts.apply_label_rule import apply_rule
+
+    # 対象のラベルが付いていれば、指定したものだけ外れる
+    assert apply_rule(["futatsudama_low", "japan_sea_low"], "futatsudama_low",
+                      ["japan_sea_low", "nankigan_low"]) == ["futatsudama_low"]
+    # 付いていなければ何も変わらない
+    assert apply_rule(["japan_sea_low", "nankigan_low"], "futatsudama_low",
+                      ["japan_sea_low", "nankigan_low"]) == ["japan_sea_low", "nankigan_low"]
+    # 指定していないラベルは残る
+    assert apply_rule(["futatsudama_low", "front_passage"], "futatsudama_low",
+                      ["japan_sea_low"]) == ["futatsudama_low", "front_passage"]
+
+
+def test_apply_label_rule_writes_nothing_without_apply(tmp_path):
+    """--apply を付けるまでファイルを書き換えないこと。"""
+    import subprocess
+    import sys
+
+    labels_csv = tmp_path / "labels.csv"
+    original = "filename,label\nJs_2023010100.png,futatsudama_low|japan_sea_low\n"
+    labels_csv.write_text(original, encoding="utf-8")
+
+    subprocess.run(
+        [sys.executable, "-m", "scripts.apply_label_rule", "--labels", str(labels_csv),
+         "--when", "futatsudama_low", "--drop", "japan_sea_low"],
+        capture_output=True, text=True,
+    )
+    assert labels_csv.read_text(encoding="utf-8") == original
+    assert not labels_csv.with_suffix(".csv.bak").exists()
+
+
+def test_review_cli_saves_each_answer_and_resumes(tmp_path):
+    """1枚ごとに保存し、中断しても続きから再開できること。
+
+    見直しは途中で止まる。まとめて最後に書く作りだと、そこまでの判定が消える。
+    """
+    import subprocess
+    import sys
+
+    from PIL import Image
+
+    images = tmp_path / "imgs"
+    images.mkdir()
+    names = [f"Js_2024050{i}00.png" for i in range(1, 4)]
+    for name in names:
+        Image.new("RGB", (8, 8)).save(images / name)
+    candidates = tmp_path / "cand.csv"
+    pd.DataFrame({"filename": names, "kind": ["needs_judgement"] * 3}).to_csv(
+        candidates, index=False)
+    out_csv = tmp_path / "out.csv"
+
+    def run(keys):
+        return subprocess.run(
+            [sys.executable, "-m", "scripts.review_cli", "--images-dir", str(images),
+             "--label", "futatsudama_low", "--candidates", str(candidates),
+             "--out-csv", str(out_csv)],
+            input=keys, capture_output=True, text=True,
+        )
+
+    run("y\nq\n")  # 1枚答えて中断
+    saved = pd.read_csv(out_csv)
+    assert list(saved["answer"]) == ["yes"]
+
+    out = run("n\nu\n").stdout  # 残り2枚
+    assert "残り2件(判定済み1件)" in out
+    assert list(pd.read_csv(out_csv)["answer"]) == ["yes", "no", "unsure"]
+
+    assert "すべて判定済み" in run("").stdout
+
+
+def test_apply_review_touches_only_the_rows_answered_yes():
+    """noとunsureは元のまま。判断がつかなかったものを機械的に倒さない。
+
+    unsureを「なし」に倒すと、「決めなかった」という情報が消える。それは
+    ラベルの基準がどこで曖昧なのかを示す手掛かりでもある。
+    """
+    from scripts.apply_review import updated_labels
+
+    # 置き換えの運用: 対象を付けるとき、置き換えられる側を外す
+    assert updated_labels(["japan_sea_low", "nankigan_low"], "futatsudama_low",
+                          ["japan_sea_low", "nankigan_low"]) == ["futatsudama_low"]
+    # 関係のないラベルは残る
+    assert updated_labels(["japan_sea_low", "nankigan_low", "stationary_front"],
+                          "futatsudama_low", ["japan_sea_low", "nankigan_low"]) == [
+        "futatsudama_low", "stationary_front"]
+    # 既に付いていれば重複しない
+    assert updated_labels(["futatsudama_low", "japan_sea_low"], "futatsudama_low",
+                          ["japan_sea_low"]) == ["futatsudama_low"]
+
+
+def test_apply_review_refuses_a_review_of_a_different_label_file(tmp_path):
+    """見直したCSVと反映先が食い違っていたら止める。
+
+    ラベルCSVの版が複数あると取り違える。実際にlabels.csvとlabels_v2.csvで
+    一日ぶんの実験をやり直したことがある。
+    """
+    import subprocess
+    import sys
+
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame({"filename": ["a.png"], "label": ["japan_sea_low"]}).to_csv(
+        labels_csv, index=False)
+    review = tmp_path / "review.csv"
+    pd.DataFrame({"filename": ["zzz.png"], "answer": ["yes"]}).to_csv(review, index=False)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.apply_review", "--labels", str(labels_csv),
+         "--review", str(review), "--label", "futatsudama_low"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert "無いファイル名" in result.stdout + result.stderr
+
+
+def test_label_stats_flags_a_year_whose_rate_stands_apart(tmp_path):
+    """ある年だけ出現率が大きく違えば印を付けること。
+
+    2024年foldでは天気図モデルと格子モデルの両方がokhotsk_highで崩れた
+    (0.19と0.24、他のfoldは0.38〜0.52)。別々のモデルが同じfoldで同じように
+    崩れるなら、疑うべきはモデルではなくその年のラベル。
+    """
+    import subprocess
+    import sys
+
+    rows = []
+    for year, every in ((2023, 5), (2024, 40), (2025, 5)):
+        for month in range(1, 13):
+            for day in range(1, 26):
+                labels = ["migratory_high"]
+                if (month * 25 + day) % every == 0:
+                    labels.append("okhotsk_high")
+                rows.append({"filename": f"Js_{year}{month:02d}{day:02d}00.png",
+                             "label": "|".join(labels)})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+
+    out = subprocess.run(
+        [sys.executable, "-m", "scripts.label_stats", "--labels", str(labels_csv), "--by-year"],
+        capture_output=True, text=True,
+    ).stdout
+    # 「オホーツク」を含む行は件数の表にもある。年ごとの節に絞ってから探す
+    by_year = out.split("【年ごとの出現率】")[1].split("【1枚に付く")[0]
+    okhotsk = next(line for line in by_year.splitlines() if "オホーツク" in line)
+    migratory = next(line for line in by_year.splitlines() if "移動性" in line)
+    assert "←" in okhotsk
+    assert "←" not in migratory  # 全年で同じものには印を付けない
+
+
+def test_label_stats_measures_the_spread_over_whole_years_only(tmp_path):
+    """途中までの年を幅の計算に混ぜないこと。
+
+    夏が入っていない年では台風が0%になるが、それは判定基準のずれではなく
+    季節が揃っていないだけ。混ぜると、そういう年が全部の印を引きずる。
+    """
+    import subprocess
+    import sys
+
+    rows = []
+    for year, months in ((2023, range(1, 13)), (2024, range(1, 5))):
+        for month in months:
+            for day in range(1, 26):
+                labels = ["migratory_high"]
+                if month in (7, 8, 9):
+                    labels.append("typhoon")
+                rows.append({"filename": f"Js_{year}{month:02d}{day:02d}00.png",
+                             "label": "|".join(labels)})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+
+    out = subprocess.run(
+        [sys.executable, "-m", "scripts.label_stats", "--labels", str(labels_csv), "--by-year"],
+        capture_output=True, text=True,
+    ).stdout
+    assert "(1〜4月のみ)" in out
+    by_year = out.split("【年ごとの出現率】")[1].split("【1枚に付く")[0]
+    # 2024年で0%になるのは季節のせいなので、印は付かない
+    assert "←" not in next(line for line in by_year.splitlines() if "台風" in line)
+
+
+def test_label_stats_shows_a_month_by_year_table(tmp_path):
+    """年ごとの差が季節に集中しているか、一様かを読めること。
+
+    stationary_front は 33.6% / 37.1% / 19.8% と2025年に半減している。梅雨が
+    短ければ実際に減るので、それだけでは判定基準のずれとは言えない。減り方が
+    6〜7月に集中していれば気候、どの月でも一様なら基準のずれを疑う。
+    """
+    import subprocess
+    import sys
+
+    rows = []
+    for year in (2023, 2024, 2025):
+        for month in range(1, 13):
+            for day in range(1, 26):
+                labels = ["migratory_high"]
+                rate = 0.9 if month in (6, 7) else 0.2
+                if year == 2025 and month in (6, 7):
+                    rate = 0.3  # 梅雨だけ減る = 気候の変動
+                if day / 25 < rate:
+                    labels.append("stationary_front")
+                rows.append({"filename": f"Js_{year}{month:02d}{day:02d}00.png",
+                             "label": "|".join(labels)})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+
+    out = subprocess.run(
+        [sys.executable, "-m", "scripts.label_stats", "--labels", str(labels_csv),
+         "--label", "stationary_front", "--by-month"],
+        capture_output=True, text=True,
+    ).stdout
+    table = out.split("(月×年)】")[1]
+    june = next(line for line in table.splitlines() if line.strip().startswith("6月"))
+    january = next(line for line in table.splitlines() if line.strip().startswith("1月"))
+    assert june.split() == ["6月", "88%", "88%", "28%"]   # 梅雨だけ2025年が低い
+    assert january.split() == ["1月", "16%", "16%", "16%"]  # 他の月は変わらない
+
+
+def test_review_cli_can_target_particular_months(tmp_path):
+    """付け忘れが疑われる月だけを見直せること。
+
+    stationary_front は2025年の1・2・4・6・7・11月だけが他の年と大きく違う
+    (4月は37%・53%に対し2%)。3・8・10・12月は同水準なので、718件すべてを
+    見る必要はない。陰性も対象に含める -- 拾いたいのは付け忘れなので。
+    """
+    import subprocess
+    import sys
+
+    from PIL import Image
+
+    images = tmp_path / "imgs"
+    images.mkdir()
+    rows = []
+    for year in (2024, 2025):
+        for month in (1, 4, 7):
+            name = f"Js_{year}{month:02d}0100.png"
+            Image.new("RGB", (8, 8)).save(images / name)
+            rows.append({"filename": name, "label": "migratory_high"})
+    labels_csv = tmp_path / "labels.csv"
+    pd.DataFrame(rows).to_csv(labels_csv, index=False)
+    out_csv = tmp_path / "out.csv"
+
+    subprocess.run(
+        [sys.executable, "-m", "scripts.review_cli", "--images-dir", str(images),
+         "--label", "stationary_front", "--labels-csv", str(labels_csv),
+         "--years", "2025", "--months", "4", "7", "--out-csv", str(out_csv)],
+        input="y\ny\n", capture_output=True, text=True,
+    )
+    judged = list(pd.read_csv(out_csv)["filename"])
+    assert judged == ["Js_2025040100.png", "Js_2025070100.png"]
+
+
+def test_besttrack_parser_keeps_only_typhoon_grade_records(tmp_path):
+    """TS未満と温帯低気圧化後は除く。
+
+    grade 2・9はTD、6は温帯低気圧化後。天気図に「台風」と明記されるのは3〜5
+    (TS/STS/TY)なので、そこに揃える。含める階級を変えるならここが基準になる。
+    """
+    from scripts.typhoon_from_besttrack import parse_besttrack
+
+    path = tmp_path / "bst.txt"
+    path.write_text(
+        "66666 2410  4 2410 2024         0 TESTNAME             20240902\n"
+        "24090100 002 2  200 1350  1004     0     0     0    0\n"  # TD
+        "24090112 002 3  210 1340   998     0     0     0    0\n"  # TS
+        "24090200 002 5  280 1300   950     0     0     0    0\n"  # TY
+        "24090212 002 6  340 1360   990     0     0     0    0\n",  # 温帯低気圧化後
+        encoding="utf-8")
+
+    track = parse_besttrack(path)
+    assert list(track["grade"]) == [3, 5]
+    assert track["lat"].tolist() == [21.0, 28.0]
+    assert track["lon"].tolist() == [134.0, 130.0]
+
+
+def test_besttrack_region_decides_what_counts(tmp_path):
+    """「日本に影響しているか」を、中心位置の範囲で置き換える。
+
+    この置き換えが要点。天気図を見た判定は、範囲が書かれていないと揺れる
+    (同じ2024年9月で12日と30日に分かれ、κ 0.400だった)。
+    """
+    import pandas as pd
+
+    from scripts.typhoon_from_besttrack import stamps_with_typhoon
+
+    track = pd.DataFrame({
+        "datetime": pd.to_datetime(["2024-09-01", "2024-09-02", "2024-09-03"]),
+        "lat": [25.0, 26.0, 18.0],    # 3件目は南に外れる
+        "lon": [140.0, 156.0, 130.0],  # 2件目は東に外れる
+        "grade": [5, 5, 5],
+    })
+    inside = stamps_with_typhoon(track, (20.0, 46.0, 123.0, 154.0))
+    assert inside == {pd.Timestamp("2024-09-01")}

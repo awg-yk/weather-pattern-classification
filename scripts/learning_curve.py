@@ -47,6 +47,7 @@ def main():
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--test-ratio", type=float, default=0.0)
     parser.add_argument("--gap-days", type=int, default=3)
+    parser.add_argument("--val-mode", default="tail", choices=["spread", "tail"])
     parser.add_argument("--skip-existing", action="store_true", help="結果JSONがあるものは飛ばす")
     args = parser.parse_args()
 
@@ -60,6 +61,7 @@ def main():
         "--val-ratio", args.val_ratio,
         "--test-ratio", args.test_ratio,
         "--gap-days", args.gap_days,
+        "--val-mode", args.val_mode,
         "--seed", args.seed,
     ]
     if args.era5_features:
@@ -82,16 +84,21 @@ def main():
             print(f"\n=== 学習件数 {tag} (既存の結果を再利用) ===")
         else:
             print(f"\n{'=' * 60}\n=== 学習件数 {tag} ===\n{'=' * 60}")
-            train_cmd = ["src.train", *common,
-                         "--epochs", args.epochs,
-                         "--batch-size", args.batch_size,
-                         "--image-size", args.image_size,
-                         "--out", weights]
-            if args.coordconv:
-                train_cmd += ["--coordconv"]
-            if limit is not None:
-                train_cmd += ["--train-limit", limit]
-            run(train_cmd)
+            # 学習は終わっているのに評価で落ちた場合、--skip-existing を付ければ
+            # 学習をやり直さずに評価だけ再開できる
+            if args.skip_existing and weights.exists():
+                print(f"  学習済みの重みを再利用します: {weights}")
+            else:
+                train_cmd = ["src.train", *common,
+                             "--epochs", args.epochs,
+                             "--batch-size", args.batch_size,
+                             "--image-size", args.image_size,
+                             "--out", weights]
+                if args.coordconv:
+                    train_cmd += ["--coordconv"]
+                if limit is not None:
+                    train_cmd += ["--train-limit", limit]
+                run(train_cmd)
 
             run(["src.evaluate", *common,
                  "--batch-size", args.batch_size,
@@ -100,7 +107,7 @@ def main():
                  "--optimize-thresholds",
                  "--json-out", result_json])
 
-        payload = json.loads(result_json.read_text())
+        payload = json.loads(result_json.read_text(encoding="utf-8"))
         payload["train_limit"] = limit
         payload["tag"] = tag
         results.append(payload)
@@ -127,7 +134,7 @@ def main():
         print(f"  {LABEL_JA[label]:<22}{row}")
 
     summary = out_dir / "summary.json"
-    summary.write_text(json.dumps(results, indent=2, ensure_ascii=False))
+    summary.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"\nまとめを書き出しました: {summary}")
 
 

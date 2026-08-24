@@ -19,8 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.dataset import parse_labels
-from src.labels import LABEL_JA, LABELS
+from src.labels import LABEL_JA, LABELS, parse_labels
 
 
 def cohen_kappa(a, b) -> float:
@@ -36,6 +35,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--review", required=True, help="run_binary_review_session の出力")
     parser.add_argument("--labels", required=True)
+    parser.add_argument(
+        "--baseline-review",
+        default=None,
+        help="比較相手を別の見直し結果にする(既定はlabels.csv)。"
+        "2回目と3回目のように、見直しどうしを比べたいときに使う",
+    )
+    parser.add_argument(
+        "--universe-months",
+        type=int,
+        nargs="+",
+        default=None,
+        help="比較の対象範囲を月で指定する。範囲内にあって見直しに出てこない画像は"
+        "「なし」として扱う。選抜された候補だけで比べるとκが意味を失うため、"
+        "元の範囲全体に戻して比べるときに使う",
+    )
     parser.add_argument("--label", default="okhotsk_high")
     parser.add_argument(
         "--apply",
@@ -52,6 +66,34 @@ def main():
     labels["parsed"] = labels["label"].apply(parse_labels)
     labels["original"] = labels["parsed"].apply(lambda ls: int(args.label in ls))
 
+    if args.baseline_review:
+        baseline = pd.read_csv(args.baseline_review)
+        baseline = baseline[baseline["answer"].isin(["yes", "no"])]
+        labels["original"] = labels["filename"].map(
+            dict(zip(baseline["filename"], (baseline["answer"] == "yes").astype(int)))
+        )
+        # 比較相手に出てこない画像は「なし」として扱う
+        labels["original"] = labels["original"].fillna(0).astype(int)
+        base_name = Path(args.baseline_review).name
+    else:
+        base_name = Path(args.labels).name
+
+    if args.universe_months:
+        # 範囲内にあって--reviewに出てこない画像も「なし」として加える。
+        # 候補だけで比べると陽性ばかりの集合になり、κが意味を失う。
+        months = {int(m) for m in args.universe_months}
+        month_of = pd.to_numeric(
+            labels["filename"].str.extract(r"\d{4}(\d{2})")[0], errors="coerce"
+        )
+        universe = labels[month_of.isin(months)]
+        answered = dict(zip(review["filename"], review["answer"]))
+        review = pd.DataFrame({
+            "filename": universe["filename"],
+            "answer": [answered.get(f, "no") for f in universe["filename"]],
+        })
+        print(f"比較範囲を{sorted(months)}月の{len(review)}枚に広げました"
+              f"(見直しに出てこない画像は「なし」として扱います)")
+
     merged = review.merge(labels[["filename", "original"]], on="filename", how="inner")
     unsure = merged[merged["answer"] == "unsure"]
     decided = merged[merged["answer"].isin(["yes", "no"])].copy()
@@ -59,6 +101,7 @@ def main():
 
     name = LABEL_JA[args.label]
     print(f"{'=' * 56}\n{name} の判断の揺れ\n{'=' * 56}")
+    print(f"  比較相手            : {base_name}")
     print(f"  見直した枚数        : {len(merged)}枚"
           f"(うち「わからない」{len(unsure)}枚は集計から除外)")
     if decided.empty:
@@ -66,7 +109,12 @@ def main():
 
     agree = (decided["review"] == decided["original"]).mean()
     kappa = cohen_kappa(decided["original"].to_numpy(), decided["review"].to_numpy())
-    print(f"  1回目と2回目の一致率: {agree:.1%}")
+    print(f"  一致率              : {agree:.1%}")
+    positive_rate = decided["original"].mean()
+    if positive_rate > 0.7 or positive_rate < 0.02:
+        print("  ⚠ 比較対象の陽性率が偏っているため、κと一致率は解釈できません。")
+        print("    候補だけを抜き出した集合ではこうなります。"
+              "--universe-months で元の範囲に戻して測り直してください。")
     print(f"  Cohenのκ            : {kappa:.3f}"
           f"({'ほぼ完全' if kappa > 0.8 else 'かなり高い' if kappa > 0.6 else '中程度' if kappa > 0.4 else '低い'})")
 
@@ -75,9 +123,9 @@ def main():
     only_second = ((decided["original"] == 0) & (decided["review"] == 1)).sum()
     neither = ((decided["original"] == 0) & (decided["review"] == 0)).sum()
 
-    print(f"\n  {'':<16}{'2回目 あり':>12}{'2回目 なし':>12}")
-    print(f"  {'1回目 あり':<16}{both:>12}{only_first:>12}")
-    print(f"  {'1回目 なし':<16}{only_second:>12}{neither:>12}")
+    print(f"\n  {'':<16}{'今回 あり':>12}{'今回 なし':>12}")
+    print(f"  {'比較相手 あり':<16}{both:>12}{only_first:>12}")
+    print(f"  {'比較相手 なし':<16}{only_second:>12}{neither:>12}")
 
     # 1回目を正解とみなしたときの2回目のF1。同じ人の2回の判定なので、
     # モデルがこれを超えることは期待できない = 実質的な上限。

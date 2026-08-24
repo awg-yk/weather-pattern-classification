@@ -64,7 +64,7 @@ def main():
     args = parser.parse_args()
 
     _use_japanese_font()
-    results = json.loads(Path(args.summary).read_text())
+    results = json.loads(Path(args.summary).read_text(encoding="utf-8"))
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 

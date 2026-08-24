@@ -179,7 +179,7 @@ def main():
         out_path.parent.mkdir(parents=True, exist_ok=True)
         payload = [{k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in f.items()}
                    for f in per_fold]
-        out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False))
+        out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"\n書き出しました: {out_path}")
 
 

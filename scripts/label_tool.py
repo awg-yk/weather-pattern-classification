@@ -44,6 +44,7 @@ Colabのノートブックセルで以下のように使う:
   どちらも拾う
 """
 
+import io
 import re
 from pathlib import Path
 
@@ -53,6 +54,16 @@ import ipywidgets as widgets
 from PIL import Image
 
 from src.labels import LABELS, LABEL_JA
+
+# このファイルの版。ノートブックから表示して、カーネルが古いコードを
+# 掴んだままになっていないかを確認するために使う。
+# (Pythonは一度読み込んだモジュールを記憶するので、git pullしても
+#  カーネルを再起動しない限り古いコードが動き続ける)
+VERSION = "2026-08-20b 画像を差し替え表示する版"
+
+# 直前に開いた判定画面。セルを実行し直したときに古い画面を閉じるために覚えておく。
+# 閉じないと、押しても何も起きない画面が積み重なって画像が何枚も並んでしまう。
+_ACTIVE_SESSION = []
 
 SKIP_LABEL = "unclassified"
 SKIP_LABEL_JA = "わからない/該当なし"
@@ -291,14 +302,53 @@ def run_review_session(
     show_current()
 
 
+def close_review_sessions() -> int:
+    """開いたままの判定画面をすべて閉じる。閉じた数を返す。"""
+    count = len(_ACTIVE_SESSION)
+    for widget in _ACTIVE_SESSION:
+        widget.close()
+    _ACTIVE_SESSION.clear()
+    return count
+
+
+def positives_union(labels_csv, review_csvs, label: str = "okhotsk_high") -> list:
+    """「一度でも あり とした」天気図のファイル名を集める。
+
+    labels.csvで陽性の行と、これまでの見直しで yes と答えた行の和集合。
+    基準を1つに決め直すとき、この集合だけを見ればよい——どちらの基準で
+    拾ったものも漏れなく入っており、片方の回で落とした事例も検討し直せる。
+
+    ここに入らない天気図(どの回でも「なし」だったもの)は対象外になるので、
+    この作業で新たな見落としを拾うことはできない。基準を揃えるための工程であって、
+    再現性を測る工程ではない。
+    """
+    names = set()
+    labels = pd.read_csv(labels_csv)
+    for filename, value in zip(labels["filename"], labels["label"]):
+        if label in str(value).split("|"):
+            names.add(filename)
+
+    for path in review_csvs or []:
+        path = Path(path)
+        if not path.exists():
+            print(f"  {path} が見つかりません(飛ばします)")
+            continue
+        review = pd.read_csv(path)
+        names.update(review.loc[review["answer"] == "yes", "filename"])
+    return sorted(names)
+
+
 def run_binary_review_session(
     images_dir: str,
     labels_csv: str,
     out_csv: str,
     label: str = "okhotsk_high",
-    sample: int = 200,
+    sample: int | None = 200,
     seed: int = 42,
     years: list | None = None,
+    months: list | None = None,
+    filenames: list | None = None,
+    image_width: int = 560,
 ):
     """1つのラベルについて「あり/なし」だけを、元の答えを伏せて判定し直す。
 
@@ -312,6 +362,14 @@ def run_binary_review_session(
     結果は labels.csv とは別のファイルに書く。突き合わせて確認するまで、
     元のラベルには一切手を触れない。
 
+    months に月のリストを渡すと、その月の画像だけを対象にする。
+    sample に None を渡すと抽出せず、対象すべてを順に見る。
+    filenames にファイル名のリストを渡すと、その画像だけを対象にする
+    (positives_union と組み合わせて、陽性候補だけを見直すときに使う)。
+
+    ボタンは画像の上に置く。下に置くと、画像1枚ごとに視線と手が
+    上下に往復することになり、数百枚を見るときに効いてくる。
+
     途中で止めても、既に答えた分は飛ばして続きから再開できる。
     """
     images_dir = Path(images_dir)
@@ -324,15 +382,26 @@ def run_binary_review_session(
         year_of = df["filename"].str.extract(_DATE_PATTERN)[0].str.slice(0, 4)
         df = df[pd.to_numeric(year_of, errors="coerce").isin(years)]
 
+    if filenames:
+        df = df[df["filename"].isin(set(filenames))]
+
+    if months:
+        months = {int(m) for m in months}
+        month_of = df["filename"].str.extract(_DATE_PATTERN)[0].str.slice(4, 6)
+        df = df[pd.to_numeric(month_of, errors="coerce").isin(months)]
+
     # 画像が実在する行だけを対象にする
     df = df[df["filename"].apply(lambda f: (images_dir / f).exists())].reset_index(drop=True)
     if df.empty:
         print(f"{images_dir} に対象の画像がありません。")
         return
 
-    # 無作為抽出。seedを固定しているので、中断して開き直しても同じ200枚になる。
     if sample and sample < len(df):
+        # 無作為抽出。seedを固定しているので、中断して開き直しても同じ枚数・同じ組になる。
         df = df.sample(n=sample, random_state=seed).reset_index(drop=True)
+    else:
+        # 全件を見る場合は日付順に並べる。似た時期の天気図が続くので判断基準が揺れにくい。
+        df = df.sort_values("filename").reset_index(drop=True)
 
     done = set()
     if out_path.exists():
@@ -344,7 +413,11 @@ def run_binary_review_session(
         return
 
     state = {"idx": 0}
-    output = widgets.Output()
+    # Outputウィジェットに毎回描き直す方式だと、環境によっては前の画像が
+    # 消えずに積み重なる。画像ウィジェットを1つ用意して中身だけ差し替えれば、
+    # 消す処理そのものが要らなくなり、表示は常に1枚で済む。
+    image_view = widgets.Image(format="png", width=image_width)
+    caption = widgets.HTML()
     progress_label = widgets.Label()
 
     def update_progress():
@@ -352,18 +425,24 @@ def run_binary_review_session(
         progress_label.value = f"{finished} / {len(df)} 枚  ({LABEL_JA[label]}の判定)"
 
     def show_current():
-        with output:
-            clear_output(wait=True)
-            if state["idx"] >= len(remaining):
-                print(f"完了しました。{out_path} に書き出しています。")
-                return
-            filename = remaining[state["idx"]]
-            # 日付は表示する(季節が分からないと判断できないため)が、
-            # 以前付けた答えは表示しない
-            match = _DATE_PATTERN.search(filename)
-            stamp = match.group(1) if match else filename
-            print(f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[8:10]}Z")
-            display(Image.open(images_dir / filename).resize((720, 540)))
+        if state["idx"] >= len(remaining):
+            caption.value = f"<b>完了しました。</b> {out_path} に書き出しています。"
+            image_view.layout.display = "none"
+            for button in (yes_button, no_button, unsure_button):
+                button.disabled = True
+            update_progress()
+            return
+
+        filename = remaining[state["idx"]]
+        # 日付は表示する(季節が分からないと判断できないため)が、
+        # 以前付けた答えは表示しない
+        match = _DATE_PATTERN.search(filename)
+        stamp = match.group(1) if match else filename
+        caption.value = f"<b>{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[8:10]}Z</b>"
+
+        buffer = io.BytesIO()
+        Image.open(images_dir / filename).save(buffer, format="PNG")
+        image_view.value = buffer.getvalue()
         update_progress()
 
     def record(answer):
@@ -375,6 +454,11 @@ def run_binary_review_session(
         state["idx"] += 1
         show_current()
 
+    # 前回の画面が残っていれば閉じる(セルの再実行やカーネル未再起動への備え)
+    for widget in _ACTIVE_SESSION:
+        widget.close()
+    _ACTIVE_SESSION.clear()
+
     yes_button = widgets.Button(description=f"あり (1)", button_style="success")
     yes_button.on_click(lambda _: record("yes"))
     no_button = widgets.Button(description="なし (0)", button_style="")
@@ -382,13 +466,16 @@ def run_binary_review_session(
     unsure_button = widgets.Button(description="わからない", button_style="warning")
     unsure_button.on_click(lambda _: record("unsure"))
 
-    display(
+    panel = widgets.VBox([
         widgets.HTML(
             f"<b>{LABEL_JA[label]}</b> が該当するかだけを判定してください。"
             "以前の答えは表示していません(引きずられないようにするため)。"
         ),
-        progress_label,
-        output,
         widgets.HBox([yes_button, no_button, unsure_button]),
-    )
+        progress_label,
+        caption,
+        image_view,
+    ])
+    _ACTIVE_SESSION.append(panel)
+    display(panel)
     show_current()

@@ -32,8 +32,14 @@ def run(cmd: list) -> None:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data-dir", required=True)
+    parser.add_argument("--data-dir", default=None, help="天気図画像のディレクトリ(chartモードで必須)")
     parser.add_argument("--labels", required=True)
+    parser.add_argument(
+        "--input-mode", default="chart", choices=["chart", "era5-grid"],
+        help="chart(既定)=天気図の画像。era5-grid=ERA5の格子を圧縮せず直接入力する",
+    )
+    parser.add_argument("--era5-grid-dir", default="data/raw/era5")
+    parser.add_argument("--grid-size", type=int, default=128)
     parser.add_argument("--years", type=int, nargs="+", required=True, help="対象年(この中から1年ずつテストに回す)")
     parser.add_argument("--out-dir", default="runs/loyo", help="重みと結果JSONの保存先")
     parser.add_argument("--seed", type=int, default=42)
@@ -41,9 +47,19 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--image-size", type=int, default=224)
     parser.add_argument("--coordconv", action="store_true")
+    parser.add_argument("--cnn-widths", type=int, nargs="+", default=[128, 256, 512, 512])
+    parser.add_argument(
+        "--arch", default="efficientnet_b0", choices=["efficientnet_b0", "small_cnn"],
+        help="small_cnn=データ量に見合う小さな畳み込みネット(src/model.pyのSmallCNNを参照)",
+    )
+    parser.add_argument(
+        "--no-pretrained", action="store_true",
+        help="ImageNetの事前学習重みを使わない(ERA5格子と条件を揃えるとき)",
+    )
     parser.add_argument("--era5-features", default=None)
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--gap-days", type=int, default=3)
+    parser.add_argument("--val-mode", default="tail", choices=["spread", "tail"])
     parser.add_argument(
         "--skip-existing",
         action="store_true",
@@ -51,18 +67,30 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.input_mode == "chart" and not args.data_dir:
+        raise SystemExit("chartモードでは --data-dir が必要です")
+    if args.input_mode == "era5-grid" and args.era5_features:
+        raise SystemExit("--input-mode era5-grid と --era5-features は併用できません")
+
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     common = [
-        "--data-dir", args.data_dir,
         "--labels", args.labels,
         "--years", *args.years,
         "--split-mode", "loyo",
         "--val-ratio", args.val_ratio,
         "--gap-days", args.gap_days,
+        "--val-mode", args.val_mode,
         "--seed", args.seed,
+        "--input-mode", args.input_mode,
     ]
+    if args.input_mode == "era5-grid":
+        # --grid-sizeはtrain.pyだけが受け取る(evaluate.pyはチェックポイントに
+        # 保存された値を使うため、CLI引数を持たない)。
+        common += ["--era5-grid-dir", args.era5_grid_dir]
+    else:
+        common += ["--data-dir", args.data_dir]
     if args.era5_features:
         common += ["--era5-features", args.era5_features]
 
@@ -75,17 +103,29 @@ def main():
             print(f"\n=== fold: テスト={test_year}年 (既存の結果を再利用) ===")
         else:
             print(f"\n{'=' * 60}\n=== fold: テスト={test_year}年 ===\n{'=' * 60}")
-            train_cmd = [
-                "src.train", *common,
-                "--test-year", test_year,
-                "--epochs", args.epochs,
-                "--batch-size", args.batch_size,
-                "--image-size", args.image_size,
-                "--out", weights,
-            ]
-            if args.coordconv:
-                train_cmd.append("--coordconv")
-            run(train_cmd)
+            # 学習は終わっているのに評価で落ちた場合、--skip-existing を付ければ
+            # 学習をやり直さずに評価だけ再開できる(1foldに数十分かかるため)
+            if args.skip_existing and weights.exists():
+                print(f"  学習済みの重みを再利用します: {weights}")
+                train_cmd = None
+            else:
+                train_cmd = [
+                    "src.train", *common,
+                    "--test-year", test_year,
+                    "--epochs", args.epochs,
+                    "--batch-size", args.batch_size,
+                    "--image-size", args.image_size,
+                    "--out", weights,
+                ]
+                if args.input_mode == "era5-grid":
+                    train_cmd += ["--grid-size", args.grid_size]
+                if args.no_pretrained:
+                    train_cmd.append("--no-pretrained")
+                train_cmd += ["--arch", args.arch, "--cnn-widths", *args.cnn_widths]
+            if train_cmd is not None:
+                if args.coordconv:
+                    train_cmd.append("--coordconv")
+                run(train_cmd)
             run([
                 "src.evaluate", *common,
                 "--test-year", test_year,
@@ -96,7 +136,7 @@ def main():
                 "--json-out", result_json,
             ])
 
-        results.append(json.loads(result_json.read_text()))
+        results.append(json.loads(result_json.read_text(encoding="utf-8")))
 
     # ---- 集計 ----
     print(f"\n{'=' * 72}\n交差検証のまとめ({len(results)}fold)\n{'=' * 72}")
@@ -133,6 +173,10 @@ def main():
     summary_path.write_text(
         json.dumps(
             {
+                # どの条件で出た数字かを結果と一緒に残す。設定を変えて何度も回すため、
+                # 後からsummary.jsonだけを見て「これは事前学習ありだったか」を
+                # 判断できないと、取り違えたまま比較してしまう。
+                "config": vars(args),
                 "folds": results,
                 "mean": {
                     key: statistics.mean([r[key] for r in results])
@@ -141,7 +185,8 @@ def main():
             },
             indent=2,
             ensure_ascii=False,
-        )
+        ),
+        encoding="utf-8",
     )
     print(f"\nまとめを書き出しました: {summary_path}")
 

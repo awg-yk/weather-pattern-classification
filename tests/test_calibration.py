@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -261,6 +262,122 @@ def test_source_records_what_it_was_built_from(tmp_path=None):
         assert key in source, f"{key} が記録されていない"
     assert source["weights_sha256"] == calib.file_fingerprint(weights)
 
+
+
+# ---- 温度スケーリングから移したテスト ----
+# もとは tests/test_era5.py にあり、scripts/calibrate.py の温度スケーリング
+# (共通のT一つ)を対象にしていた。手法をラベルごとの当てはめに変えたので、
+# 同じ意図をこちらで引き継ぐ。
+
+
+def test_platt_recovers_a_known_distortion():
+    """確信度を3倍に膨らませたモデルから、その3倍を推定できるか。
+
+    温度スケーリングが T≈3 を復元したのと同じ状況。Platt では a≈1/3 になる
+    (sigmoid(a·z) で z が3倍なら、a を 1/3 にすれば元に戻る)。
+    """
+    rng = np.random.default_rng(0)
+    z = rng.normal(scale=1.2, size=4000)
+    y = (rng.random(4000) < calib.sigmoid(z)).astype(float)
+    a, b = calib.fit_platt(z * 3.0, y, b_init=0.0)
+    assert 0.28 < a < 0.40
+    assert abs(b) < 0.2
+
+
+def test_calibration_preserves_the_ranking_within_a_label():
+    """較正はラベル内の順位を変えない。
+
+    a > 0 なので sigmoid(a·z + b) は z の単調増加関数。よって、そのラベルの
+    確率で並べた順序は較正前後で一致する。順位だけで決まる macro AP は不変で、
+    F1 もラベルごとにしきい値を選び直すかぎり変わらない
+    ——「較正は目盛りを直すだけ」と説明できる根拠。
+    """
+    rng = np.random.default_rng(0)
+    z = rng.normal(scale=2.0, size=(2000, len(LABELS)))
+    calibration = calib.Calibration(
+        per_label={l: calib.LabelCalibration(a=0.6, b=-2.0, method="platt") for l in LABELS}
+    )
+    calibrated = calibration.probabilities(z)
+    for i in range(len(LABELS)):
+        before = np.argsort(calib.sigmoid(z[:, i]))
+        after = np.argsort(calibrated[:, i])
+        np.testing.assert_array_equal(before, after)
+
+
+def test_calibration_reduces_the_error_it_is_meant_to_reduce():
+    """膨らませた確信度のECEが、較正で半分以下になる。"""
+    rng = np.random.default_rng(0)
+    z = rng.normal(scale=1.2, size=4000)
+    y = (rng.random(4000) < calib.sigmoid(z)).astype(float)
+    inflated = z * 3.0
+
+    a, b = calib.fit_platt(inflated, y, b_init=0.0)
+    before = calib.expected_calibration_error(calib.sigmoid(inflated), y)
+    after = calib.expected_calibration_error(calib.sigmoid(a * inflated + b), y)
+    assert after < before / 2
+
+
+def test_temperature_scaling_cannot_remove_the_pos_weight_shift():
+    """共通の温度では pos_weight のかさ上げを消せない —— 手法を変えた理由。
+
+    sigmoid(z/T) は T が何であっても z=0 を 0.5 に写す。しかし pos_weight=w で
+    学習した出力の 0.5 は、真の確率 1/(1+w) に当たる。割り算では、この
+    「ロジットを log w ぶん平行移動する」歪みを表現できない。
+    """
+    w = 8.0
+    # 生の出力がちょうど 0.5 になる点。実体は 1/(1+8) = 0.111
+    assert abs(calib.remove_class_weight_bias(np.array([0.5]), np.array([w]))[0] - 1 / (1 + w)) < 1e-9
+
+    # どんな温度を掛けても、この点は 0.5 のまま動かない
+    for temperature in (0.1, 0.5, 1.0, 2.0, 10.0):
+        assert calib.sigmoid(np.array([0.0]) / temperature)[0] == 0.5
+
+    # Platt の b はこれを表現できる
+    a, b = 1.0, -np.log(w)
+    assert abs(calib.sigmoid(np.array([a * 0.0 + b]))[0] - 1 / (1 + w)) < 1e-9
+
+
+
+def _best_achievable_f1(scores: np.ndarray, y: np.ndarray) -> float:
+    """しきい値を全通り試したときの、そのラベルの最大F1。
+
+    固定の刻み幅ではなくデータ上の値そのものを候補にする。刻み幅を固定すると、
+    較正で確率がずれたときに「最適点が候補から外れた」だけの差が出てしまい、
+    較正そのものの影響と区別できなくなる。
+    """
+    from sklearn.metrics import f1_score
+
+    return max(
+        f1_score(y, (scores >= t).astype(float), zero_division=0)
+        for t in np.unique(scores)
+    )
+
+
+def test_optimized_f1_is_unchanged_by_calibration():
+    """しきい値を選び直すかぎり、較正は macro F1 を変えない。
+
+    scripts/cross_validate.py は --optimize-thresholds で走っているため、
+    過去に報告した交差検証の数値は較正を入れても変化しない。その根拠。
+    """
+    rng = np.random.default_rng(11)
+    n = 400
+    z = rng.normal(scale=1.5, size=(n, len(LABELS)))
+    y = (rng.random((n, len(LABELS))) < calib.sigmoid(z)).astype(float)
+
+    # pos_weight のかさ上げと自信過剰の両方が入った校正
+    calibration = calib.Calibration(
+        per_label={
+            l: calib.LabelCalibration(a=0.7, b=-2.1 + 0.1 * i, method="platt")
+            for i, l in enumerate(LABELS)
+        }
+    )
+    raw = calib.sigmoid(z)
+    calibrated = calibration.probabilities(z)
+
+    for i in range(len(LABELS)):
+        assert _best_achievable_f1(raw[:, i], y[:, i]) == pytest.approx(
+            _best_achievable_f1(calibrated[:, i], y[:, i])
+        ), f"{LABELS[i]} のF1が較正で変わった"
 
 if __name__ == "__main__":
     import inspect
