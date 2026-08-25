@@ -132,6 +132,7 @@ docs/
   2026-08-22-next-chart-only.md     # ERA5を外したあとの計画
   2026-08-25-calibration-order.md   # 校正と平均の順番を実測で決めた記録
   2026-08-25-label-undercount.md    # 保存済みラベルが妥当な答えを取りこぼしている件
+  2026-08-25-typhoon-threshold.md   # 台風のしきい値が高すぎた件
 runs/             # 交差検証の出力。summary.jsonだけ追跡する
 webapp/
   backend/        # FastAPI推論API
