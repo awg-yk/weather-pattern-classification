@@ -19,75 +19,16 @@ Colabのノートブックセルで以下のように使う:
     )
 """
 
-import subprocess
-import sys
-from pathlib import Path
-
-import matplotlib
-import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import numpy as np
 
+from src.jp_font import missing_font_hint, register_matplotlib_cjk
 
-# matplotlibに同梱されがちな環境で見かける日本語フォントの候補。
-# Windows(Yu Gothic/Meiryo/MS Gothic)・mac(Hiragino)・Linux(Noto/IPA)を順に試す。
-_CJK_FAMILIES = (
-    "Yu Gothic",
-    "Meiryo",
-    "MS Gothic",
-    "Hiragino Sans",
-    "Hiragino Kaku Gothic ProN",
-    "Noto Sans CJK JP",
-    "Noto Sans JP",
-    "IPAexGothic",
-    "TakaoGothic",
-)
-
-
-def _register_cjk_font() -> bool:
-    """matplotlibで日本語が表示できるようにフォントを設定する。
-
-    まずfontconfig(fc-list)を試す。Colabのように実行中にフォントを入れた場合、
-    matplotlibの起動時キャッシュには載っておらず、OS側を直接見ないと拾えないため。
-    ただしfc-listはWindowsには存在しないので、失敗したときは
-    matplotlibが認識済みのフォント名から日本語対応のものを探す。
-    """
-    try:
-        result = subprocess.run(
-            ["fc-list", ":lang=ja", "file"], capture_output=True, text=True, timeout=10
-        )
-        font_paths = [line.split(":")[0].strip() for line in result.stdout.splitlines() if line.strip()]
-    except Exception:  # Windowsなどfc-listが無い環境
-        font_paths = []
-
-    for path in font_paths:
-        try:
-            fm.fontManager.addfont(path)
-        except Exception:
-            continue
-
-    if font_paths:
-        try:
-            matplotlib.rcParams["font.family"] = fm.FontProperties(fname=font_paths[0]).get_name()
-            return True
-        except Exception:
-            pass
-
-    installed = {f.name for f in fm.fontManager.ttflist}
-    for family in _CJK_FAMILIES:
-        if family in installed:
-            matplotlib.rcParams["font.family"] = family
-            return True
-    return False
-
-
-if not _register_cjk_font():
-    _hint = (
-        "Windowsなら通常「Yu Gothic」等が入っているはずです。"
-        if sys.platform.startswith("win")
-        else "`apt-get install -y fonts-noto-cjk`(Linux)や`brew install --cask font-noto-sans-cjk`(mac)で導入できます。"
+if not register_matplotlib_cjk():
+    print(
+        "警告: 日本語フォントが見つかりませんでした。図中の日本語が豆腐(□)になります。"
+        f"{missing_font_hint()}"
     )
-    print(f"警告: 日本語フォントが見つかりませんでした。図中の日本語が豆腐(□)になります。{_hint}")
 
 import torch
 import torch.nn.functional as F
@@ -97,6 +38,7 @@ from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_
 from src import calibration as calib
 from src.labels import INDEX_TO_LABEL, LABEL_JA
 from src.model import backbone, load_model
+from src.regions import attention_mass, load_regions
 from src.train import get_transforms
 
 
@@ -272,7 +214,14 @@ def show_gradcam(
     apply_preprocess: bool = True,
     figsize_per_panel: float = 4.0,
     calibration=None,
+    show_regions: bool = False,
 ):
+    """上位top_k件のヒートマップを並べて表示する。
+
+    show_regions=True にすると、そのラベルの「見るべき領域」(data/regions.csv)を
+    枠で重ね、熱が枠内にどれだけ入っているかを見出しに出す。モデルの注目と
+    教師データ側の想定を、同じ天気図の上で見比べるためのもの(src/regions.py)。
+    """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model, meta = _load_model(weights_path, device)
     gradcam = GradCAM(model)
@@ -288,6 +237,7 @@ def show_gradcam(
 
     probs = _probabilities(model, input_tensor, weights_path, calibration)
     top_indices = torch.argsort(probs, descending=True)[:top_k].tolist()
+    regions = load_regions() if show_regions else {}
 
     fig, axes = plt.subplots(1, top_k + 1, figsize=(figsize_per_panel * (top_k + 1), figsize_per_panel))
     axes[0].imshow(display_image)
@@ -299,7 +249,18 @@ def show_gradcam(
         overlaid = _overlay_heatmap(display_image, cam)
         label = INDEX_TO_LABEL[idx]
         ax.imshow(overlaid)
-        ax.set_title(f"{LABEL_JA[label]}\n({probs[idx].item() * 100:.1f}%)")
+        title = f"{LABEL_JA[label]}\n({probs[idx].item() * 100:.1f}%)"
+        region = regions.get(label)
+        if region is not None:
+            width, height = display_image.size
+            left, top, right, bottom = region.pixel_box(width, height)
+            ax.add_patch(
+                plt.Rectangle((left, top), right - left, bottom - top,
+                              linewidth=2.0, edgecolor="white", facecolor="none")
+            )
+            mass = attention_mass(cam, region)
+            title += f"\n枠内 {mass:.0%} / 面積 {region.area:.0%}"
+        ax.set_title(title)
         ax.axis("off")
 
     plt.tight_layout()

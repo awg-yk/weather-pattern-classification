@@ -108,6 +108,7 @@ data/
   processed/      # 学習用に前処理した画像（gitignore対象）
   labels_v2.csv   # ファイル名とラベルの対応表。**学習・評価にはこちらを使う**
   labels.csv      # 旧版。okhotsk_highの陽性が85件しかない(v2は199件)
+  regions.csv     # ラベルごとの「見るべき領域」。Grad-CAMの当たり判定に使う
   review_okhotsk*.csv  # okhotsk_highを見直したときの判定記録
 scripts/
   preflight.py        # **学習を始める前の設定チェック(数秒)**
@@ -117,6 +118,8 @@ scripts/
   collect_jma.py      # 気象庁天気図画像の収集スクリプト
   download_era5.py    # ERA5データ取得スクリプト（CDS API）
   label_tool.py       # ラベル付け・見直し(盲検レビュー)
+  regions_preview.py  # data/regions.csv の矩形を天気図に重ねて確認する
+  attention_check.py  # Grad-CAMが「見るべき領域」を見ているかをラベル別に測る
   auto_label_era5.py  # ERA5気圧場からの規則ベース自動ラベリング
 src/
   dataset.py      # 天気図画像のDataset
@@ -127,12 +130,14 @@ src/
   calibration.py  # 確信度の校正（表示%を実際の的中率に合わせる）
   split.py        # train/val/testの分け方
   labels.py       # ラベル定義
+  regions.py      # ラベルごとの「見るべき領域」とGrad-CAMとの突き合わせ
 docs/
   2026-08-21-chart-vs-era5-grid.md  # 天気図とERA5格子の比較。結論と未解決の課題
   2026-08-22-next-chart-only.md     # ERA5を外したあとの計画
   2026-08-25-calibration-order.md   # 校正と平均の順番を実測で決めた記録
   2026-08-25-label-undercount.md    # 保存済みラベルが妥当な答えを取りこぼしている件
   2026-08-25-typhoon-threshold.md   # 台風のしきい値が高すぎた件
+  2026-08-25-attention-regions.md   # 教師データ側に「見るべき領域」を持たせた記録
 runs/             # 交差検証の出力。summary.jsonだけ追跡する
 webapp/
   backend/        # FastAPI推論API
@@ -624,6 +629,73 @@ show_gradcam(
 確信度が高い上位ラベルごとに、モデルが注目した領域がヒートマップで重ねて表示される。
 H/Lの記号や前線・等圧線のあたりに反応が集中していれば信頼できる判断をしている可能性が高く、
 逆に無関係な枠線や余白に反応している場合は、前処理やデータの見直しが必要というサインになる。
+
+### 教師データ側にも「見るべき領域」を持たせる
+
+Grad-CAMはモデルがどこを見たかを示すが、それが正しい場所かどうかを判断するのは
+人だった。ラベルは画像1枚に対して名前を並べるだけで、位置の情報を持っていないためである。
+この非対称のせいで、「オホーツク海高気圧と答えたのに本州中部を見ている」といった
+誤りは、天気図を1枚ずつ目で見て指摘するしかなかった。
+
+`data/regions.csv` はラベルごとに矩形を1つ持つ。相対座標(左上が0,0・右下が1,1)で、
+`scripts/preprocess_jma.py --stamp-box` と同じ取り方。
+
+```
+label,x0,y0,x1,y1,note
+okhotsk_high,0.50,0.00,0.75,0.30,オホーツク海。高気圧の本体がある海域
+```
+
+緯度経度ではなく相対座標なのは、前処理の `autocrop_to_content()` が白縁を落とすため
+画素と緯度経度の対応表が無く、天気図は正距円筒図法でもないので線形変換で緯度経度に
+直すと嘘の精度が付くため。全画像が同じ基準でトリミングされているので、相対座標なら
+画像間で揃う。
+
+**測る前に必ず1回、矩形が実際の海域と合っているかを目で確認する。**
+
+```bash
+python -m scripts.regions_preview \
+    --image ../weather-pattern-classification-data/processed/Js_2025050100.png \
+    --out reports/regions_preview.png
+```
+
+ずれていたら `data/regions.csv` の x0,y0,x1,y1 を直す。同梱の値は気圧配置の定義から
+置いた初期値であって、実測して決めたものではない。
+
+#### 測る
+
+```bash
+python -m scripts.attention_check \
+    --images-dir ../weather-pattern-classification-data/processed \
+    --labels data/labels_v2.csv --weights weights/model.pt \
+    --years 2025 --out reports/attention_2025.csv
+```
+
+| 列 | 意味 |
+|---|---|
+| `mass` | Grad-CAMの総和のうち矩形の中にある割合(0〜1) |
+| `area` | 矩形が画像に占める面積の割合。注目が一様なときの `mass` の期待値 |
+| `lift` | `mass / area`。**1なら画像全体に一様に注目しているのと同じ**で、その気圧配置を位置で捉えられていない。大きいほど良い |
+| `peak的中率` | 最も強く見ている点が矩形の中にあった割合(pointing game) |
+
+`mass` だけを見てはいけない。矩形が広いラベル(西高東低は面積45%)は何もしなくても
+`mass` が高く出る。判断は `lift` で行う。
+
+`--on` で測る対象を切り替える。
+
+| | 対象 | 何が分かるか |
+|---|---|---|
+| `--on record`(既定) | 記録にそのラベルがある天気図 | 正解のときに正しい場所を見ているか |
+| `--on predicted` | モデルがそのラベルを主張した天気図 | そう答えたとき、どこを見て答えたか。誤検出も含むので、適合率が低いラベルの原因はこちらで見る |
+
+#### 1枚の天気図で見比べる
+
+`show_gradcam(..., show_regions=True)` にすると、ヒートマップの上に矩形が白枠で重なり、
+見出しに「枠内 何% / 面積 何%」が出る。
+
+#### 使わない場面
+
+この矩形は**学習には使っていない**。損失にも入力にも影響しないので、
+`data/regions.csv` を書き換えてもモデルの出力は変わらない。測るためだけのもの。
 
 ## 進捗
 
