@@ -120,6 +120,7 @@ scripts/
   label_tool.py       # ラベル付け・見直し(盲検レビュー)
   regions_preview.py  # data/regions.csv の矩形を天気図に重ねて確認する
   attention_check.py  # Grad-CAMが「見るべき領域」を見ているかをラベル別に測る
+  explain_date.py     # 日付を1つ指定して天気図・Grad-CAM・確信度を書き出す
   auto_label_era5.py  # ERA5気圧場からの規則ベース自動ラベリング
 src/
   dataset.py      # 天気図画像のDataset
@@ -658,8 +659,10 @@ python -m scripts.regions_preview \
     --out reports/regions_preview.png
 ```
 
-ずれていたら `data/regions.csv` の x0,y0,x1,y1 を直す。同梱の値は気圧配置の定義から
-置いた初期値であって、実測して決めたものではない。
+ずれていたら `data/regions.csv` の x0,y0,x1,y1 を直す。同梱の値は実物の天気図
+(2019-06-15、手動アーカイブのJPEG)に重ねて読んだもので、緯度経度から変換したものでは
+ない。この天気図は緯線が弧を描くため、目盛りから作った線形の対応式では図の中央で
+北にずれる。**2022-10-01以降の気象庁PDF配信の天気図で枠の取り方が同じかは未確認。**
 
 #### 測る
 
@@ -696,6 +699,39 @@ python -m scripts.attention_check \
 
 この矩形は**学習には使っていない**。損失にも入力にも影響しないので、
 `data/regions.csv` を書き換えてもモデルの出力は変わらない。測るためだけのもの。
+
+## GitHubの画面から実行する(GitHub Actions)
+
+日付を1つ入れて結果を見るだけなら、手元に環境を作らなくてよい。
+リポジトリの **Actions** タブ → 「天気図を判定する(日付を指定)」 → **Run workflow**。
+
+| 入力 | 既定 | 意味 |
+|---|---|---|
+| `date` | (必須) | YYYY-MM-DD |
+| `hour` | `0` | 観測時刻(UTC)。0Zは日本時間9時、12Zは21時 |
+| `top_k` | `3` | Grad-CAMを描くラベル数 |
+| `weights` | `weights/model.pt` | 使う重み |
+| `show_regions` | on | 「見るべき領域」の枠を重ねるか |
+
+全ラベルの確信度は実行画面にそのまま出る。Grad-CAMの画像とCSVは
+そのページの **Artifacts** からダウンロードする。
+
+実行のたびにリポジトリをクローンし直すので、古いラベルファイルや古い重みが
+手元に残っていて結果が変わる、という事故が起きない。
+
+**学習はできない。** GitHubの実行環境にGPUは無く、1ジョブ6時間の上限もある。
+学習は手元のPCか、GPUの付いたColabで行う。
+
+同じことを手元で実行する場合:
+
+```bash
+python -m scripts.explain_date --date 2025-08-10 --hour 0 \
+    --weights weights/model.pt --out-dir reports/explain
+```
+
+依存は `requirements-inference.txt` だけでよい(`requirements.txt` は
+cartopyやnetCDF4を含み、推論には要らない)。2022-10-01以降の日付はPDF配信なので
+popplerが要る。
 
 ## 進捗
 

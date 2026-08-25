@@ -1,0 +1,19 @@
+# 推論だけに必要な依存。学習・ERA5取得・ラベリング用のものは入っていない。
+# GitHub Actions(.github/workflows/explain-date.yml)はこちらを使う。
+# requirements.txt は cartopy や netCDF4、jupyter を含み、CIで入れるには重い。
+#
+# torch は CPU 版を先に入れること(ワークフロー参照):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+torchvision>=0.17
+numpy
+scipy
+pandas
+pillow
+matplotlib
+scikit-learn
+requests
+pdf2image
+tqdm
+# src/train.py が src/era5_grid.py 経由で読み込む(推論では使わないが import される)
+xarray

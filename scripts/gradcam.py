@@ -207,7 +207,7 @@ def explain_predictions_above_threshold(
     return display_image, overlays, ranked
 
 
-def show_gradcam(
+def gradcam_figure(
     image_path: str,
     weights_path: str,
     top_k: int = 3,
@@ -216,7 +216,7 @@ def show_gradcam(
     calibration=None,
     show_regions: bool = False,
 ):
-    """上位top_k件のヒートマップを並べて表示する。
+    """上位top_k件のヒートマップを並べた図を作り、(fig, 確信度降順の一覧)を返す。
 
     show_regions=True にすると、そのラベルの「見るべき領域」(data/regions.csv)を
     枠で重ね、熱が枠内にどれだけ入っているかを見出しに出す。モデルの注目と
@@ -263,5 +263,15 @@ def show_gradcam(
         ax.set_title(title)
         ax.axis("off")
 
-    plt.tight_layout()
+    fig.tight_layout()
+    ranked = [
+        (INDEX_TO_LABEL[i], probs[i].item())
+        for i in torch.argsort(probs, descending=True).tolist()
+    ]
+    return fig, ranked
+
+
+def show_gradcam(*args, **kwargs):
+    """gradcam_figure() の図をその場に表示する。Colabのセルから使う。"""
+    gradcam_figure(*args, **kwargs)
     plt.show()
