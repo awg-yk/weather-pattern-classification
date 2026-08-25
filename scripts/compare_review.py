@@ -17,6 +17,7 @@
 import argparse
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from src.labels import LABEL_JA, LABELS, parse_labels
@@ -29,6 +30,129 @@ def cohen_kappa(a, b) -> float:
     # 偶然だけで一致する確率
     expected = sum((a == v).mean() * (b == v).mean() for v in (0, 1))
     return (observed - expected) / (1 - expected) if expected < 1 else 1.0
+
+
+
+def reconstruct_at_prevalence(sensitivity: float, specificity: float, prevalence: float) -> dict:
+    """感度・特異度・出現率から、本来の出現率での混同行列と指標を組み直す。
+
+    層別抽出(陽性と陰性を同数ずつ)で測った結果は、そのままではκもF1も
+    出現率が人為的なままで、他のラベルと比べられない。感度と特異度は
+    出現率に依存しないので、この2つと本来の出現率から組み直す。
+
+      あり・あり   = p × 感度
+      あり・なし   = p × (1 - 感度)
+      なし・あり   = (1-p) × (1 - 特異度)
+      なし・なし   = (1-p) × 特異度
+    """
+    p = prevalence
+    both = p * sensitivity
+    only_first = p * (1.0 - sensitivity)
+    only_second = (1.0 - p) * (1.0 - specificity)
+    neither = (1.0 - p) * specificity
+
+    precision = both / (both + only_second) if both + only_second else 0.0
+    recall = sensitivity
+    f1 = 2 * precision * recall / (precision + recall) if precision + recall else 0.0
+
+    observed = both + neither
+    expected = (both + only_first) * (both + only_second) + (only_second + neither) * (only_first + neither)
+    kappa = (observed - expected) / (1 - expected) if expected < 1 else 1.0
+    return {"both": both, "only_first": only_first, "only_second": only_second,
+            "neither": neither, "precision": precision, "recall": recall,
+            "f1": f1, "kappa": kappa, "agreement": observed}
+
+
+def uncertainty(n_pos_correct, n_pos, n_neg_correct, n_neg, prevalence,
+                draws: int = 20000, seed: int = 0) -> dict:
+    """感度・特異度の推定誤差が、F1とκにどれだけ効くかを見る。
+
+    30枚ずつしか見ていないので、感度・特異度そのものに幅がある。その幅を
+    Beta分布(Jeffreys事前分布)から取り直して、F1とκの分布を作る。
+    「測った」と言える精度が出ているかを、数字で判断するために出す。
+    """
+    rng = np.random.default_rng(seed)
+    sens = rng.beta(n_pos_correct + 0.5, n_pos - n_pos_correct + 0.5, draws)
+    spec = rng.beta(n_neg_correct + 0.5, n_neg - n_neg_correct + 0.5, draws)
+    f1s, kappas = [], []
+    for a, b in zip(sens, spec):
+        r = reconstruct_at_prevalence(a, b, prevalence)
+        f1s.append(r["f1"]); kappas.append(r["kappa"])
+    return {
+        "f1_low": float(np.percentile(f1s, 2.5)), "f1_high": float(np.percentile(f1s, 97.5)),
+        "kappa_low": float(np.percentile(kappas, 2.5)), "kappa_high": float(np.percentile(kappas, 97.5)),
+    }
+
+
+
+def _report_stratified(args, labels, decided, name) -> None:
+    """層別抽出した見直し結果を、本来の出現率に戻して報告する。"""
+    stamps = pd.to_datetime(
+        labels["filename"].str.extract(r"(\d{10})")[0], format="%Y%m%d%H", errors="coerce"
+    )
+    keep = stamps.notna()
+    if args.prevalence_years:
+        keep &= stamps.dt.year.isin(set(args.prevalence_years))
+    if args.prevalence_months:
+        keep &= stamps.dt.month.isin(set(args.prevalence_months))
+    pool = labels[keep]
+    prevalence = float(pool["original"].mean())
+
+    pos = decided[decided["original"] == 1]
+    neg = decided[decided["original"] == 0]
+    if pos.empty or neg.empty:
+        raise SystemExit(
+            "層別の集計には陽性・陰性の両方が要ります"
+            f"(陽性{len(pos)}枚 / 陰性{len(neg)}枚)。"
+            "--stratified を外すか、scripts/sample_review.py で抜き直してください。"
+        )
+
+    n_pos_correct = int((pos["review"] == 1).sum())
+    n_neg_correct = int((neg["review"] == 0).sum())
+    sensitivity = n_pos_correct / len(pos)
+    specificity = n_neg_correct / len(neg)
+
+    print(f"  層別抽出            : 陽性{len(pos)}枚 / 陰性{len(neg)}枚")
+    print(f"  感度(あり→あり)     : {sensitivity:.3f} ({n_pos_correct}/{len(pos)})")
+    print(f"  特異度(なし→なし)   : {specificity:.3f} ({n_neg_correct}/{len(neg)})")
+    print(f"  本来の出現率        : {prevalence:.3%}"
+          f"({int(pool['original'].sum())}/{len(pool)}件)")
+
+    r = reconstruct_at_prevalence(sensitivity, specificity, prevalence)
+    u = uncertainty(n_pos_correct, len(pos), n_neg_correct, len(neg), prevalence)
+
+    print(f"\n  --- 本来の出現率に戻した推定 ---")
+    print(f"  一致率              : {r['agreement']:.1%}")
+    print(f"  Cohenのκ            : {r['kappa']:.3f}  [95%区間 {u['kappa_low']:.3f}〜{u['kappa_high']:.3f}]")
+    print(f"  人間どうしのF1      : {r['f1']:.3f}  [95%区間 {u['f1_low']:.3f}〜{u['f1_high']:.3f}]")
+    print(f"    適合率 {r['precision']:.3f} / 再現率 {r['recall']:.3f}")
+    print("\n  この F1 が、そのラベルでモデルに期待できる上限の目安。"
+          "\n  区間が広いときは枚数が足りていない —— sample_review.py の --n-positive を増やす。")
+
+    width = u["f1_high"] - u["f1_low"]
+    if width > 0.25:
+        # どちらの層を増やすべきかは出現率で変わる。少数ラベルでは適合率が
+        # 偽陽性 =(1-出現率)×(1-特異度) に支配されるため、陽性をいくら増やしても
+        # 区間は狭まらない。実際にどちらが効くかを、この場で試算して示す。
+        more_pos = uncertainty(int(round(len(pos) * 2 * sensitivity)), len(pos) * 2,
+                               n_neg_correct, len(neg), prevalence, draws=4000, seed=1)
+        more_neg = uncertainty(n_pos_correct, len(pos),
+                               int(round(len(neg) * 2 * specificity)), len(neg) * 2,
+                               prevalence, draws=4000, seed=1)
+        gain_pos = width - (more_pos["f1_high"] - more_pos["f1_low"])
+        gain_neg = width - (more_neg["f1_high"] - more_neg["f1_low"])
+        target = "陰性" if gain_neg > gain_pos else "陽性"
+        print(f"\n  ⚠ F1の区間幅が{width:.2f}あります。この枚数では『測った』と言える"
+              "精度に達していません。")
+        print(f"    枚数を倍にしたときの改善: 陽性{len(pos)}→{len(pos)*2}枚で {gain_pos:+.3f} / "
+              f"陰性{len(neg)}→{len(neg)*2}枚で {gain_neg:+.3f}")
+        print(f"    → **{target}**を増やすほうが効きます"
+              f"(sample_review.py の --n-{'negative' if target == '陰性' else 'positive'})")
+        if prevalence < 0.15 and target == "陰性":
+            print(f"    出現率が{prevalence:.1%}と低いため、適合率は特異度のわずかな差で"
+                  "大きく動きます。")
+            print("    F1の上限を精度よく出すには枚数がかさむので、"
+                  "感度(再現率の上限)だけを報告する選択もあります。")
 
 
 def main():
@@ -51,6 +175,21 @@ def main():
         "元の範囲全体に戻して比べるときに使う",
     )
     parser.add_argument("--label", default="okhotsk_high")
+    parser.add_argument(
+        "--stratified",
+        action="store_true",
+        help="scripts/sample_review.py で陽性・陰性を同数ずつ抜いた結果を集計する。"
+        "感度と特異度を別々に測り、--labels 全体の出現率で組み直す。"
+        "付け忘れると、陽性を多く含む集合のままのκ・F1になり比較できない",
+    )
+    parser.add_argument(
+        "--prevalence-years", type=int, nargs="+", default=None,
+        help="--stratified で出現率を測る範囲の年。抽出時に --years を使ったなら同じ値を指定する",
+    )
+    parser.add_argument(
+        "--prevalence-months", type=int, nargs="+", default=None,
+        help="--stratified で出現率を測る範囲の月。抽出時に --months を使ったなら同じ値を指定する",
+    )
     parser.add_argument(
         "--apply",
         default=None,
@@ -106,6 +245,10 @@ def main():
           f"(うち「わからない」{len(unsure)}枚は集計から除外)")
     if decided.empty:
         raise SystemExit("集計できる判定がありません。")
+
+    if args.stratified:
+        _report_stratified(args, labels, decided, name)
+        return
 
     agree = (decided["review"] == decided["original"]).mean()
     kappa = cohen_kappa(decided["original"].to_numpy(), decided["review"].to_numpy())
