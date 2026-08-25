@@ -83,3 +83,38 @@ def test_uncertainty_narrows_as_the_sample_grows():
     small = uncertainty(24, 30, 28, 30, 0.3, draws=4000, seed=1)
     large = uncertainty(240, 300, 280, 300, 0.3, draws=4000, seed=1)
     assert (large["f1_high"] - large["f1_low"]) < (small["f1_high"] - small["f1_low"]) / 2
+
+
+# ---- ラベルの併用ルール ----
+
+
+def test_add_rule_inserts_the_components_only_where_the_condition_holds():
+    """--add は、条件のラベルが付いている行にだけ構成要素を足す。"""
+    from scripts.apply_label_rule import apply_rule
+
+    got = apply_rule(["futatsudama_low", "pacific_high"], "futatsudama_low",
+                     add=["japan_sea_low", "nankigan_low"])
+    assert set(got) == {"futatsudama_low", "pacific_high", "japan_sea_low", "nankigan_low"}
+
+    # 条件が付いていない行は素通し
+    untouched = ["pacific_high", "stationary_front"]
+    assert apply_rule(untouched, "futatsudama_low",
+                      add=["japan_sea_low"]) == untouched
+
+
+def test_add_rule_does_not_duplicate_existing_labels():
+    from scripts.apply_label_rule import apply_rule
+
+    got = apply_rule(["futatsudama_low", "japan_sea_low"], "futatsudama_low",
+                     add=["japan_sea_low", "nankigan_low"])
+    assert got.count("japan_sea_low") == 1
+    assert set(got) == {"futatsudama_low", "japan_sea_low", "nankigan_low"}
+
+
+def test_drop_rule_still_works():
+    """--add を足したあとも、従来の --drop の挙動が変わっていないこと。"""
+    from scripts.apply_label_rule import apply_rule
+
+    got = apply_rule(["futatsudama_low", "japan_sea_low", "pacific_high"],
+                     "futatsudama_low", drop=["japan_sea_low", "nankigan_low"])
+    assert got == ["futatsudama_low", "pacific_high"]
