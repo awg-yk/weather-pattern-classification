@@ -161,6 +161,14 @@ def main():
         help="全ラベルの確信度も列として出力する",
     )
     parser.add_argument(
+        "--no-calibration",
+        action="store_true",
+        help="確信度の校正を使わず、生のsigmoid出力で判定する。校正の有無だけを"
+        "入れ替えた比較をしたいとき用(重みやモデル数を変えずに済む)。"
+        "生の値は学習時のpos_weightのぶんラベルごとに違う量だけ高く出るため、"
+        "通常の利用では付けないこと",
+    )
+    parser.add_argument(
         "--min-confidence",
         type=float,
         default=None,
@@ -195,10 +203,17 @@ def main():
             )
         models.append(model)
         # 校正は重みごとに違う(foldごとに別のvalで当てはめている)ので、重みと対で持つ
-        calibrations.append(calib.load_for_weights_cli(path, verbose=False))
+        calibrations.append(
+            calib.Calibration.identity() if args.no_calibration
+            else calib.load_for_weights_cli(path, verbose=False)
+        )
     transform = get_transforms(train=False, image_size=image_size)
 
-    if any(c.is_fitted for c in calibrations):
+    if args.no_calibration:
+        print("確信度: 未校正(--no-calibration)。生のsigmoid出力をそのまま使います。"
+              "pos_weightのぶんラベルごとに違う量だけ高く出るため、"
+              "ラベル間の比較(1位の取り合い)も歪みます")
+    elif any(c.is_fitted for c in calibrations):
         missing = [p for p, c in zip(args.weights, calibrations) if not c.is_fitted]
         if missing:
             raise SystemExit(
