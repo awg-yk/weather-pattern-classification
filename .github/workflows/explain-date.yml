@@ -1,0 +1,99 @@
+# 日付を1つ入力すると、その日の天気図・Grad-CAM・全ラベルの確信度を出す。
+#
+# Colabでセルを順に実行していた作業を、GitHubの画面から実行できるようにしたもの。
+# 実行のたびにリポジトリをクローンし直すので、古いラベルファイルや古い重みが
+# 手元に残っていて結果が変わる、という事故が起きない。
+#
+# 使い方: リポジトリの Actions タブ -> このワークフロー -> Run workflow
+# 学習はここではできない(GitHubの実行環境にGPUは無い)。
+
+name: 天気図を判定する(日付を指定)
+
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "日付 YYYY-MM-DD"
+        required: true
+        type: string
+      hour:
+        description: "観測時刻(UTC)。0Zは日本時間9時、12Zは21時"
+        required: true
+        default: "0"
+        type: choice
+        options: ["0", "12"]
+      top_k:
+        description: "Grad-CAMを描くラベル数(確信度の高い順)"
+        required: false
+        default: "3"
+        type: string
+      weights:
+        description: "使う重み"
+        required: false
+        default: "weights/model.pt"
+        type: string
+      show_regions:
+        description: "「見るべき領域」(data/regions.csv)の枠を重ねる"
+        required: false
+        default: true
+        type: boolean
+
+jobs:
+  explain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements-inference.txt
+
+      - name: システム側の依存を入れる
+        # poppler: 2022-10-01以降の天気図はPDF配信なのでPNG変換に要る
+        # fonts-noto-cjk: 入れないと図中の日本語が豆腐(□)になる
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq poppler-utils fonts-noto-cjk
+
+      - name: Pythonの依存を入れる
+        # CPU版のtorchを先に入れる。既定のPyPI版はCUDA同梱で2GB以上あり、
+        # GPUの無いランナーでは丸ごと無駄になる。
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install -r requirements-inference.txt
+
+      - name: 判定する
+        id: explain
+        run: |
+          set -o pipefail   # teeに繋いでも判定の失敗でジョブを止める
+          python -m scripts.explain_date \
+            --date "${{ inputs.date }}" \
+            --hour "${{ inputs.hour }}" \
+            --weights "${{ inputs.weights }}" \
+            --top-k "${{ inputs.top_k }}" \
+            ${{ inputs.show_regions && '' || '--no-regions' }} \
+            --out-dir reports/explain | tee run.log
+
+      - name: 結果を実行画面にも出す
+        if: always()
+        run: |
+          {
+            echo "## ${{ inputs.date }} ${{ inputs.hour }}Z"
+            echo
+            echo '```'
+            cat run.log
+            echo '```'
+            echo
+            echo "Grad-CAMの画像は下の Artifacts からダウンロードしてください。"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: explain-${{ inputs.date }}-${{ inputs.hour }}Z
+          path: reports/explain/
+          if-no-files-found: error
