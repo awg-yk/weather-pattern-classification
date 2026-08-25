@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "labels": [
+    "winter_pressure_pattern",
+    "nankigan_low",
+    "japan_sea_low",
+    "futatsudama_low",
+    "typhoon",
+    "migratory_high",
+    "pacific_high",
+    "front_passage",
+    "stationary_front",
+    "okhotsk_high"
+  ],
+  "source": {
+    "weights": "runs\\v2_chart_spread\\model_test2025.pt",
+    "weights_sha256": "5c407d95278ee6ec",
+    "image_size": 224,
+    "pos_weight": [
+      7.628571510314941,
+      8.0,
+      5.163265228271484,
+      8.0,
+      8.0,
+      1.1884057521820068,
+      8.0,
+      4.883116722106934,
+      1.913183331489563,
+      8.0
+    ],
+    "pos_weight_source": "recomputed",
+    "pos_weight_cap": 8.0,
+    "split": {
+      "mode": "loyo",
+      "val_mode": "spread",
+      "val_ratio": 0.2,
+      "test_ratio": 0.0,
+      "seed": 42,
+      "years": [
+        2023,
+        2024,
+        2025
+      ],
+      "test_year": 2025,
+      "gap_days": 3
+    },
+    "fitted_on": "val",
+    "n_fit": 292,
+    "created_at": "2026-08-24T09:00:40+00:00",
+    "labels_csv": "data\\labels_v2.csv",
+    "labels_sha256": "de2b1b7597e60667"
+  },
+  "metrics": {
+    "report_split": "test",
+    "n": 718,
+    "top1_accuracy": 0.766016713091922,
+    "ece_raw": 0.18332495304186683,
+    "ece_calibrated": 0.09027251340767427,
+    "ece_all_labels_raw": 0.08415432445557021,
+    "ece_all_labels_calibrated": 0.019917524278534448
+  },
+  "per_label": {
+    "winter_pressure_pattern": {
+      "a": 0.6762327541822246,
+      "b": -1.1626300208819151,
+      "threshold": 0.41000000000000003,
+      "method": "platt",
+      "n_positive": 47
+    },
+    "nankigan_low": {
+      "a": 0.612875877116967,
+      "b": -1.3545512895120728,
+      "threshold": 0.27,
+      "method": "platt",
+      "n_positive": 45
+    },
+    "japan_sea_low": {
+      "a": 0.8705488907050211,
+      "b": -1.215654737726809,
+      "threshold": 0.29000000000000004,
+      "method": "platt",
+      "n_positive": 39
+    },
+    "futatsudama_low": {
+      "a": 0.9033197000070963,
+      "b": -1.5624223272988718,
+      "threshold": 0.18,
+      "method": "platt",
+      "n_positive": 15
+    },
+    "typhoon": {
+      "a": 0.7481105032550843,
+      "b": -1.209446817138103,
+      "threshold": 0.6,
+      "method": "platt",
+      "n_positive": 41
+    },
+    "migratory_high": {
+      "a": 0.6654694882846303,
+      "b": -0.17474113030958685,
+      "threshold": 0.35000000000000003,
+      "method": "platt",
+      "n_positive": 127
+    },
+    "pacific_high": {
+      "a": 0.5154795194710594,
+      "b": -2.3614198630395387,
+      "threshold": 0.13,
+      "method": "platt",
+      "n_positive": 19
+    },
+    "front_passage": {
+      "a": 0.750158229508443,
+      "b": -1.305859398861447,
+      "threshold": 0.32,
+      "method": "platt",
+      "n_positive": 46
+    },
+    "stationary_front": {
+      "a": 1.212677029340293,
+      "b": -0.10499712888853557,
+      "threshold": 0.36000000000000004,
+      "method": "platt",
+      "n_positive": 98
+    },
+    "okhotsk_high": {
+      "a": 0.48709313400368115,
+      "b": -1.610193194069247,
+      "threshold": 0.19,
+      "method": "platt",
+      "n_positive": 26
+    }
+  }
+}
