@@ -6,6 +6,13 @@
 ## すぐに使う
 
 学習済みモデル(`weights/model.pt`)をリポジトリに同梱しているので、学習不要ですぐに使える。
+確信度の校正(`weights/model.calib.json`)も同梱してあるので、表示される%は実際に
+当たる割合の目安として読める([確信度の校正](#確信度表示するの校正)を参照)。
+
+同梱している重みは leave-one-year-out の 2023〜2024年で学習したもの
+(`runs/v2_chart_spread/model_test2025.pt`)。**2025年は学習に使っていない**ので、
+2025年の天気図で試せば実力どおりの判定になる。3年分すべてを使った最終モデルでは
+ない点は承知しておくこと。
 
 <a href="https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/main/notebooks/predict.ipynb" target="_blank" rel="noopener noreferrer"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 
