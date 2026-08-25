@@ -270,6 +270,32 @@ class Calibration:
         return cls.from_dict(json.loads(Path(path).read_text()))
 
     @classmethod
+    def average(cls, calibrations) -> "Calibration":
+        """複数の校正を、ラベルごとにパラメータの平均で1つにまとめる。
+
+        交差検証の各foldで作った校正を、アンサンブルに1つだけ適用したいときに使う。
+
+        注意: これは近似である。厳密には「3モデルの平均出力」に対する校正を、
+        その平均出力を測った検証データから当てはめ直すべきだが、LOYOでは
+        foldごとに検証データが違うため、アンサンブル共通の検証データが存在しない。
+        個々のfoldの係数を平均するのは、その代わりの実務的な妥協。
+        """
+        calibrations = list(calibrations)
+        if not calibrations:
+            return cls.identity()
+        per_label = {}
+        for label in LABELS:
+            parts = [c[label] for c in calibrations]
+            per_label[label] = LabelCalibration(
+                a=float(np.mean([p.a for p in parts])),
+                b=float(np.mean([p.b for p in parts])),
+                threshold=float(np.mean([p.threshold for p in parts])),
+                method="average",
+                n_positive=int(sum(p.n_positive for p in parts)),
+            )
+        return cls(per_label=per_label)
+
+    @classmethod
     def identity(cls) -> "Calibration":
         """校正なし。生の出力をそのまま返し、しきい値は一律0.5。"""
         return cls(per_label={label: LabelCalibration() for label in LABELS})

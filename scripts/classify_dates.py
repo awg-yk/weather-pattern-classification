@@ -161,6 +161,16 @@ def main():
         help="全ラベルの確信度も列として出力する",
     )
     parser.add_argument(
+        "--calibration-order",
+        default="per-model",
+        choices=["per-model", "after-average"],
+        help="重みを複数渡したときの、校正と平均の順番。"
+        "per-model(既定)=モデルごとに校正してから平均する。"
+        "after-average=生の確率を平均してから、校正の係数を平均したもので直す。"
+        "後者は単調変換なので未校正のときと順位が一致する(APやAUCが変わらない)。"
+        "前者は各モデルの歪みを個別に直せるが、平均の順位を変える",
+    )
+    parser.add_argument(
         "--no-calibration",
         action="store_true",
         help="確信度の校正を使わず、生のsigmoid出力で判定する。校正の有無だけを"
@@ -229,8 +239,10 @@ def main():
             "python -m scripts.calibrate で作成してください。"
         )
 
-    # 判定しきい値はラベルごと。重みを複数使う場合は平均を取る。
-    thresholds = np.mean([c.thresholds() for c in calibrations], axis=0)
+    # 複数の重みを1つの校正にまとめたもの(--calibration-order after-average 用)。
+    # しきい値もここから取る。
+    mean_calibration = calib.Calibration.average(calibrations)
+    thresholds = mean_calibration.thresholds()
     if args.min_confidence is not None:
         thresholds = np.full(len(LABELS), args.min_confidence)
     if len(models) == 1:
@@ -265,13 +277,22 @@ def main():
         image = mask_stamp_box(autocrop_to_content(image), DEFAULT_STAMP_BOX)
         tensor = transform(image).unsqueeze(0).to(device)
         with torch.no_grad():
-            # 重みごとに校正してから平均する。校正の係数はモデルごとに違うので、
-            # 生の確率を平均してから校正すると意味がずれる。
-            per_model = [
-                c.probabilities(m(tensor)[0].cpu().numpy())
-                for m, c in zip(models, calibrations)
-            ]
-        probs = torch.tensor(np.mean(per_model, axis=0), dtype=torch.float32)
+            logits = [m(tensor)[0].cpu().numpy() for m in models]
+
+        # 校正と平均のどちらを先にするかで結果が変わる。どちらが良いかは
+        # --calibration-order を入れ替えて実測で決める(既定は per-model)。
+        if args.calibration_order == "after-average":
+            # 生の確率を平均してから、まとめた校正で直す。ラベルごとの単調変換
+            # なので、未校正のときと順位が完全に一致する(AP・AUCが変わらない)。
+            averaged = np.mean([calib.sigmoid(z) for z in logits], axis=0)
+            values = mean_calibration.from_probabilities(averaged)
+        else:
+            # モデルごとに校正してから平均する。校正の係数はモデルごとに違うので、
+            # 各モデルの歪みを個別に直してから混ぜられる。ただし平均の順位は変わる。
+            values = np.mean(
+                [c.probabilities(z) for z, c in zip(logits, calibrations)], axis=0
+            )
+        probs = torch.tensor(values, dtype=torch.float32)
 
         if era5 is None:
             return probs

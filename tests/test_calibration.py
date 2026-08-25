@@ -379,6 +379,56 @@ def test_optimized_f1_is_unchanged_by_calibration():
             _best_achievable_f1(calibrated[:, i], y[:, i])
         ), f"{LABELS[i]} のF1が較正で変わった"
 
+
+def test_average_combines_the_parameters_per_label():
+    """foldごとの校正を1つにまとめる。しきい値も含めて平均になる。"""
+    a = calib.Calibration(
+        per_label={l: calib.LabelCalibration(a=0.6, b=-2.0, threshold=0.2, n_positive=10)
+                   for l in LABELS})
+    b = calib.Calibration(
+        per_label={l: calib.LabelCalibration(a=1.0, b=-1.0, threshold=0.4, n_positive=14)
+                   for l in LABELS})
+    m = calib.Calibration.average([a, b])
+    for label in LABELS:
+        assert m[label].a == pytest.approx(0.8)
+        assert m[label].b == pytest.approx(-1.5)
+        assert m[label].threshold == pytest.approx(0.3)
+        assert m[label].n_positive == 24
+        assert m[label].method == "average"
+
+
+def test_averaging_after_calibration_preserves_the_uncalibrated_ranking():
+    """「平均してから校正」は、未校正の平均と順位が一致する。
+
+    scripts/classify_dates.py の --calibration-order after-average が満たすべき性質。
+    ラベルごとの単調変換なので、AP や AUC は未校正のときと厳密に同じになる。
+    逆に per-model(既定)はこの性質を持たない —— そこが選択の分かれ目。
+    """
+    rng = np.random.default_rng(21)
+    logits = [rng.normal(scale=1.5, size=(200, len(LABELS))) for _ in range(3)]
+    cals = [
+        calib.Calibration(per_label={
+            l: calib.LabelCalibration(a=0.5 + 0.2 * k, b=-2.0 + 0.3 * i, method="platt")
+            for i, l in enumerate(LABELS)})
+        for k in range(3)
+    ]
+    mean_cal = calib.Calibration.average(cals)
+
+    raw_mean = np.mean([calib.sigmoid(z) for z in logits], axis=0)
+    after = mean_cal.from_probabilities(raw_mean)
+    per_model = np.mean([c.probabilities(z) for z, c in zip(logits, cals)], axis=0)
+
+    for i in range(len(LABELS)):
+        np.testing.assert_array_equal(
+            np.argsort(raw_mean[:, i]), np.argsort(after[:, i]),
+            err_msg=f"{LABELS[i]}: after-average が順位を変えた")
+    # per-model は順位を変えうる(変えないなら比較する意味がない)
+    changed = any(
+        not np.array_equal(np.argsort(raw_mean[:, i]), np.argsort(per_model[:, i]))
+        for i in range(len(LABELS))
+    )
+    assert changed, "per-model が順位を変えないなら、2つの方式を比べる意味がない"
+
 if __name__ == "__main__":
     import inspect
     import tempfile
