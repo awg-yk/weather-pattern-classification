@@ -40,7 +40,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from src.labels import LABEL_JA, LABELS
+from src.labels import LABEL_JA, LABELS, parse_labels
 
 BANDS = [(0.0, 0.5), (0.5, 0.7), (0.7, 0.8), (0.8, 0.9), (0.9, 1.01)]
 
@@ -65,7 +65,7 @@ def band_of(confidence: float) -> str:
     return "不明"
 
 
-def summarise(graded: pd.DataFrame) -> None:
+def summarise(graded: pd.DataFrame, against_labels=None) -> None:
     """確信度の帯ごとに、人の目で見た正解率を出す。"""
     decided = graded[graded["判定"].isin(["正しい", "誤り"])].copy()
     if decided.empty:
@@ -109,6 +109,73 @@ def summarise(graded: pd.DataFrame) -> None:
     if not unsure.empty:
         print(f"\n  「わからない」{len(unsure)}件は集計から除いています。")
 
+    if against_labels:
+        _compare_with_stored_labels(decided, against_labels)
+
+
+
+def _compare_with_stored_labels(decided: pd.DataFrame, labels_csv: str) -> None:
+    """あなたの○×と、保存済みラベルCSVの判定を突き合わせる。
+
+    知りたいのは「あなたが○としたのに、ラベル上は不正解と数えられる」件数。
+    それが多ければ、ラベルに正解の取りこぼしがあり、報告している F1 は
+    実力より低く出ていることになる。
+    """
+    if "対象" not in decided.columns:
+        print("\n  --against-labels は、ファイル名で採点した結果にのみ使えます"
+              "(scripts/predict_charts.py の出力を採点した場合)。")
+        return
+
+    labels = pd.read_csv(labels_csv)
+    labels["parsed"] = labels["label"].apply(parse_labels)
+    stored = dict(zip(labels["filename"], labels["parsed"]))
+
+    rows = decided[decided["対象"].isin(stored)].copy()
+    if rows.empty:
+        print(f"\n  {labels_csv} に、採点した天気図が1枚も見つかりませんでした。")
+        return
+
+    # モデルの1位ラベルが、保存済みのラベル集合に入っているか
+    ja_to_key = {v: k for k, v in LABEL_JA.items()}
+    rows["ラベル上は正解"] = [
+        ja_to_key.get(name) in stored[f]
+        for f, name in zip(rows["対象"], rows["気圧配置"])
+    ]
+    rows["人が○"] = rows["判定"] == "正しい"
+
+    both = int((rows["人が○"] & rows["ラベル上は正解"]).sum())
+    human_only = int((rows["人が○"] & ~rows["ラベル上は正解"]).sum())
+    stored_only = int((~rows["人が○"] & rows["ラベル上は正解"]).sum())
+    neither = int((~rows["人が○"] & ~rows["ラベル上は正解"]).sum())
+
+    print(f"\n{'=' * 62}")
+    print(f"あなたの○× と 保存済みラベル({Path(labels_csv).name})の食い違い({len(rows)}枚)")
+    print("=" * 62)
+    print(f"  {'':<20}{'ラベル上も正解':>16}{'ラベル上は不正解':>18}")
+    print(f"  {'あなたが ○':<20}{both:>16}{human_only:>18}")
+    print(f"  {'あなたが ×':<20}{stored_only:>16}{neither:>18}")
+
+    print(f"\n  ラベルで測った正解率: {(both + stored_only) / len(rows):.1%}")
+    print(f"  あなたの目での正解率  : {rows['人が○'].mean():.1%}")
+
+    if human_only:
+        share = human_only / len(rows)
+        print(f"\n  ★ あなたは○なのに、ラベル上は不正解と数えられた: {human_only}枚({share:.1%})")
+        print("     これがラベルの取りこぼし。報告しているF1は、この分だけ実力より")
+        print("     低く出ていることになります。")
+        print("\n     --- 該当する天気図(ラベルを見直す候補) ---")
+        for _, row in rows[rows["人が○"] & ~rows["ラベル上は正解"]].head(20).iterrows():
+            recorded = "|".join(LABEL_JA[l] for l in stored[row["対象"]])
+            print(f"       {row['日付']}  モデル={row['気圧配置']}"
+                  f"({row['確信度'] * 100:.0f}%) / 記録={recorded}")
+    else:
+        print("\n  あなたが○としたものは、すべてラベル上も正解でした。"
+              "ラベルの取りこぼしは見つかりません。")
+
+    if stored_only:
+        print(f"\n  逆に、ラベル上は正解だがあなたが×とした: {stored_only}枚")
+        print("     こちらは、以前のラベル付けが緩かった可能性を示します。")
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -116,6 +183,16 @@ def main():
                         help="scripts/classify_dates.py が書き出したCSV")
     parser.add_argument("--out", required=True, help="採点結果の書き出し先CSV")
     parser.add_argument("--date-column", default="発生日")
+    parser.add_argument(
+        "--images-dir", default=None,
+        help="scripts/predict_charts.py の出力(filename列を持つ)を採点するときに指定する。"
+        "指定すると日付からの取得ではなく、このフォルダの画像を直接開く",
+    )
+    parser.add_argument(
+        "--against-labels", default=None,
+        help="集計時に、あなたの○×と保存済みラベルCSVを突き合わせる。"
+        "「あなたは○だがラベル上は不正解」がラベルの取りこぼしにあたる",
+    )
     parser.add_argument("--hour", type=int, default=0, choices=[0, 12],
                         help="classify_dates を動かしたときと同じ時刻を指定すること")
     parser.add_argument("--cache-dir", default="data/raw/date_lookup",
@@ -135,11 +212,12 @@ def main():
     if args.summary_only:
         if not out_path.exists():
             raise SystemExit(f"{out_path} がありません。まず採点してください。")
-        summarise(pd.read_csv(out_path))
+        summarise(pd.read_csv(out_path), args.against_labels)
         return
 
     preds = pd.read_csv(args.predictions)
-    for column in (args.date_column, "気圧配置", "確信度"):
+    key = "filename" if args.images_dir else args.date_column
+    for column in (key, "気圧配置", "確信度"):
         if column not in preds.columns:
             raise SystemExit(
                 f"列 '{column}' がありません。scripts/classify_dates.py の出力を渡してください。\n"
@@ -158,28 +236,36 @@ def main():
     # 確信度順に並んでいると、高い帯が固まって現れて判断が偏る。混ぜる。
     preds = preds.sample(frac=1.0, random_state=int(rng.integers(2**31)))
 
-    done = set(pd.read_csv(out_path)["日付"]) if out_path.exists() else set()
-    remaining = [r for _, r in preds.iterrows() if r[args.date_column] not in done]
+    done = set(pd.read_csv(out_path)["対象"]) if out_path.exists() else set()
+    remaining = [r for _, r in preds.iterrows() if str(r[key]) not in done]
     if not remaining:
         print("すべて採点済みです。")
-        summarise(pd.read_csv(out_path))
+        summarise(pd.read_csv(out_path), args.against_labels)
         return
 
-    from scripts.fetch_and_predict import fetch_chart
+    if not args.images_dir:
+        from scripts.fetch_and_predict import fetch_chart
 
     print(f"{len(remaining)}件を採点します(採点済み{len(done)}件)。")
     print("  ○=1(正しい) / ×=2(誤り) / u=わからない / s=とばす / q=中断して保存\n")
 
     for i, row in enumerate(remaining, start=1):
-        date_str = str(row[args.date_column])
-        try:
-            image = fetch_chart(date_str, hour=args.hour, cache_dir=args.cache_dir,
-                                poppler_path=args.poppler_path)
-        except Exception as error:
-            print(f"[{i}/{len(remaining)}] {date_str}: 天気図を取得できません({error})")
-            continue
+        target = str(row[key])
+        shown = str(row.get("日付", target))
+        if args.images_dir:
+            image = Path(args.images_dir) / target
+            if not image.exists():
+                print(f"[{i}/{len(remaining)}] {target}: 画像がありません")
+                continue
+        else:
+            try:
+                image = fetch_chart(target, hour=args.hour, cache_dir=args.cache_dir,
+                                    poppler_path=args.poppler_path)
+            except Exception as error:
+                print(f"[{i}/{len(remaining)}] {target}: 天気図を取得できません({error})")
+                continue
 
-        print(f"[{i}/{len(remaining)}] {date_str}")
+        print(f"[{i}/{len(remaining)}] {shown}")
         open_image(Path(image))
         if not args.blind:
             print(f"  モデルの判定: {row['気圧配置']}(確信度 {row['確信度'] * 100:.1f}%)")
@@ -209,7 +295,8 @@ def main():
                 correct_label = LABEL_JA[LABELS[int(choice) - 1]]
 
         record = pd.DataFrame([{
-            "日付": date_str,
+            "対象": target,
+            "日付": shown,
             "気圧配置": row["気圧配置"],
             "確信度": row["確信度"],
             "判定": judgement,
@@ -219,7 +306,7 @@ def main():
                       index=False, encoding="utf-8-sig")
 
     if out_path.exists():
-        summarise(pd.read_csv(out_path))
+        summarise(pd.read_csv(out_path), args.against_labels)
         print(f"\n採点結果: {out_path}")
 
 
