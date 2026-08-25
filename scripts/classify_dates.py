@@ -162,13 +162,14 @@ def main():
     )
     parser.add_argument(
         "--calibration-order",
-        default="per-model",
-        choices=["per-model", "after-average"],
+        default="after-average",
+        choices=["after-average", "per-model"],
         help="重みを複数渡したときの、校正と平均の順番。"
-        "per-model(既定)=モデルごとに校正してから平均する。"
-        "after-average=生の確率を平均してから、校正の係数を平均したもので直す。"
-        "後者は単調変換なので未校正のときと順位が一致する(APやAUCが変わらない)。"
-        "前者は各モデルの歪みを個別に直せるが、平均の順位を変える",
+        "after-average(既定)=生の確率を平均してから、係数を平均した校正で直す。"
+        "ラベルごとの単調変換なので未校正と順位が一致し、APやAUCが変わらない。"
+        "per-model=モデルごとに校正してから平均する。各モデルの歪みを個別に"
+        "直せる代わりに平均の順位が変わる。風替わり167日の実測では、こちらの方が"
+        "確信度の質で劣った(docs/2026-08-25-calibration-order.md)",
     )
     parser.add_argument(
         "--no-calibration",
@@ -279,8 +280,8 @@ def main():
         with torch.no_grad():
             logits = [m(tensor)[0].cpu().numpy() for m in models]
 
-        # 校正と平均のどちらを先にするかで結果が変わる。どちらが良いかは
-        # --calibration-order を入れ替えて実測で決める(既定は per-model)。
+        # 校正と平均のどちらを先にするかで結果が変わる。実測で after-average を
+        # 既定に選んだ(docs/2026-08-25-calibration-order.md)。
         if args.calibration_order == "after-average":
             # 生の確率を平均してから、まとめた校正で直す。ラベルごとの単調変換
             # なので、未校正のときと順位が完全に一致する(AP・AUCが変わらない)。

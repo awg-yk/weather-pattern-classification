@@ -123,6 +123,7 @@ src/
 docs/
   2026-08-21-chart-vs-era5-grid.md  # 天気図とERA5格子の比較。結論と未解決の課題
   2026-08-22-next-chart-only.md     # ERA5を外したあとの計画
+  2026-08-25-calibration-order.md   # 校正と平均の順番を実測で決めた記録
 runs/             # 交差検証の出力。summary.jsonだけ追跡する
 webapp/
   backend/        # FastAPI推論API
@@ -502,6 +503,17 @@ python -m scripts.calibrate \
 `scripts/predict.py`・`webapp`・`scripts/classify_dates.py`・Grad-CAM は、重みの隣に
 `<重み名>.calib.json` があれば自動的に読み込む。無ければ従来どおり生の値を表示し、
 未校正である旨を出力する。
+
+### 複数の重みを混ぜるとき
+
+`scripts/classify_dates.py` に重みを複数渡すと、既定では**生の確率を平均してから、
+係数を平均した校正で直す**(`--calibration-order after-average`)。ラベルごとの単調
+変換なので、未校正のときと順位が一致し、APやAUCが変わらない。
+
+もう一方の `per-model`(モデルごとに校正してから平均)は、各モデルの歪みを個別に
+直せる代わりに平均の順位を変える。風替わり167日をベストトラックで測ったところ、
+確信度の質(ECE)で `after-average` に劣ったため既定から外した。経緯と数値は
+[`docs/2026-08-25-calibration-order.md`](docs/2026-08-25-calibration-order.md)。
 
 ### 確信度が低いときは判定を出さない
 
