@@ -143,6 +143,51 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+### Windowsで `pip install` が「ファイル名または拡張子が長すぎます」で失敗する場合
+
+torchは `licenses\third_party\...` の下にきわめて深い階層のファイルを持っている。
+リポジトリ自体が深い場所(`Desktop\...\github\vscode\weather-pattern-classification`
+のような)にあると、合計がWindowsのパス260文字の上限を超えて展開に失敗する。
+
+**venvだけを浅い場所に置けば解決する。** リポジトリは動かさなくてよい。
+
+```powershell
+py -m venv C:\wpcvenv
+C:\wpcvenv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+`setup-session.ps1` は `C:\wpcvenv` も探すので、そのまま使える。別の場所に置くなら:
+
+```powershell
+[Environment]::SetEnvironmentVariable("WPC_VENV", "<venvのパス>", "User")
+```
+
+同じ理由で、`Remove-Item -Recurse` でvenvを消せないことがある。その場合は空の
+フォルダをミラーして中身を空にしてから消す:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$env:TEMP\emptydir" | Out-Null
+robocopy "$env:TEMP\emptydir" venv /MIR /NFL /NDL /NJH /NJS
+Remove-Item -Recurse -Force venv
+```
+
+大学や社内ネットワークでプロキシを経由する場合、`git` と `pip` はブラウザと違って
+プロキシ設定を自動では読まない。ブラウザでGitHubが開けるのに `git push` が
+"Connection was reset" になるときはこれが原因:
+
+```powershell
+git config --global http.proxy http://<プロキシ>:<ポート>
+[Environment]::SetEnvironmentVariable("HTTPS_PROXY", "http://<プロキシ>:<ポート>", "User")
+```
+
+プロキシのアドレスは次で確認できる:
+
+```powershell
+Get-ItemProperty "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings" |
+    Select-Object ProxyEnable, ProxyServer, AutoConfigURL
+```
+
 ## データ収集について
 
 ### 気象庁の天気図を使う場合（メインデータソース）
