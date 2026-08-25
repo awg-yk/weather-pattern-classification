@@ -32,6 +32,7 @@
 """
 
 import argparse
+import json
 import os
 import subprocess
 import sys
@@ -65,7 +66,7 @@ def band_of(confidence: float) -> str:
     return "不明"
 
 
-def summarise(graded: pd.DataFrame, against_labels=None) -> None:
+def summarise(graded: pd.DataFrame, against_labels=None, predictions_path=None) -> None:
     """確信度の帯ごとに、人の目で見た正解率を出す。"""
     decided = graded[graded["判定"].isin(["正しい", "誤り"])].copy()
     if decided.empty:
@@ -111,6 +112,11 @@ def summarise(graded: pd.DataFrame, against_labels=None) -> None:
 
     if against_labels:
         _compare_with_stored_labels(decided, against_labels)
+
+    if predictions_path:
+        meta_path = Path(predictions_path).with_suffix(".meta.json")
+        if meta_path.exists():
+            _report_corrected_precision(decided, meta_path)
 
 
 
@@ -177,6 +183,47 @@ def _compare_with_stored_labels(decided: pd.DataFrame, labels_csv: str) -> None:
         print("     こちらは、以前のラベル付けが緩かった可能性を示します。")
 
 
+
+def _report_corrected_precision(decided: pd.DataFrame, meta_path: Path) -> None:
+    """誤検出だけを採点した結果から、適合率を組み直す。
+
+    記録で測った適合率は「モデルが主張した件数のうち、記録にもあった割合」。
+    誤検出のうち人が妥当と認めたものを正しい検出に数え直すと、本来の適合率になる。
+    """
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    label_ja = LABEL_JA.get(meta["focus_label"], meta["focus_label"])
+    tp, fp = meta["n_true_positive"], meta["n_false_positive"]
+    graded = len(decided)
+    accepted = int((decided["判定"] == "正しい").sum())
+
+    print(f"\n{'=' * 62}")
+    print(f"{label_ja} の適合率を、採点結果で組み直す")
+    print("=" * 62)
+    print(f"  モデルが主張した           : {tp + fp}枚")
+    print(f"    記録にもあった           : {tp}枚")
+    print(f"    記録に無い(誤検出扱い)   : {fp}枚")
+    print(f"  そのうち採点した           : {graded}枚")
+    print(f"    人が「妥当」とした       : {accepted}枚 ({accepted / graded:.1%})")
+
+    stored_precision = tp / (tp + fp) if tp + fp else 0.0
+    # 採点した割合から、誤検出全体のうち妥当なものの数を見積もる
+    valid_rate = accepted / graded
+    corrected = (tp + fp * valid_rate) / (tp + fp) if tp + fp else 0.0
+    print(f"\n  記録で測った適合率         : {stored_precision:.3f}")
+    print(f"  人の目で組み直した適合率   : {corrected:.3f}")
+
+    if graded < fp:
+        print(f"\n  ※ 誤検出{fp}枚のうち{graded}枚を採点した結果からの推定です。"
+              "残りも同じ割合とみなしています。")
+    if corrected - stored_precision > 0.1:
+        print(f"\n  ★ 適合率が {corrected - stored_precision:+.3f} 動きます。"
+              f"{label_ja} のF1は、報告値より高いことになります。")
+        print("     ラベルの取りこぼしが、このラベルの評価を押し下げていました。")
+    elif corrected - stored_precision < 0.05:
+        print(f"\n  誤検出のほとんどは本当に誤りでした。"
+              f"{label_ja} はモデルが弱いラベルで、改善対象として正しいことになります。")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--predictions", required=True,
@@ -212,7 +259,7 @@ def main():
     if args.summary_only:
         if not out_path.exists():
             raise SystemExit(f"{out_path} がありません。まず採点してください。")
-        summarise(pd.read_csv(out_path), args.against_labels)
+        summarise(pd.read_csv(out_path), args.against_labels, args.predictions)
         return
 
     preds = pd.read_csv(args.predictions)
@@ -240,7 +287,7 @@ def main():
     remaining = [r for _, r in preds.iterrows() if str(r[key]) not in done]
     if not remaining:
         print("すべて採点済みです。")
-        summarise(pd.read_csv(out_path), args.against_labels)
+        summarise(pd.read_csv(out_path), args.against_labels, args.predictions)
         return
 
     if not args.images_dir:
@@ -306,7 +353,7 @@ def main():
                       index=False, encoding="utf-8-sig")
 
     if out_path.exists():
-        summarise(pd.read_csv(out_path), args.against_labels)
+        summarise(pd.read_csv(out_path), args.against_labels, args.predictions)
         print(f"\n採点結果: {out_path}")
 
 
