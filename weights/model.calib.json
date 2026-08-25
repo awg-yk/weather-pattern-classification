@@ -91,7 +91,7 @@
     "typhoon": {
       "a": 0.7481105032550843,
       "b": -1.209446817138103,
-      "threshold": 0.6,
+      "threshold": 0.4,
       "method": "platt",
       "n_positive": 41
     },
