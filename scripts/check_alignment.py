@@ -64,7 +64,9 @@ def explain_stability(images: list, band: str) -> None:
     always = int(np.count_nonzero(counts == n))
 
     print(f"\n=== {band} の画素が入れ替わる理由 ({n}枚) ===")
+    median_k = float(np.median(counts[counts >= 1]))
     print(f"一度でも点灯: {ever:8d}px   毎回点灯: {always:8d}px   割合 {always / ever:.3f}")
+    print(f"点灯回数の中央値: {median_k:.0f}/{n}  -> 同じ場所 {median_k / n:.3f}")
     print(f"{'点灯回数':>10s} {'画素数':>10s}  割合")
     histogram = np.bincount(counts.ravel(), minlength=n + 1)
     for k in range(1, n + 1):

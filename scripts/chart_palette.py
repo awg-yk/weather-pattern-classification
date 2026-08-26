@@ -99,31 +99,37 @@ def report_variation(per_band: dict[str, list[int]], n_images: int,
         print("\n(画像の大きさが揃っていないので、同じ画素かどうかは測れなかった)")
 
     print(f"\n=== {n_images}枚での動き ===")
-    print(f"{'帯':16s} {'最小':>9s} {'最大':>9s} {'変動係数':>9s} {'同じ画素':>9s}  判定")
+    print(f"{'帯':16s} {'最小':>9s} {'最大':>9s} {'変動係数':>9s} {'同じ場所':>9s} {'毎回点灯':>9s}  判定")
     stats = band_variation(per_band)
     flagged = []
     for name, st in stats.items():
-        same = stability.get(name)
+        detail = stability.get(name)
+        typical = detail["typical"] if detail else None
         if st["mean"] == 0:
             verdict = "空(この帯は何も拾っていない)"
-        elif same is not None and same >= FURNITURE_STABILITY:
+        elif typical is not None and typical >= FURNITURE_STABILITY:
             verdict = "★毎回同じ場所 = 地図の備品"
             flagged.append(name)
-        elif same is not None:
+        elif typical is not None:
             verdict = "場所が動く = 気象を掴んでいる"
         elif st["looks_like_furniture"]:
             verdict = "総量が動かない(場所は未測定)"
         else:
             verdict = "日によって変わる = 気象を掴んでいる"
-        same_text = f"{same:9.3f}" if same is not None else f"{'-':>9s}"
+        if detail:
+            same_text = f"{typical:9.3f} {detail['always']:9.3f}"
+        else:
+            same_text = f"{'-':>9s} {'-':>9s}"
         print(f"{name:16s} {st['min']:9d} {st['max']:9d} {st['cv']:9.3f} {same_text}  {verdict}")
 
     front_flagged = [n for n in flagged if n.endswith("_front")]
     if front_flagged:
         print(f"\n前線の帯 {', '.join(front_flagged)} が毎回同じ画素を掴んでいる。")
         print("海岸線や経緯度線を前線として数えている可能性が高い。重ね描きで確かめること。")
-    print(f"\n判定は「同じ画素」({FURNITURE_STABILITY}以上で備品)を優先する。変動係数だけでは")
-    print("等圧線も備品に見えてしまう ― 常に図全体を覆うので総量が動かないため。")
+    print(f"\n判定は「同じ場所」({FURNITURE_STABILITY}以上で備品)を使う。変動係数だけでは")
+    print("等圧線も備品に見えてしまう(常に図全体を覆うので総量が動かない)。")
+    print("「毎回点灯」は参考値。上書きで日ごとに違う所が隠れるため、備品でも1にならない")
+    print("(実測の海岸線は 同じ場所1.000 に対し 毎回点灯0.533)。")
 
 
 def main():

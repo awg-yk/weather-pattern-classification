@@ -76,9 +76,12 @@ STATIONARY_GAP_PX = 12
 # 備品かどうかの決め手は FURNITURE_STABILITY のほう。
 FURNITURE_CV = 0.15
 
-# 「毎回同じ画素が点灯する割合」がこれ以上なら、地図の備品とみなす。
-# 海岸線・経緯度線は毎回まったく同じ場所に描かれるので1に近い。等圧線は
-# 総量こそ動かないが線の位置が日ごとに変わるので、低い値になる。
+# 点灯回数の中央値の割合がこれ以上なら、地図の備品とみなす。
+# 海岸線・経緯度線は毎回同じ場所にあるので実測で1.000。等圧線は総量こそ
+# 動かないが線の位置が日ごとに変わるので、ずっと低くなる。
+#
+# 「毎回点灯した割合」ではなく中央値を使う理由は MaskAccumulator.stability()
+# を参照。上書きで日ごとに違う所が隠れるため、毎回点灯では備品を取り逃がす。
 FURNITURE_STABILITY = 0.80
 
 
@@ -258,13 +261,33 @@ class MaskAccumulator:
             self.counts[name] += mask.astype(np.int32)
         self.n_images += 1
 
-    def stability(self) -> dict[str, float]:
-        """毎回点灯した画素 / 一度でも点灯した画素。1に近いほど動いていない。"""
+    def stability(self) -> dict[str, dict]:
+        """帯の画素がどれだけ動かないかを2つの数で返す。
+
+        typical : 点灯回数の中央値 ÷ 枚数。**判定に使うのはこちら。**
+        always  : 毎回点灯した画素 ÷ 一度でも点灯した画素。参考値。
+
+        always を判定に使うと備品を取り逃がす。海岸線は毎日同じ場所にあるが、
+        等圧線や前線がその上に描かれて**日ごとに違う所が隠れる**。実測では
+        1枚あたり5.1%が隠れており、12枚では 0.949^12 = 0.53 まで落ちた。
+        毎日そこにあるのに「毎回点灯」しないので、always は0.533になる。
+
+        中央値なら隠れは効かない。ある画素が12枚中10枚で見えていれば
+        中央値は動かない。実測では海岸線 1.000、等圧線・前線はずっと低い。
+        """
         result = {}
         for name, counts in self.counts.items():
-            ever = int(np.count_nonzero(counts))
+            ever_mask = counts >= 1
+            ever = int(np.count_nonzero(ever_mask))
+            if not ever:
+                result[name] = {"typical": float("nan"), "always": float("nan")}
+                continue
             always = int(np.count_nonzero(counts == self.n_images))
-            result[name] = always / ever if ever else float("nan")
+            median_k = float(np.median(counts[ever_mask]))
+            result[name] = {
+                "typical": median_k / self.n_images,
+                "always": always / ever,
+            }
         return result
 
 

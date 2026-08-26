@@ -17,6 +17,7 @@ from src.chartsymbols import (
     ColorBand,
     band_overlap,
     band_variation,
+    FURNITURE_STABILITY,
     label_auc,
     MaskAccumulator,
     color_masks,
@@ -360,8 +361,8 @@ def test_stability_separates_furniture_from_weather():
         acc.add({"coastline": coastline, "isobar": isobar})
 
     stability = acc.stability()
-    assert stability["coastline"] == pytest.approx(1.0)
-    assert stability["isobar"] == pytest.approx(0.0)
+    assert stability["coastline"]["typical"] == pytest.approx(1.0)
+    assert stability["isobar"]["typical"] == pytest.approx(0.2)
 
     # 総量だけでは両者が同じに見えることも示しておく
     stats = band_variation({"coastline": [20] * 5, "isobar": [20] * 5})
@@ -431,3 +432,25 @@ def test_scripts_print_only_characters_cp932_can_show():
                 except UnicodeEncodeError:
                     offenders.append(f"{path.name}:{lineno} {ch!r} U+{ord(ch):04X}")
     assert not offenders, "cp932で出せない文字がある: " + ", ".join(offenders)
+
+
+def test_occlusion_does_not_hide_furniture_from_the_metric():
+    """上書きで日ごとに違う所が隠れても、備品は備品と判定できること。
+
+    海岸線は毎日同じ場所にあるが、等圧線や前線がその上に描かれる。実測では
+    1枚あたり5.1%が隠れ、12枚での「毎回点灯」は0.533まで落ちた。毎日そこに
+    あるのに毎回点灯しないので、毎回点灯を判定に使うと備品を取り逃がす。
+    中央値なら隠れは効かない。
+    """
+    rng = np.random.default_rng(0)
+    acc = MaskAccumulator()
+    coastline = np.zeros((200, 200), dtype=bool)
+    coastline[::7, :] = True
+    for _ in range(12):
+        acc.add({"coastline": coastline & (rng.random(coastline.shape) > 0.051)})
+
+    detail = acc.stability()["coastline"]
+    assert detail["typical"] == pytest.approx(1.0)
+    assert detail["always"] == pytest.approx(0.533, abs=0.03)   # 実測と同じ値になる
+    assert detail["typical"] >= FURNITURE_STABILITY             # 備品と判定できる
+    assert detail["always"] < FURNITURE_STABILITY               # 旧指標では取り逃がす
