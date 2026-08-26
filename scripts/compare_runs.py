@@ -56,6 +56,47 @@ def describe(summary: dict) -> str:
 
 
 
+def support_signature(summary: dict) -> dict:
+    """foldごとの陽性件数(support)を、ラベルごとに並べたもの。
+
+    同じラベルファイルで走った実行なら、この値は一致する。ラベルを付け直したり
+    ラベルファイルを差し替えたりすると変わるので、「別のラベルで測った数字を
+    比べていないか」の判定に使える。summary.jsonにラベルファイルの記録が無い
+    時期の結果でも、後から機械的に判定できるのが利点。
+    """
+    return {
+        label: [fold["per_label"].get(label, {}).get("support") for fold in summary["folds"]]
+        for label in LABELS
+    }
+
+
+def check_comparable(summaries: list) -> list:
+    """比較可能かを確かめ、ラベルが食い違っているものを一覧で返す。
+
+    実際にあった事故: 台風ラベルをベストトラックから付け直したあと、
+    付け直す前の実行(runs/loyo_v2、陽性219件)と後の実行(247件)を並べて
+    「+0.192の改善」と読んでしまった。差はモデルではなくラベルのものだった。
+    """
+    if len(summaries) < 2:
+        return []
+    (base_path, base_summary) = summaries[0]
+    base = support_signature(base_summary)
+    base_fingerprint = base_summary.get("labels_fingerprint")
+    problems = []
+    for path, summary in summaries[1:]:
+        other = support_signature(summary)
+        mismatched = [label for label in LABELS if base[label] != other[label]]
+        # 指紋が両方にあって食い違うなら、supportがたまたま揃っていても別のラベル。
+        # supportは陽性件数しか見ないので、陽性の枚数を変えずに中身を入れ替えた
+        # 修正(付け間違いの差し替えなど)を見逃す。
+        other_fingerprint = summary.get("labels_fingerprint")
+        if base_fingerprint and other_fingerprint and base_fingerprint != other_fingerprint:
+            mismatched = mismatched or ["(指紋不一致)"]
+        if mismatched:
+            problems.append((path, mismatched, base, other))
+    return problems
+
+
 def fold_trivial(fold: dict, labels: list) -> float:
     """そのfoldで「全部を陽性と答える」だけで得られる、指定ラベルでのmacro F1。
 
@@ -120,6 +161,10 @@ def main():
         "--exclude", nargs="*", default=[],
         help="平均から外すラベル(英語キー)。例: front_passage stationary_front",
     )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="ラベルが食い違っていても比較する。差にラベルの影響が入ることを承知のうえで使う",
+    )
     args = parser.parse_args()
 
     unknown = [label for label in args.exclude if label not in LABELS]
@@ -133,6 +178,31 @@ def main():
     summaries = [(Path(run), load(Path(run))) for run in args.runs]
     baseline_subset = None
     test_years = [f.get("test_year", "?") for f in summaries[0][1]["folds"]]
+
+    problems = check_comparable(summaries)
+    if problems and not args.force:
+        base_path = summaries[0][0]
+        lines = [
+            "ラベルが食い違っています。このまま比べると、モデルの差とラベルの差が混ざります。",
+            "",
+        ]
+        for path, mismatched, base, other in problems:
+            lines.append(f"{path.name} と {base_path.name} で陽性件数が違うラベル:")
+            for label in mismatched:
+                if label not in LABEL_JA:
+                    lines.append(f"  ラベルファイルの指紋が違います")
+                    continue
+                lines.append(
+                    f"  {LABEL_JA[label]:<22} {base_path.name}={base[label]}  {path.name}={other[label]}"
+                )
+            lines.append("")
+        lines += [
+            "同じラベルファイルで両方を測り直してください。",
+            "食い違っているラベルを --exclude で外すか、承知のうえなら --force で続行できます。",
+        ]
+        raise SystemExit("\n".join(lines))
+    if problems and args.force:
+        print("警告: ラベルが食い違ったまま比較しています(--force)。差にラベルの影響が入ります。\n")
 
     print("=" * 72)
     if args.exclude:

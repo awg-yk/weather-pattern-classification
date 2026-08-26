@@ -20,6 +20,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from src.calibration import file_fingerprint
 from src.labels import LABEL_JA, LABELS
 
 
@@ -177,6 +178,12 @@ def main():
                 # 後からsummary.jsonだけを見て「これは事前学習ありだったか」を
                 # 判断できないと、取り違えたまま比較してしまう。
                 "config": vars(args),
+                # ラベルファイルの指紋(SHA-256の先頭16桁)。--labels のパスは
+                # 同じでも中身が変わることがある。実際、台風ラベルをベストトラックから
+                # 付け直したあと、付け直す前の結果と並べて「改善した」と読んでしまった
+                # ことがある。差はモデルではなくラベルのものだった。
+                "labels_fingerprint": file_fingerprint(args.labels),
+                "labels_path": str(args.labels),
                 "folds": results,
                 "mean": {
                     key: statistics.mean([r[key] for r in results])

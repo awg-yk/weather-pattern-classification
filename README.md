@@ -139,7 +139,9 @@ docs/
   2026-08-25-label-undercount.md    # 保存済みラベルが妥当な答えを取りこぼしている件
   2026-08-25-typhoon-threshold.md   # 台風のしきい値が高すぎた件
   2026-08-25-attention-regions.md   # 教師データ側に「見るべき領域」を持たせた記録
+  2026-08-26-stale-run-comparisons.md # 別のラベルで測った結果を比べていた件
 runs/             # 交差検証の出力。summary.jsonだけ追跡する
+                  # (2026-08-26に過去分を削除。docs/2026-08-26-stale-run-comparisons.md)
 webapp/
   backend/        # FastAPI推論API
   frontend/       # シンプルなアップロードUI
@@ -412,6 +414,26 @@ python -m scripts.cross_validate --input-mode era5-grid --arch small_cnn --coord
 「低いが学習はできている」と読み違えたことがある。** 報告には上積みを併記すること。
 
 ### 実行どうしを比べる
+
+**ラベルを変えたあとの結果は、変える前の結果と比べられない。**
+`scripts/compare_runs.py` は foldごとの陽性件数(support)を突き合わせ、
+食い違っていれば比較を拒否する。
+
+```
+ラベルが食い違っています。このまま比べると、モデルの差とラベルの差が混ざります。
+
+cv_coordconv と loyo_v2 で陽性件数が違うラベル:
+  台風                     loyo_v2=[98, 62, 59]  cv_coordconv=[78, 84, 85]
+```
+
+実際に、台風ラベルをベストトラックから付け直したあと、付け直す前の実行と
+並べて「+0.192の改善」と読んでしまったことがある(差はモデルではなくラベルの
+ものだった)。経緯は `docs/2026-08-26-stale-run-comparisons.md`。
+
+`scripts/cross_validate.py` は `summary.json` にラベルファイルの指紋
+(SHA-256の先頭16桁)を記録する。陽性の枚数を変えずに中身を差し替えた修正は
+supportでは見抜けないので、指紋も併せて見る。
+
 
 ```bash
 python -m scripts.compare_runs runs/v2_chart runs/v2_grid \
