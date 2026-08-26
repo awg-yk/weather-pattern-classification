@@ -651,3 +651,37 @@ def test_compact_share_flags_letters_drawn_in_a_front_color():
     put_colored_glyph(both, "L", (100, 150), WARM)
     share = compact_share(color_masks(both)["warm_front"])
     assert 0.0 < share < 1.0
+
+
+# --- 中抜きの記号を等圧線から切り離す -----------------------------------
+
+def outlined_glyph_crossed_by_an_isobar():
+    """太い中抜きの記号を、細い等圧線が横切っている図。実際の天気図の形。"""
+    img = np.full((300, 300, 3), 255, dtype=np.uint8)
+    cv2.rectangle(img, (100, 100), (160, 200), BLACK, 5)      # 中抜きの記号
+    cv2.line(img, (0, 150), (299, 150), BLACK, 1, cv2.LINE_8)  # 細い等圧線
+    return img
+
+
+def test_crossing_isobar_hides_an_outlined_glyph():
+    """細らせないと、記号は等圧線と繋がって巨大な成分の一部になり落ちる。
+
+    実測でこれが起きていた。黒の候補に H も L も出てこず、数字と等圧線の
+    切れ端と×印しか残らなかった。
+    """
+    assert glyph_candidates(outlined_glyph_crossed_by_an_isobar(), max_side=120) == []
+
+
+def test_eroding_recovers_the_outlined_glyph():
+    """記号の線は等圧線より太いので、細らせると細い線だけが先に消える。"""
+    found = glyph_candidates(outlined_glyph_crossed_by_an_isobar(), max_side=120, erode=1)
+    assert len(found) == 1
+    # 細らせたぶんを戻して、元の大きさに近い枠が返ること
+    assert found[0].width == pytest.approx(65, abs=6)
+    assert found[0].height == pytest.approx(105, abs=6)
+
+
+def test_eroding_too_much_breaks_the_glyph_apart():
+    """やりすぎると記号自体が切れて、線ごとにばらばらになる。"""
+    found = glyph_candidates(outlined_glyph_crossed_by_an_isobar(), max_side=120, erode=3)
+    assert len(found) > 1

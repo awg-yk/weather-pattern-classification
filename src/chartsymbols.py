@@ -419,6 +419,7 @@ def glyph_candidates(
     max_side: int = 64,
     min_fill: float = 0.12,
     band: str = "isobar",
+    erode: int = 0,
 ) -> list[Candidate]:
     """記号の候補になる小さな孤立した黒い塊を、テンプレート無しで拾う。
 
@@ -441,24 +442,38 @@ def glyph_candidates(
     bands = bands or DEFAULT_BANDS
     height, width = rgb.shape[:2]
     ink = bands[band].mask(to_hsv(rgb))
+
+    # 記号の線は等圧線より太い。細らせると細い線だけ消えるので、等圧線が
+    # 上を横切って繋がってしまった記号を切り離せる。位置は erode 画素ぶん
+    # 内側にずれるので、あとで枠を広げて戻す。
+    search = ink
+    if erode:
+        kernel = np.ones((2 * erode + 1, 2 * erode + 1), np.uint8)
+        search = cv2.erode(ink.astype(np.uint8), kernel).astype(bool)
+
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        ink.astype(np.uint8), connectivity=8
+        search.astype(np.uint8), connectivity=8
     )
     found = []
     for i in range(1, count):
         x, y = int(stats[i, cv2.CC_STAT_LEFT]), int(stats[i, cv2.CC_STAT_TOP])
         w, h = int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT])
-        area = int(stats[i, cv2.CC_STAT_AREA])
+        if erode:   # 細らせたぶん枠を広げて元の大きさに戻す
+            x, y = max(0, x - erode), max(0, y - erode)
+            w = min(width - x, w + 2 * erode)
+            h = min(height - y, h + 2 * erode)
         if not (min_side <= w <= max_side and min_side <= h <= max_side):
             continue
+        # 画素数と占有率は、細らせる前のマスクで数える
+        area = int(ink[y:y + h, x:x + w].sum())
         fill = area / float(w * h)
         if fill < min_fill:
             continue
         found.append(Candidate(
             x0=x, y0=y, x1=x + w, y1=y + h,
             pixels=area, fill=fill,
-            cx=float(centroids[i][0]) / width,
-            cy=float(centroids[i][1]) / height,
+            cx=(x + w / 2) / width,
+            cy=(y + h / 2) / height,
         ))
     return sorted(found, key=lambda c: (c.y0, c.x0))
 
