@@ -123,6 +123,7 @@ scripts/
   chart_palette.py    # 天気図に実際に使われている色を測る(色マスクの閾値決め)
   extract_fronts.py   # 前線を色マスクだけで取れるか見る(物体検出の下見)
   extract_symbols.py  # H/L/T/TD をテンプレートマッチングで取れるか見る
+  check_alignment.py  # 天気図が日付をまたいで画素単位で揃っているかを測る
   explain_date.py     # 日付を1つ指定して天気図・Grad-CAM・確信度を書き出す
   auto_label_era5.py  # ERA5気圧場からの規則ベース自動ラベリング
 src/

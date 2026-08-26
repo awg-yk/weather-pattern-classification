@@ -123,7 +123,7 @@ def report_variation(per_band: dict[str, list[int]], n_images: int,
         print(f"\n前線の帯 {', '.join(front_flagged)} が毎回同じ画素を掴んでいる。")
         print("海岸線や経緯度線を前線として数えている可能性が高い。重ね描きで確かめること。")
     print(f"\n判定は「同じ画素」({FURNITURE_STABILITY}以上で備品)を優先する。変動係数だけでは")
-    print("等圧線も備品に見えてしまう — 常に図全体を覆うので総量が動かないため。")
+    print("等圧線も備品に見えてしまう ― 常に図全体を覆うので総量が動かないため。")
 
 
 def main():

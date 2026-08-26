@@ -6,6 +6,8 @@
 本物での可否は `scripts/chart_palette.py` で色を測るところから始まる。
 """
 
+from pathlib import Path
+
 import cv2
 import numpy as np
 import pytest
@@ -402,3 +404,30 @@ def test_auc_reproduces_the_measured_stationary_front_result():
 
 def test_auc_is_nan_without_both_classes():
     assert np.isnan(label_auc([1, 2, 3], [True, True, True]))
+
+
+# --- Windowsの既定コンソール(cp932)で出せること ---------------------------
+
+def test_scripts_print_only_characters_cp932_can_show():
+    """日本語Windowsの既定コンソールはcp932。出せない文字があるとその場で落ちる。
+
+    em-dash(U+2014)を使っていて、表を出し終えた最後の1行で
+    UnicodeEncodeError になった。cp932 には全角ダッシュ(U+2015)があるので
+    そちらを使う。絵文字や✓・⚠も同じ理由で使えない。
+    """
+    root = Path(__file__).resolve().parent.parent
+    targets = [
+        root / "src" / "chartsymbols.py",
+        root / "scripts" / "chart_palette.py",
+        root / "scripts" / "extract_fronts.py",
+        root / "scripts" / "extract_symbols.py",
+    ]
+    offenders = []
+    for path in targets:
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for ch in line:
+                try:
+                    ch.encode("cp932")
+                except UnicodeEncodeError:
+                    offenders.append(f"{path.name}:{lineno} {ch!r} U+{ord(ch):04X}")
+    assert not offenders, "cp932で出せない文字がある: " + ", ".join(offenders)

@@ -88,7 +88,7 @@ def cmd_scan(args):
             print(f"※ 上限({args.max_side}画素)ぎりぎりの候補が{at_ceiling}個ある。"
                   f"--max-side を広げて、拾える個数が増えないか確かめること。")
     if args.overlay:
-        print(f"重ね描き: {args.overlay}/ — 箱の番号を cut --index に渡す。")
+        print(f"重ね描き: {args.overlay}/ ― 箱の番号を cut --index に渡す。")
 
 
 def cmd_cut(args):

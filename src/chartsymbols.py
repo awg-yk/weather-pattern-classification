@@ -181,6 +181,31 @@ def band_variation(counts_per_image: dict[str, list[int]]) -> dict[str, dict]:
     return result
 
 
+def estimate_shift(reference: np.ndarray, target: np.ndarray) -> tuple[float, float, float]:
+    """2枚のマスクの平行移動のずれ (dx, dy, 確からしさ) を位相相関で測る。
+
+    海岸線は毎日まったく同じ地図なので、前処理が揃っていれば ずれは0になる。
+    0でないなら `scripts/preprocess_jma.py` のトリミング位置が日ごとに動いて
+    いるということで、画像間で座標が比較できない。
+
+    Phase 3 の特徴量は「検出した中心が オホーツク海の矩形に入るか」という
+    形で座標を使う(`src/regions.py`)。座標がずれていれば、その判定も
+    `data/regions.csv` の矩形も、ずれた分だけ嘘になる。
+
+    返り値の確からしさは0〜1で、1に近いほど平行移動として素直に説明できる。
+    """
+    if reference.shape != target.shape:
+        raise ValueError(
+            f"大きさが違うので比べられません: {reference.shape} と {target.shape}。"
+            "トリミングの結果が揃っていない可能性がある。"
+        )
+    a = np.ascontiguousarray(reference, dtype=np.float32)
+    b = np.ascontiguousarray(target, dtype=np.float32)
+    window = cv2.createHanningWindow((a.shape[1], a.shape[0]), cv2.CV_32F)
+    (dx, dy), response = cv2.phaseCorrelate(a, b, window)
+    return float(dx), float(dy), float(response)
+
+
 def label_auc(values: list[float], has_label: list[bool]) -> float:
     """ラベルの有無を測定値だけでどれだけ分けられるかを返す(ROC-AUC)。
 
@@ -208,7 +233,7 @@ class MaskAccumulator:
 
     `band_variation()` の画素数だけでは等圧線と海岸線を分けられない。等圧線は
     常に図全体を覆うので総量が動かず、備品と同じ顔をする。**位置**を見れば
-    分かれる — 海岸線は毎回まったく同じ画素に描かれ、等圧線は日ごとに動く。
+    分かれる ― 海岸線は毎回まったく同じ画素に描かれ、等圧線は日ごとに動く。
 
     画像の大きさが違うと足し合わせられないので、その場合は諦めて報告する
     (実測では2023年1月が1453x1500、2024年7月が1453x1499で1画素違った)。
@@ -432,7 +457,7 @@ def _suppress_overlaps(hits: list[Candidate], max_overlap: float = 0.2) -> list[
     """重なった検出のうちスコアが最大のものだけ残す。
 
     重なりは IoU ではなく「小さいほうの面積に対する重なりの割合」で測る。
-    記号は互いに入れ子になる — "H" の右の縦棒は "L" に似ており、"TD" の中には
+    記号は互いに入れ子になる ― "H" の右の縦棒は "L" に似ており、"TD" の中には
     "T" がある。入れ子は IoU では小さく出るので、IoU で抑えると内側の誤検出が
     生き残る。小さいほうを基準にすれば、内側にすっぽり入った検出は必ず落ちる。
 

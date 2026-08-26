@@ -194,7 +194,7 @@ def main():
     print(f"\n{len(paths)}枚中 {with_front}枚で前線らしい区間を検出。")
     print("区間の合計: " + ", ".join(f"{k}={v}" for k, v in sorted(totals.items())))
     if args.overlay:
-        print(f"重ね描き: {args.overlay}/ — 必ず目で確認すること。")
+        print(f"重ね描き: {args.overlay}/ ― 必ず目で確認すること。")
     print("\n海岸線混入が0でない画像が多いなら、まず scripts/chart_palette.py で色を測り直すこと。")
 
 
