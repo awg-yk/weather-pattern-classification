@@ -47,6 +47,7 @@ from PIL import Image, ImageDraw
 from src.chartsymbols import (
     DEFAULT_BANDS,
     cluster_patches,
+    correlation,
     crop_template,
     glyph_candidates,
     match_templates,
@@ -182,9 +183,43 @@ def cmd_cluster(args):
         print(f"  cluster{rank:02d}.png  {cluster['size']:3d}個  "
               f"{template.shape[1]}x{template.shape[0]}  例: {where}")
 
+    report_cluster_similarity(clusters, args.min_cluster)
+    report_threshold_sweep(patches, args.threshold)
+
     print(f"\n{out_dir}/ の小さなPNGを見て、H や L だと分かったものを")
     print("その名前に付け替えること (例: cluster00.png -> H.png)。")
     print("付け替えたら match で全画像に当てる。数字や目盛の山は消してよい。")
+
+
+def report_cluster_similarity(clusters: list[dict], min_cluster: int, top: int = 6) -> None:
+    """山どうしがどれだけ似ているかを出す。同じ記号が割れていないか見るため。
+
+    山が多く出たとき、それが「記号の種類が多い」のか「同じ記号がしきい値で
+    割れた」のかは、山の数だけでは分からない。山の平均どうしの相関を見れば
+    分かる。しきい値のすぐ下(0.6前後)なら、同じ記号が割れている。
+    """
+    shown = [c for c in clusters if c["size"] >= min_cluster][:top]
+    if len(shown) < 2:
+        return
+    print(f"\n山どうしの似かた (1.0=同じ形):")
+    print("        " + "".join(f"{i:8d}" for i in range(len(shown))))
+    for i, a in enumerate(shown):
+        cells = "".join(f"{correlation(a['mean'], b['mean']):8.2f}" for b in shown)
+        print(f"cluster{i:02d}" + cells)
+    print("0.6前後の組があれば、同じ記号がしきい値で割れている見込み。")
+    print("0.2以下なら別の記号。")
+
+
+def report_threshold_sweep(patches: list, current: float) -> None:
+    """しきい値を変えると山の数がどう変わるかを出す。"""
+    print(f"\nしきい値ごとの山の大きさ (今は {current}):")
+    for threshold in (0.5, 0.6, 0.7, 0.8):
+        sizes = [c["size"] for c in cluster_patches(patches, threshold)]
+        head = ", ".join(str(n) for n in sizes[:6])
+        more = f" ...計{len(sizes)}山" if len(sizes) > 6 else f" (計{len(sizes)}山)"
+        mark = " <- 今" if abs(threshold - current) < 1e-9 else ""
+        print(f"  {threshold:.1f}: {head}{more}{mark}")
+    print("記号の種類はせいぜい数種類なので、山が数個に落ち着くしきい値を選ぶ。")
 
 
 def cmd_cut(args):

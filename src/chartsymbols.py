@@ -519,8 +519,8 @@ def patch_of(mask: np.ndarray, candidate: "Candidate", size: tuple[int, int]) ->
     return resized
 
 
-def _correlation(a: np.ndarray, b: np.ndarray) -> float:
-    """2つの小画像の相関係数。同じ形なら1に近づく。"""
+def correlation(a: np.ndarray, b: np.ndarray) -> float:
+    """2つの小画像の相関係数。同じ形なら1に近づき、無関係なら0前後になる。"""
     x, y = a.ravel() - a.mean(), b.ravel() - b.mean()
     denominator = float(np.linalg.norm(x) * np.linalg.norm(y))
     return float(np.dot(x, y) / denominator) if denominator > 1e-9 else 0.0
@@ -544,7 +544,7 @@ def cluster_patches(patches: list[np.ndarray], threshold: float = 0.7) -> list[d
     similarity = np.eye(n, dtype=np.float32)
     for i in range(n):
         for j in range(i + 1, n):
-            similarity[i, j] = similarity[j, i] = _correlation(patches[i], patches[j])
+            similarity[i, j] = similarity[j, i] = correlation(patches[i], patches[j])
 
     unassigned = set(range(n))
     clusters = []

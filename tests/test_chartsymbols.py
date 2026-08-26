@@ -522,3 +522,15 @@ def test_patch_is_resized_to_the_common_size():
     mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
     patch = patch_of(mask, glyph_candidates(img)[0], (24, 32))
     assert patch.shape == (32, 24)
+
+
+def test_correlation_tells_the_same_glyph_from_a_different_one():
+    """山どうしが同じ記号か別の記号かを見分ける根拠。"""
+    from src.chartsymbols import correlation
+    img = blank()
+    put_glyph(img, "H", (100, 100))
+    put_glyph(img, "H", (250, 100))
+    put_glyph(img, "L", (100, 250))
+    a, b, c = glyph_patches(img)[:3]
+    assert correlation(a, b) > 0.9     # 同じ記号
+    assert correlation(a, c) < 0.5     # 違う記号
