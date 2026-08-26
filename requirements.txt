@@ -16,6 +16,10 @@ cdsapi
 requests
 beautifulsoup4
 pdf2image
+# 天気図の色マスクと記号のテンプレートマッチング(src/chartsymbols.py)。
+# 画面表示は使わないので headless 版でよい。GUI版は libGL を要求するため、
+# 画面の無い環境(CI・コンテナ)では import の時点で落ちる。
+opencv-python-headless
 fastapi
 uvicorn[standard]
 python-multipart
