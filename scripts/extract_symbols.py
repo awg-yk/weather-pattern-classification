@@ -5,7 +5,7 @@
 マッチングで見つかる可能性がある。見つかるなら Phase 1 に YOLO は要らず、
 中心座標がそのまま Phase 3 の特徴量(`src/regions.py` の region.contains)になる。
 
-二段構え
+三段構え
 --------
 1. `scan`  テンプレート無しで、記号になりうる小さな孤立した黒い塊を数える。
            等圧線は図の端から端まで繋がった巨大な成分なので大きさで落ちる。
@@ -13,19 +13,24 @@
            **1枚あたりの候補数**が、この方式が現実的かどうかの目安になる。
            数十個ならテンプレートで選り分けられる。数百個なら苦しい。
 
-2. `match` 本物の天気図から切り出したテンプレートを全画像に当てる。
-           フォントが手元に無いのでテンプレートは実物から採るしかない。
-           まず `scan --overlay` で候補に振った番号を見て、H の候補の番号を
-           `cut` に渡してテンプレートを作る。
+2. `cluster` 似た形の候補をまとめ、山ごとの代表を小さなPNGとして書き出す。
+           記号は同じフォントで機械的に描かれるので、同じ記号どうしは形が
+           揃う。**どの山がHでどれがLかは機械には分からない**ので、
+           小さなPNGを人が見て名前を付ける(cluster00.png -> H.png)。
+           大きな天気図から番号で箱を探すより速い。
+           1つだけ切り出したいときは `cut --index` も使える。
+
+3. `match` 名前を付けたテンプレートを全画像に当てる。
 
 使い方:
     # 1. 候補の規模を見る
     python -m scripts.extract_symbols scan --in-dir data/processed/jma --limit 20 \
         --overlay reports/symbols
 
-    # 2. reports/symbols の番号を見て、Hの候補からテンプレートを作る
-    python -m scripts.extract_symbols cut --image data/processed/jma/Js_2025050100.png \
-        --index 7 --name H --out data/templates
+    # 2. 似た形をまとめて、山ごとの代表を書き出す(scan が出した大きさで絞る)
+    python -m scripts.extract_symbols cluster --in-dir data/processed/jma \
+        --limit 5 --size 36 57 --out data/templates
+    #    data/templates/cluster00.png などを見て、H なら H.png に付け替える
 
     # 3. 全画像に当てる
     python -m scripts.extract_symbols match --in-dir data/processed/jma \
@@ -39,7 +44,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from src.chartsymbols import crop_template, glyph_candidates, match_templates
+from src.chartsymbols import (
+    DEFAULT_BANDS,
+    cluster_patches,
+    crop_template,
+    glyph_candidates,
+    match_templates,
+    patch_of,
+    to_hsv,
+)
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 
@@ -128,6 +141,52 @@ def cmd_scan(args):
         print(f"重ね描き: {args.overlay}/ ― 箱の番号を cut --index に渡す。")
 
 
+def cmd_cluster(args):
+    """似た形の候補をまとめ、山ごとの代表を小さなPNGとして書き出す。
+
+    大きな天気図から番号を頼りに箱を探すより、山ごとの代表を並べて見るほうが
+    速い。機械にはどの山がHでどれがLかは分からないので、人が見て名前を付ける。
+    """
+    collected = []      # (画像名, 番号, 候補, マスク)
+    for path in iter_images(args.in_dir, args.limit):
+        rgb = np.array(Image.open(path).convert("RGB"))
+        mask = DEFAULT_BANDS["isobar"].mask(to_hsv(rgb))
+        for i, c in enumerate(glyph_candidates(rgb, min_side=args.min_side,
+                                               max_side=args.max_side)):
+            if args.size:
+                w, h = args.size
+                if abs(c.width - w) > args.tolerance or abs(c.height - h) > args.tolerance:
+                    continue
+            collected.append((path.name, i, c, mask))
+
+    if not collected:
+        raise SystemExit("候補がありません。--size の指定か --limit を見直すこと。")
+
+    common = (args.patch_width, args.patch_height)
+    patches = [patch_of(mask, c, common) for _, _, c, mask in collected]
+    clusters = cluster_patches(patches, args.threshold)
+
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"候補 {len(collected)}個 -> {len(clusters)}個の山 (相関 {args.threshold} 以上でまとめた)")
+    for rank, cluster in enumerate(clusters):
+        if cluster["size"] < args.min_cluster:
+            continue
+        core = cluster["members"][0]
+        _, _, candidate, mask = collected[core]
+        template = mask[candidate.y0:candidate.y1, candidate.x0:candidate.x1]
+        out_path = out_dir / f"cluster{rank:02d}.png"
+        Image.fromarray((template * 255).astype(np.uint8)).save(out_path)
+        where = ", ".join(
+            f"{collected[m][0]}#{collected[m][1]}" for m in cluster["members"][:3])
+        print(f"  cluster{rank:02d}.png  {cluster['size']:3d}個  "
+              f"{template.shape[1]}x{template.shape[0]}  例: {where}")
+
+    print(f"\n{out_dir}/ の小さなPNGを見て、H や L だと分かったものを")
+    print("その名前に付け替えること (例: cluster00.png -> H.png)。")
+    print("付け替えたら match で全画像に当てる。数字や目盛の山は消してよい。")
+
+
 def cmd_cut(args):
     rgb = np.array(Image.open(args.image).convert("RGB"))
     candidates = glyph_candidates(rgb)
@@ -191,6 +250,23 @@ def main():
     cut.add_argument("--name", required=True, help="H / L / T / TD / cross など")
     cut.add_argument("--out", default="data/templates")
     cut.set_defaults(func=cmd_cut)
+
+    cluster = sub.add_parser("cluster", help="似た形の候補をまとめ、代表を書き出す")
+    cluster.add_argument("--in-dir", required=True)
+    cluster.add_argument("--limit", type=int, default=5)
+    cluster.add_argument("--out", default="data/templates")
+    cluster.add_argument("--size", type=int, nargs=2, metavar=("W", "H"),
+                         help="この大きさ付近の候補だけを対象にする。scan の出力から取る")
+    cluster.add_argument("--tolerance", type=int, default=3)
+    cluster.add_argument("--threshold", type=float, default=0.7,
+                         help="同じ山とみなす相関の下限")
+    cluster.add_argument("--min-cluster", type=int, default=2,
+                         help="これ未満の山は書き出さない")
+    cluster.add_argument("--min-side", type=int, default=6)
+    cluster.add_argument("--max-side", type=int, default=64)
+    cluster.add_argument("--patch-width", type=int, default=24)
+    cluster.add_argument("--patch-height", type=int, default=32)
+    cluster.set_defaults(func=cmd_cluster)
 
     match = sub.add_parser("match", help="テンプレートを当てる")
     match.add_argument("--in-dir", required=True)

@@ -17,6 +17,7 @@ from src.chartsymbols import (
     ColorBand,
     band_overlap,
     band_variation,
+    cluster_patches,
     FURNITURE_STABILITY,
     label_auc,
     MaskAccumulator,
@@ -469,3 +470,55 @@ def test_size_cluster_groups_nearby_sizes():
     center, votes = size_cluster(sizes)
     assert abs(center[0] - 36) <= 3 and abs(center[1] - 56) <= 3
     assert votes == 17          # 背の高い4種類がまとまる
+
+
+# --- 形でまとめる -------------------------------------------------------
+
+def glyph_patches(img, size=(24, 32)):
+    from src.chartsymbols import DEFAULT_BANDS, patch_of, to_hsv
+    mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
+    return [patch_of(mask, c, size) for c in glyph_candidates(img)]
+
+
+def test_clustering_separates_different_letters():
+    """同じ記号どうしがまとまり、違う記号は別の山になること。
+
+    大きな天気図から番号で箱を探す代わりに、山ごとの代表を見て名前を付ける。
+    どの山がHでどれがLかは機械には分からないので、そこは人の仕事。
+    """
+    img = blank()
+    for x, y in [(60, 80), (200, 80), (340, 80), (60, 180), (200, 180)]:
+        put_glyph(img, "H", (x, y))
+    for x, y in [(60, 280), (160, 280), (260, 280), (360, 280)]:
+        put_glyph(img, "L", (x, y))
+    for x, y in [(60, 380), (200, 380), (340, 380)]:
+        put_glyph(img, "T", (x, y))
+
+    clusters = cluster_patches(glyph_patches(img), threshold=0.7)
+    assert [c["size"] for c in clusters] == [5, 4, 3]
+    # 同じ山の members が同じ記号であること(描いた順に0-4=H, 5-8=L, 9-11=T)
+    assert set(clusters[0]["members"]) == {0, 1, 2, 3, 4}
+    assert set(clusters[1]["members"]) == {5, 6, 7, 8}
+    assert set(clusters[2]["members"]) == {9, 10, 11}
+
+
+def test_clustering_of_one_repeated_glyph_gives_one_cluster():
+    img = blank()
+    for x in (60, 160, 260, 360):
+        put_glyph(img, "H", (x, 200))
+    clusters = cluster_patches(glyph_patches(img), threshold=0.7)
+    assert len(clusters) == 1 and clusters[0]["size"] == 4
+
+
+def test_clustering_handles_no_candidates():
+    assert cluster_patches([]) == []
+
+
+def test_patch_is_resized_to_the_common_size():
+    """線の太さの丸めで1〜2画素ゆれるので、比べる前に大きさを揃える。"""
+    from src.chartsymbols import DEFAULT_BANDS, patch_of, to_hsv
+    img = blank()
+    put_glyph(img, "H", (100, 100))
+    mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
+    patch = patch_of(mask, glyph_candidates(img)[0], (24, 32))
+    assert patch.shape == (32, 24)

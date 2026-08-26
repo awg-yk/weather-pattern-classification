@@ -506,6 +506,65 @@ def _overlap_ratio(a: Candidate, b: Candidate) -> float:
     return inter / smaller if smaller else 0.0
 
 
+def patch_of(mask: np.ndarray, candidate: "Candidate", size: tuple[int, int]) -> np.ndarray:
+    """候補の場所を切り出し、共通の大きさに揃えた2値の小画像を返す。
+
+    大きさを揃えるのは、同じ記号でも線の太さの丸めで1〜2画素ゆれるため
+    (34x57 と 36x56 が同じ記号になる)。
+    """
+    patch = mask[candidate.y0:candidate.y1, candidate.x0:candidate.x1]
+    if patch.size == 0:
+        return np.zeros(size[::-1], dtype=np.float32)
+    resized = cv2.resize(patch.astype(np.float32), size, interpolation=cv2.INTER_AREA)
+    return resized
+
+
+def _correlation(a: np.ndarray, b: np.ndarray) -> float:
+    """2つの小画像の相関係数。同じ形なら1に近づく。"""
+    x, y = a.ravel() - a.mean(), b.ravel() - b.mean()
+    denominator = float(np.linalg.norm(x) * np.linalg.norm(y))
+    return float(np.dot(x, y) / denominator) if denominator > 1e-9 else 0.0
+
+
+def cluster_patches(patches: list[np.ndarray], threshold: float = 0.7) -> list[dict]:
+    """似た形の小画像をまとめる。テンプレートを人手で切り出す前の下ごしらえ。
+
+    記号は同じフォントで機械的に描かれるので、同じ記号どうしは相関が高い。
+    大きさで絞った候補をここに通せば、H の山・L の山・数字の山に分かれる
+    はずである。**どの山がHでどれがLかは機械には分からない**ので、
+    山ごとの平均を小さな画像として書き出し、人が見て名前を付ける。
+
+    貪欲法。まだどこにも属していない小画像のうち、仲間が一番多いものを核に
+    して山を作り、これを繰り返す。中心の選び方に凝っても、この用途
+    (人が見て名前を付ける)では違いが出ない。
+    """
+    n = len(patches)
+    if n == 0:
+        return []
+    similarity = np.eye(n, dtype=np.float32)
+    for i in range(n):
+        for j in range(i + 1, n):
+            similarity[i, j] = similarity[j, i] = _correlation(patches[i], patches[j])
+
+    unassigned = set(range(n))
+    clusters = []
+    while unassigned:
+        remaining = sorted(unassigned)
+        neighbours = {
+            i: [j for j in remaining if similarity[i, j] >= threshold]
+            for i in remaining
+        }
+        core = max(remaining, key=lambda i: len(neighbours[i]))
+        members = neighbours[core]
+        clusters.append({
+            "members": members,
+            "mean": np.mean([patches[i] for i in members], axis=0),
+            "size": len(members),
+        })
+        unassigned -= set(members)
+    return sorted(clusters, key=lambda c: -c["size"])
+
+
 def crop_template(rgb: np.ndarray, box: tuple[int, int, int, int],
                   bands: dict[str, ColorBand] | None = None) -> np.ndarray:
     """天気図の一部を切り出して2値テンプレートにする。
