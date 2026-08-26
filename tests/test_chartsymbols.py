@@ -454,3 +454,18 @@ def test_occlusion_does_not_hide_furniture_from_the_metric():
     assert detail["always"] == pytest.approx(0.533, abs=0.03)   # 実測と同じ値になる
     assert detail["typical"] >= FURNITURE_STABILITY             # 備品と判定できる
     assert detail["always"] < FURNITURE_STABILITY               # 旧指標では取り逃がす
+
+
+# --- 大きさのまとめ -----------------------------------------------------
+
+def test_size_cluster_groups_nearby_sizes():
+    """記号は線の太さの丸めで1〜2画素ゆれる。34x57 と 36x56 は同じ記号。"""
+    from collections import Counter
+
+    from scripts.extract_symbols import size_cluster
+
+    sizes = Counter({(34, 57): 5, (36, 56): 5, (37, 56): 3, (39, 55): 4,
+                     (17, 24): 4, (14, 26): 4})
+    center, votes = size_cluster(sizes)
+    assert abs(center[0] - 36) <= 3 and abs(center[1] - 56) <= 3
+    assert votes == 17          # 背の高い4種類がまとまる

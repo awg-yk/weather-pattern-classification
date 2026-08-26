@@ -62,15 +62,34 @@ def draw_boxes(rgb: np.ndarray, candidates, out_path: Path, numbered: bool) -> N
     image.save(out_path)
 
 
+def size_cluster(sizes: Counter, tolerance: int = 3) -> tuple[tuple[int, int], int]:
+    """似た大きさをまとめて、一番票の集まった大きさとその票数を返す。
+
+    記号は同じフォント・同じ大きさで描かれるが、線の太さの丸めで1〜2画素
+    ゆれる。34x57 と 36x56 と 37x56 は同じ記号とみなしたい。
+    """
+    best, best_votes = None, 0
+    for (w, h) in sizes:
+        votes = sum(
+            n for (w2, h2), n in sizes.items()
+            if abs(w2 - w) <= tolerance and abs(h2 - h) <= tolerance
+        )
+        if votes > best_votes:
+            best, best_votes = (w, h), votes
+    return best, best_votes
+
+
 def cmd_scan(args):
     counts = []
     sizes = Counter()
+    located: list[tuple[str, int, int, int]] = []   # (画像, 番号, 幅, 高さ)
     for path in iter_images(args.in_dir, args.limit):
         rgb = np.array(Image.open(path).convert("RGB"))
         candidates = glyph_candidates(rgb, min_side=args.min_side, max_side=args.max_side)
         counts.append(len(candidates))
-        for c in candidates:
+        for i, c in enumerate(candidates):
             sizes[(c.width, c.height)] += 1
+            located.append((path.name, i, c.width, c.height))
         print(f"{path.name:24s} 候補 {len(candidates):4d}")
         if args.overlay:
             draw_boxes(rgb, candidates, Path(args.overlay) / f"{path.stem}_cands.png", True)
@@ -87,6 +106,24 @@ def cmd_scan(args):
         if at_ceiling:
             print(f"※ 上限({args.max_side}画素)ぎりぎりの候補が{at_ceiling}個ある。"
                   f"--max-side を広げて、拾える個数が増えないか確かめること。")
+        print(f"※ この結果は --min-side {args.min_side} --max-side {args.max_side} "
+              f"のもの。上限を変えた測定どうしは比べられない。")
+
+        center, votes = size_cluster(sizes)
+        if center:
+            w, h = center
+            print(f"\n一番票の集まった大きさ: {w}x{h} あたりに {votes}個 "
+                  f"(全{sum(sizes.values())}個中)")
+            print("この大きさの候補がどこにあるか(cut --index にこの番号を渡す):")
+            shown = 0
+            for name, index, cw, ch in located:
+                if abs(cw - w) <= 3 and abs(ch - h) <= 3:
+                    print(f"    {name}  --index {index}   ({cw}x{ch})")
+                    shown += 1
+                    if shown >= 12:
+                        print("    ...")
+                        break
+            print("重ね描きでこの番号の箱を見て、H か L か数字かを確かめること。")
     if args.overlay:
         print(f"重ね描き: {args.overlay}/ ― 箱の番号を cut --index に渡す。")
 
