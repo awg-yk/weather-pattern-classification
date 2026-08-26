@@ -67,7 +67,7 @@ def cmd_scan(args):
     sizes = Counter()
     for path in iter_images(args.in_dir, args.limit):
         rgb = np.array(Image.open(path).convert("RGB"))
-        candidates = glyph_candidates(rgb)
+        candidates = glyph_candidates(rgb, min_side=args.min_side, max_side=args.max_side)
         counts.append(len(candidates))
         for c in candidates:
             sizes[(c.width, c.height)] += 1
@@ -82,6 +82,11 @@ def cmd_scan(args):
               ", ".join(f"{w}x{h}({n})" for (w, h), n in sizes.most_common(8)))
         print("\n記号は同じ大きさで描かれているので、特定の幅x高さに票が集まるはず。")
         print("集まらないなら、記号と数字の大きさが同じか、前処理で拡大率がばらついている。")
+        at_ceiling = sum(n for (w, h), n in sizes.items()
+                         if max(w, h) >= args.max_side - 2)
+        if at_ceiling:
+            print(f"※ 上限({args.max_side}画素)ぎりぎりの候補が{at_ceiling}個ある。"
+                  f"--max-side を広げて、拾える個数が増えないか確かめること。")
     if args.overlay:
         print(f"重ね描き: {args.overlay}/ — 箱の番号を cut --index に渡す。")
 
@@ -137,6 +142,10 @@ def main():
     scan.add_argument("--in-dir", required=True)
     scan.add_argument("--limit", type=int, default=20)
     scan.add_argument("--overlay")
+    scan.add_argument("--min-side", type=int, default=6,
+                      help="候補とみなす塊の一辺の下限(画素)")
+    scan.add_argument("--max-side", type=int, default=64,
+                      help="同・上限。上限に貼りつく候補が多いなら広げて試す")
     scan.set_defaults(func=cmd_scan)
 
     cut = sub.add_parser("cut", help="候補からテンプレートを切り出す")

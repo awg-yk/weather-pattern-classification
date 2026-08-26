@@ -14,6 +14,7 @@ from src.chartsymbols import (
     Candidate,
     ColorBand,
     band_overlap,
+    band_variation,
     color_masks,
     crop_template,
     dominant_colors,
@@ -23,12 +24,14 @@ from src.chartsymbols import (
     stationary_mask,
 )
 
-# 気象庁 JSMAP の配色に寄せた色(RGB)。実測値ではなく、仕様どおりの色。
-BLACK = (20, 20, 20)          # 等圧線
-COASTLINE = (130, 70, 45)     # 海岸線・経緯度線=赤茶色
-WARM = (220, 30, 30)          # 温暖前線=赤
-COLD = (30, 60, 220)          # 寒冷前線=青
-OCCLUDED = (230, 90, 200)     # 閉塞前線=ピンク
+# 2023年1月の天気図8枚から実測した色(RGB)。docs/2026-08-26-detection-prescreen.md 参照。
+# WARM と OCCLUDED は真冬の8枚に出てこなかったので、純青からの類推。
+BLACK = (4, 4, 4)             # 等圧線
+COASTLINE = (164, 44, 44)     # 海岸線・経緯度線=くすんだ赤茶 HSV(0,187,164)
+COASTLINE_EDGE = (172, 60, 60)  # そのにじみ HSV(0,166,172)
+WARM = (252, 4, 4)            # 温暖前線=純赤 HSV(0,251,252)
+COLD = (4, 4, 252)            # 寒冷前線=純青 HSV(120,251,252)
+OCCLUDED = (252, 4, 252)      # 閉塞前線=マゼンタ HSV(150,251,252)
 
 SIZE = 400
 
@@ -259,3 +262,77 @@ def test_dominant_colors_reports_the_drawn_colors():
 def test_dominant_colors_skips_the_paper_white():
     top = dominant_colors(blank(), top=4)
     assert top == []
+
+
+# --- 実測した色の切り分け ---------------------------------------------
+
+@pytest.mark.parametrize("rgb, expected", [
+    ((164, 44, 44), "coastline"),        # 海岸線の芯
+    ((172, 60, 60), "coastline"),        # 海岸線のにじみ
+    ((204, 132, 132), None),             # 白へのにじみ。前線に数えてはいけない
+    ((236, 204, 204), None),
+    ((4, 4, 252), "cold_front"),         # 純青
+    ((252, 4, 4), "warm_front"),         # 純赤
+    ((252, 4, 252), "occluded_front"),   # マゼンタ
+    ((4, 4, 4), "isobar"),
+    ((164, 164, 164), None),             # 黒のにじみ(灰)。彩度が無いので色ではない
+])
+def test_measured_colors_land_in_one_band(rgb, expected):
+    """実測した色が、それぞれ狙った帯にちょうど1つだけ入ること。
+
+    海岸線(164,44,44)と温暖前線(252,4,4)はどちらも色相0で、**色相では
+    分けられない**。明度で分けている(164 対 252)ので、その線引きが
+    崩れていないかをここで守る。
+    """
+    from src.chartsymbols import DEFAULT_BANDS
+    hsv = cv2.cvtColor(np.uint8([[rgb]]), cv2.COLOR_RGB2HSV)
+    hit = [name for name, band in DEFAULT_BANDS.items() if band.mask(hsv)[0, 0]]
+    assert hit == ([expected] if expected else [])
+
+
+def test_coastline_is_not_a_warm_front():
+    """最初の暫定値で起きた取り違えそのもの。海岸線を温暖前線に数えないこと。"""
+    img = blank()
+    line(img, (10, 100), (390, 100), COASTLINE, 3)
+    line(img, (10, 200), (390, 200), COASTLINE_EDGE, 3)
+    masks = color_masks(img)
+    assert not masks["warm_front"].any()
+    assert masks["coastline"].any()
+
+
+# --- 地図の備品と気象の切り分け -----------------------------------------
+
+def test_variation_flags_a_band_that_never_changes():
+    """毎回ほぼ同じ画素数の帯は、気象ではなく地図の備品を掴んでいる。
+
+    数値は2023年1月の8枚の実測値。暫定値のとき warm_front は海岸線を
+    掴んでいて、画素数がほとんど動かなかった。
+    """
+    stats = band_variation({
+        "warm_front": [59567, 60093, 58245, 59206, 58532, 56322, 56891, 57485],
+        "cold_front": [3136, 4022, 0, 3692, 0, 0, 0, 0],
+    })
+    assert stats["warm_front"]["looks_like_furniture"]
+    assert not stats["cold_front"]["looks_like_furniture"]
+    assert stats["warm_front"]["cv"] < 0.05
+    assert stats["cold_front"]["cv"] > 1.0
+
+
+def test_variation_does_not_flag_an_empty_band():
+    """空の帯は「備品」ではない。指摘の文言が変わるので分けておく。"""
+    stats = band_variation({"occluded_front": [0, 0, 0, 0]})
+    assert not stats["occluded_front"]["looks_like_furniture"]
+    assert stats["occluded_front"]["mean"] == 0
+
+
+def test_overlap_alone_cannot_catch_the_mixup():
+    """重なりが0でも安心できないことを、実際に0になる形で示す。
+
+    片方の帯が空なら重なりは必ず0になる。だから band_overlap の0を
+    「分離できている」と読んではいけない。band_variation と併せて見る。
+    """
+    img = blank()
+    line(img, (10, 100), (390, 100), COASTLINE, 3)
+    empty = np.zeros(img.shape[:2], dtype=bool)
+    everything = color_masks(img)["coastline"]
+    assert band_overlap({"a": everything, "b": empty}) == {}

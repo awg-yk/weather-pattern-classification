@@ -21,7 +21,15 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from src.chartsymbols import DEFAULT_BANDS, band_overlap, color_masks, dominant_colors, to_hsv
+from src.chartsymbols import (
+    DEFAULT_BANDS,
+    FURNITURE_CV,
+    band_overlap,
+    band_variation,
+    color_masks,
+    dominant_colors,
+    to_hsv,
+)
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 
@@ -33,7 +41,7 @@ def iter_images(in_dir: Path, limit: int):
     return paths[:limit]
 
 
-def report_image(path: Path, top: int, probe: tuple | None) -> None:
+def report_image(path: Path, top: int, probe: tuple | None) -> dict[str, int]:
     rgb = np.array(Image.open(path).convert("RGB"))
     print(f"\n=== {path.name}  {rgb.shape[1]}x{rgb.shape[0]} ===")
 
@@ -66,6 +74,41 @@ def report_image(path: Path, top: int, probe: tuple | None) -> None:
         print(f"  指定画素 ({probe[0]:.3f}, {probe[1]:.3f}) = 画素({x},{y}): "
               f"RGB{tuple(int(v) for v in rgb[y, x])} HSV{tuple(int(v) for v in hsv[y, x])}")
 
+    return {name: int(mask.sum()) for name, mask in masks.items()}
+
+
+def report_variation(per_band: dict[str, list[int]], n_images: int) -> None:
+    """画像をまたいだ画素数の動きから、地図の備品を掴んでいる帯を指摘する。
+
+    帯の重なりが0でも安心できない。片方の帯が空でも0になるからで、実際に
+    最初の暫定値ではそれが起きていた。海岸線・経緯度線は毎回同じだけ描かれる
+    ので画素数が動かない。前線は日によって有無すら変わる。
+    """
+    if n_images < 3:
+        print("\n(画素数の変動を見るには3枚以上が要る。--limit を増やすこと)")
+        return
+
+    print(f"\n=== {n_images}枚での画素数の動き ===")
+    print(f"{'帯':16s} {'最小':>9s} {'最大':>9s} {'平均':>10s} {'変動係数':>9s}  判定")
+    stats = band_variation(per_band)
+    flagged = []
+    for name, st in stats.items():
+        if st["mean"] == 0:
+            verdict = "空(この帯は何も拾っていない)"
+        elif st["looks_like_furniture"]:
+            verdict = "★毎回ほぼ同じ = 地図の備品を掴んでいる"
+            flagged.append(name)
+        else:
+            verdict = "日によって変わる = 気象を掴んでいる"
+        print(f"{name:16s} {st['min']:9d} {st['max']:9d} {st['mean']:10.0f} "
+              f"{st['cv']:9.3f}  {verdict}")
+
+    front_flagged = [n for n in flagged if n.endswith("_front")]
+    if front_flagged:
+        print(f"\n前線の帯 {', '.join(front_flagged)} が毎回ほぼ同じ画素数になっている。")
+        print("海岸線や経緯度線を前線として数えている可能性が高い。重ね描きで確かめること。")
+    print(f"\n(変動係数が {FURNITURE_CV} 未満を「毎回ほぼ同じ」とみなしている)")
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -81,8 +124,14 @@ def main():
         print(f"  {name:16s} H[{band.h_min:3d}-{band.h_max:3d}] "
               f"S[{band.s_min:3d}-{band.s_max:3d}] V[{band.v_min:3d}-{band.v_max:3d}]")
 
-    for path in iter_images(Path(args.in_dir), args.limit):
-        report_image(path, args.top, tuple(args.probe) if args.probe else None)
+    per_band: dict[str, list[int]] = {name: [] for name in DEFAULT_BANDS}
+    paths = iter_images(Path(args.in_dir), args.limit)
+    for path in paths:
+        counts = report_image(path, args.top, tuple(args.probe) if args.probe else None)
+        for name, count in counts.items():
+            per_band[name].append(count)
+
+    report_variation(per_band, len(paths))
 
 
 if __name__ == "__main__":

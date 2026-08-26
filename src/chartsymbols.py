@@ -17,11 +17,31 @@ YOLOの教師データの下地には使える。
 
 閾値は測ってから決める
 ----------------------
-下の `DEFAULT_BANDS` は**暫定値**で、実際の天気図から測った色ではない。
-最初にやることは閾値の調整ではなく、`scripts/chart_palette.py` で本物の
-天気図の色を測ることである。とくに温暖前線の赤と海岸線の赤茶色は色相が近く、
-この2つを分けられるかどうかがこの方式の成否を決める。`band_overlap()` は
-その混同を画素数で返す。
+下の `DEFAULT_BANDS` は 2023年1月の8枚を `scripts/chart_palette.py` で
+測って決めた(2026-08-26)。分かったこと:
+
+  海岸線・経緯度線  RGB(164, 44, 44)  HSV(  0, 187, 164)  くすんだ赤茶
+  寒冷前線          RGB(  4,  4, 252) HSV(120, 251, 252)  純度の高い青
+  等圧線            RGB(  4,  4,   4) HSV(  0,   0,   4)  黒
+
+**前線は純度の高い原色、地図の備品はくすんだ色**という分かれ方をしている。
+赤茶色と赤は色相がどちらも0で、**色相では分けられない**。分けているのは
+明度と彩度である(海岸線 V=164 に対し、原色は V=252)。
+
+温暖前線(純赤)と閉塞前線(ピンク)は、測った8枚が真冬で前線がほとんど無く、
+実測できていない。寒冷前線が純青だったことからの類推で帯を置いてある。
+夏の停滞前線がある日で測り直して確かめること。
+
+なぜ帯の重なりだけでは足りないか
+--------------------------------
+`band_overlap()` が0でも安心してはいけない。**片方の帯が空でも0になる**。
+実際、最初の暫定値では coastline 帯が空になり、海岸線がまるごと warm_front
+に入っていたのに、重なりは0と出た。
+
+そこで `band_variation()` を併せて使う。海岸線・経緯度線は毎回同じ場所に
+同じだけ描かれるので画素数がほとんど変わらない(変動係数 0.02)。前線は
+日によって有無すら変わる(同 1.30)。**変動の小さい帯は気象ではなく地図の
+備品を掴んでいる。**
 
 色空間
 ------
@@ -51,6 +71,10 @@ MIN_FRONT_ELONGATION = 3.0
 # 停滞前線とみなすときの、赤と青が隣り合っていると認める距離(画素)。
 STATIONARY_GAP_PX = 12
 
+# 画素数の変動係数がこれ未満なら、気象ではなく地図の備品(海岸線・経緯度線)とみなす。
+# 実測では海岸線が0.02、寒冷前線が1.30で、間は大きく空いている。
+FURNITURE_CV = 0.15
+
 
 @dataclass(frozen=True)
 class ColorBand:
@@ -76,13 +100,16 @@ class ColorBand:
         return in_hue & in_sat & in_val
 
 
-# 暫定値。scripts/chart_palette.py で本物の天気図を測ってから置き換えること。
-# 赤(温暖前線)と赤茶色(海岸線)は色相が重なるため、明度と彩度で分けている。
+# 2023年1月の8枚から実測して決めた値(上の docstring を参照)。
+# 温暖前線の V>=200 は海岸線(V=164、にじみでも V<=172)と分けるための線引きで、
+# 上下に余裕がある。彩度も要求するのは、白へのにじみ(204,132,132 は S=90)を
+# 拾わないため。前線の芯だけ取れればよく、にじみは要らない。
 DEFAULT_BANDS: dict[str, ColorBand] = {
-    "warm_front": ColorBand("warm_front", h_min=172, h_max=8, s_min=120, v_min=140),
-    "cold_front": ColorBand("cold_front", h_min=100, h_max=130, s_min=110, v_min=80),
-    "occluded_front": ColorBand("occluded_front", h_min=140, h_max=170, s_min=60, v_min=150),
-    "coastline": ColorBand("coastline", h_min=0, h_max=20, s_min=50, v_min=60, v_max=139),
+    "warm_front": ColorBand("warm_front", h_min=172, h_max=8, s_min=200, v_min=200),
+    "cold_front": ColorBand("cold_front", h_min=100, h_max=130, s_min=150, v_min=150),
+    "occluded_front": ColorBand("occluded_front", h_min=135, h_max=170, s_min=150, v_min=150),
+    "coastline": ColorBand("coastline", h_min=170, h_max=20, s_min=120, s_max=210,
+                           v_min=120, v_max=199),
     "isobar": ColorBand("isobar", h_min=0, h_max=179, s_max=60, v_max=90),
 }
 
@@ -117,6 +144,35 @@ def band_overlap(masks: dict[str, np.ndarray]) -> dict[tuple[str, str], int]:
             if count:
                 overlap[(a, b)] = count
     return overlap
+
+
+def band_variation(counts_per_image: dict[str, list[int]]) -> dict[str, dict]:
+    """帯ごとの画素数が画像間でどれだけ動くかを返す。地図の備品と気象の切り分け。
+
+    海岸線・経緯度線は毎回同じ場所に同じだけ描かれるので、画素数がほとんど
+    変わらない。前線は日によって有無すら変わる。**変動係数が小さい帯は、
+    気象ではなく地図の備品を掴んでいる。**
+
+    `band_overlap()` だけでは足りないことがこれで分かる。帯が空でも重なりは
+    0になるので、0を「分離できている」と読んではいけない。
+
+    実測(2023年1月の8枚、暫定値のとき):
+        warm_front  56322〜60093  変動係数 0.021  -> 海岸線を掴んでいた
+        cold_front      0〜 4022  変動係数 1.302  -> 気象を掴んでいた
+    """
+    result = {}
+    for name, counts in counts_per_image.items():
+        values = np.asarray(counts, dtype=float)
+        mean = float(values.mean()) if values.size else 0.0
+        cv = float(values.std() / mean) if mean > 0 else float("nan")
+        result[name] = {
+            "min": int(values.min()) if values.size else 0,
+            "max": int(values.max()) if values.size else 0,
+            "mean": mean,
+            "cv": cv,
+            "looks_like_furniture": bool(mean > 0 and cv < FURNITURE_CV),
+        }
+    return result
 
 
 def clean_mask(mask: np.ndarray, min_pixels: int = MIN_FRONT_PIXELS) -> np.ndarray:
@@ -230,7 +286,7 @@ def glyph_candidates(
     rgb: np.ndarray,
     bands: dict[str, ColorBand] | None = None,
     min_side: int = 6,
-    max_side: int = 48,
+    max_side: int = 64,
     min_fill: float = 0.12,
 ) -> list[Candidate]:
     """記号の候補になる小さな孤立した黒い塊を、テンプレート無しで拾う。
@@ -240,6 +296,11 @@ def glyph_candidates(
     緯度経度の目盛といった文字である。**この段階では両者を区別しない。**
     区別はテンプレートマッチング(`match_templates`)の仕事で、ここが返すのは
     「1枚あたり何個を相手にすればよいか」という規模の見積もりになる。
+
+    min_side / max_side は 1453x1500 の気象庁PDF版で測った値に合わせてある
+    (記号は28〜32画素に集まり、大きいもので43x46)。前処理の拡大率が違う
+    画像を扱うときは、`scripts/extract_symbols.py scan --max-side` で広げて、
+    拾える個数が変わるかを見ること。
     """
     bands = bands or DEFAULT_BANDS
     height, width = rgb.shape[:2]
