@@ -11,6 +11,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
+from PIL import Image
 
 from src.chartsymbols import (
     Candidate,
@@ -555,3 +556,53 @@ def test_threshold_sweep_prefers_the_stricter_value_on_a_tie():
     out = buffer.getvalue()
     # どのしきい値でも同じ山数になるので、一番高い0.8が選ばれる
     assert "しきい値 0.8" in out
+
+
+# --- コピペで進めても壊れないこと ---------------------------------------
+
+def test_match_refuses_templates_that_were_never_named(tmp_path):
+    """clusterNN のまま当てても意味が無いので止める。
+
+    cluster が書いた山をそのまま match にかけると、どれがHでどれがLか
+    分からない数が並ぶだけになる。名前を付ける手順が抜けている合図。
+    """
+    from scripts.extract_symbols import load_templates
+    Image.fromarray(np.zeros((8, 8), dtype=np.uint8)).save(tmp_path / "cluster00.png")
+    with pytest.raises(SystemExit, match="名前を付けていない"):
+        load_templates(tmp_path)
+
+
+def test_match_accepts_named_templates(tmp_path):
+    from scripts.extract_symbols import load_templates
+    Image.fromarray(np.full((8, 8), 255, dtype=np.uint8)).save(tmp_path / "H.png")
+    assert list(load_templates(tmp_path)) == ["H"]
+
+
+def test_cluster_removes_the_previous_run(tmp_path):
+    """条件を変えて実行し直すと山の数が減ることがある。前回の余りを残さない。
+
+    残すと match がディレクトリの中を全部読むので、条件の違う山が混ざった
+    まま照合してしまう。実際にそれで無効な結果が出た。
+    """
+    import argparse
+
+    from scripts.extract_symbols import cmd_cluster
+
+    charts = tmp_path / "charts"
+    charts.mkdir()
+    img = blank()
+    for x in (60, 160, 260):
+        put_glyph(img, "H", (x, 200))
+    Image.fromarray(img).save(charts / "Js_2024070100.png")
+
+    out = tmp_path / "templates"
+    out.mkdir()
+    (out / "cluster07.png").write_bytes(b"")      # 前回の余り
+    (out / "H.png").write_bytes(b"")              # 人が付けた名前は残す
+
+    cmd_cluster(argparse.Namespace(
+        in_dir=charts, limit=1, out=out, size=None, tolerance=3, threshold=0.5,
+        min_cluster=1, min_side=6, max_side=64, patch_width=24, patch_height=32,
+    ))
+    assert not (out / "cluster07.png").exists()
+    assert (out / "H.png").exists()

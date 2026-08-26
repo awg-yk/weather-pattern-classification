@@ -169,6 +169,16 @@ def cmd_cluster(args):
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    # 前回の山を消してから書く。条件を変えて実行し直すと山の数が減ることが
+    # あり、消さないと前回の余りが残る。match はディレクトリの中を全部
+    # 読むので、条件の違う山が混ざったまま照合してしまう。
+    stale = sorted(out_dir.glob("cluster*.png"))
+    for path in stale:
+        path.unlink()
+    if stale:
+        print(f"前回の山 {len(stale)}個を消した ({out_dir}/)")
+
     print(f"候補 {len(collected)}個 -> {len(clusters)}個の山 (相関 {args.threshold} 以上でまとめた)")
     for rank, cluster in enumerate(clusters):
         if cluster["size"] < args.min_cluster:
@@ -268,7 +278,19 @@ def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
         arr = np.array(Image.open(path).convert("L"))
         templates[path.stem] = arr > 127
     if not templates:
-        raise SystemExit(f"テンプレートがありません: {template_dir} (先に cut を実行)")
+        raise SystemExit(
+            f"テンプレートがありません: {template_dir} (先に cluster か cut を実行)")
+
+    # clusterNN のままのものが残っていたら、名前を付ける手順が抜けている。
+    # そのまま当てても、どれがHでどれがLか分からない数が並ぶだけになる。
+    unnamed = sorted(name for name in templates if name.startswith("cluster"))
+    if unnamed:
+        raise SystemExit(
+            f"名前を付けていないテンプレートがあります: {', '.join(unnamed)}\n"
+            f"{template_dir}/ の小さなPNGを見て、H なら H.png に、L なら L.png に\n"
+            "付け替えてください。記号でない山(数字・目盛)は消してください。\n"
+            "どの山がHでどれがLかは機械には分かりません。"
+        )
     return templates
 
 
@@ -276,18 +298,42 @@ def cmd_match(args):
     templates = load_templates(args.templates)
     print("テンプレート: " + ", ".join(
         f"{k}({v.shape[1]}x{v.shape[0]})" for k, v in templates.items()))
+    template_sizes = [(v.shape[1], v.shape[0]) for v in templates.values()]
+
     per_label = Counter()
+    n_images = 0
+    n_candidates = 0
     for path in iter_images(args.in_dir, args.limit):
         rgb = np.array(Image.open(path).convert("RGB"))
         hits = match_templates(rgb, templates, threshold=args.threshold)
         found = Counter(h.label for h in hits)
         per_label.update(found)
+        n_images += 1
+        # テンプレートと同じくらいの大きさの候補が、そもそも何個あったか
+        n_candidates += sum(
+            1 for c in glyph_candidates(rgb)
+            if any(abs(c.width - w) <= 3 and abs(c.height - h) <= 3
+                   for w, h in template_sizes)
+        )
         detail = ", ".join(f"{k}={v}" for k, v in sorted(found.items())) or "なし"
         print(f"{path.name:24s} {detail}")
         if args.overlay:
             draw_boxes(rgb, hits, Path(args.overlay) / f"{path.stem}_match.png", False)
+
+    total = sum(per_label.values())
     print("\n合計: " + ", ".join(f"{k}={v}" for k, v in sorted(per_label.items())))
-    print("天気図1枚に高気圧・低気圧はふつう2〜6個。桁が違うなら閾値(--threshold)を上げる。")
+    print(f"1枚あたり {total / n_images:.1f}個。"
+          "天気図1枚の高気圧・低気圧はふつう2〜6個。")
+
+    # 取りこぼしの見える化。同じ大きさの候補があるのに当たっていないなら、
+    # 一致スコアの下限が厳しすぎるか、テンプレートが1個体に寄りすぎている。
+    print(f"\n同じ大きさの候補: {n_candidates}個 / 当たった: {total}個 "
+          f"({total / n_candidates:.0%})" if n_candidates else "")
+    if n_candidates and total < 0.6 * n_candidates:
+        print(f"取りこぼしが多い。--threshold を {args.threshold} から下げて試すこと。")
+        print("テンプレートは山の代表1個体なので、同じ記号でも汚れ方が違うと外れる。")
+    elif n_candidates and total > 1.4 * n_candidates:
+        print("候補より多く当たっている。--threshold を上げること。")
 
 
 def main():
