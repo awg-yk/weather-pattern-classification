@@ -120,6 +120,9 @@ scripts/
   label_tool.py       # ラベル付け・見直し(盲検レビュー)
   regions_preview.py  # data/regions.csv の矩形を天気図に重ねて確認する
   attention_check.py  # Grad-CAMが「見るべき領域」を見ているかをラベル別に測る
+  chart_palette.py    # 天気図に実際に使われている色を測る(色マスクの閾値決め)
+  extract_fronts.py   # 前線を色マスクだけで取れるか見る(物体検出の下見)
+  extract_symbols.py  # H/L/T/TD をテンプレートマッチングで取れるか見る
   explain_date.py     # 日付を1つ指定して天気図・Grad-CAM・確信度を書き出す
   auto_label_era5.py  # ERA5気圧場からの規則ベース自動ラベリング
 src/
@@ -132,6 +135,7 @@ src/
   split.py        # train/val/testの分け方
   labels.py       # ラベル定義
   regions.py      # ラベルごとの「見るべき領域」とGrad-CAMとの突き合わせ
+  chartsymbols.py # 天気図の色マスクと記号拾い（学習を使わない抽出）
 docs/
   2026-08-21-chart-vs-era5-grid.md  # 天気図とERA5格子の比較。結論と未解決の課題
   2026-08-22-next-chart-only.md     # ERA5を外したあとの計画
