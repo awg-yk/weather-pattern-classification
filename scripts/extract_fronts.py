@@ -37,9 +37,13 @@ from src.chartsymbols import (
     band_overlap,
     clean_mask,
     color_masks,
+    label_auc,
     segments,
     stationary_mask,
 )
+
+# 測定値とラベルの対応を見るときの、最低限の件数。これを下回るとAUCが偶然で動く。
+MIN_CASES_FOR_AUC = 3
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 
@@ -90,6 +94,53 @@ def write_overlay(rgb: np.ndarray, result: dict, out_path: Path) -> None:
     Image.fromarray(canvas).save(out_path)
 
 
+def report_label_agreement(measured: list[dict]) -> None:
+    """測定値がラベルとどれだけ噛み合っているかをAUCで出す。
+
+    色マスクが本物の前線を拾えているなら、stationary_front が付いた日の
+    測定値は、付いていない日より大きくなるはず。学習を一切せずに
+    ラベルを分けられるなら、その測定値は Phase 3 の特徴量になる。
+
+    これは信号があるかを見るための目安であって、報告用の成績ではない。
+    本評価は src/split.py と src/evaluate.py を通すこと。
+    """
+    measures = ["温暖区間", "寒冷区間", "閉塞区間", "停滞px"]
+    all_labels = sorted({label for row in measured for label in row["labels"]})
+
+    rows = []
+    for label in all_labels:
+        flags = [label in row["labels"] for row in measured]
+        n_pos = sum(flags)
+        if n_pos < MIN_CASES_FOR_AUC or len(flags) - n_pos < MIN_CASES_FOR_AUC:
+            continue
+        aucs = {m: label_auc([row[m] for row in measured], flags) for m in measures}
+        best = max(measures, key=lambda m: abs(aucs[m] - 0.5))
+        rows.append((label, n_pos, len(flags) - n_pos, aucs, best))
+
+    if not rows:
+        print(f"\n(ラベルとの突き合わせには、陽性・陰性が各{MIN_CASES_FOR_AUC}件以上要る)")
+        return
+
+    print("\n=== 測定値とラベルの対応 (AUC。0.5=当てずっぽう、1.0=完全に分離) ===")
+    header = f"{'ラベル':22s} {'陽性':>4s} {'陰性':>4s}  " + "".join(f"{m:>9s}" for m in measures)
+    print(header)
+    for label, n_pos, n_neg, aucs, best in sorted(rows, key=lambda r: -abs(aucs_best(r))):
+        cells = "".join(
+            (f"{aucs[m]:8.3f}" + ("*" if m == best else " ")) for m in measures
+        )
+        print(f"{label:22s} {n_pos:4d} {n_neg:4d}  {cells}")
+    print("* はそのラベルを最もよく分けた測定値。")
+    print("0.5から離れているほど、学習なしでもそのラベルの手がかりになっている。")
+    print("これは信号の有無を見る目安であって報告用の成績ではない"
+          "(本評価は src/evaluate.py)。")
+
+
+def aucs_best(row) -> float:
+    """並べ替え用。そのラベルで最も0.5から離れたAUCの符号付きのずれ。"""
+    _, _, _, aucs, best = row
+    return aucs[best] - 0.5
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--in-dir", required=True)
@@ -109,6 +160,7 @@ def main():
           f"{'海岸線混入':>10s}  ラベル")
     totals = defaultdict(int)
     with_front = 0
+    measured: list[dict] = []
     for path in paths:
         rgb = np.array(Image.open(path).convert("RGB"))
         result = analyse(rgb)
@@ -122,12 +174,22 @@ def main():
             totals[name] += n
         if sum(counts.values()) or stationary_px:
             with_front += 1
+        measured.append({
+            "labels": labels.get(path.name, set()),
+            "温暖区間": counts["warm_front"],
+            "寒冷区間": counts["cold_front"],
+            "閉塞区間": counts["occluded_front"],
+            "停滞px": stationary_px,
+        })
         tag = "|".join(sorted(labels.get(path.name, []))) if labels else ""
         print(f"{path.name:24s} {counts['warm_front']:6d} {counts['cold_front']:6d} "
               f"{counts['occluded_front']:6d} {stationary_px:6d}  {contamination:10d}  {tag}")
 
         if args.overlay:
             write_overlay(rgb, result, Path(args.overlay) / f"{path.stem}_fronts.png")
+
+    if labels:
+        report_label_agreement(measured)
 
     print(f"\n{len(paths)}枚中 {with_front}枚で前線らしい区間を検出。")
     print("区間の合計: " + ", ".join(f"{k}={v}" for k, v in sorted(totals.items())))

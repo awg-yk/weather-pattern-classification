@@ -71,9 +71,15 @@ MIN_FRONT_ELONGATION = 3.0
 # 停滞前線とみなすときの、赤と青が隣り合っていると認める距離(画素)。
 STATIONARY_GAP_PX = 12
 
-# 画素数の変動係数がこれ未満なら、気象ではなく地図の備品(海岸線・経緯度線)とみなす。
-# 実測では海岸線が0.02、寒冷前線が1.30で、間は大きく空いている。
+# 画素数の変動係数がこれ未満なら「毎回同じだけ描かれている」とみなす。
+# ただしこれだけでは等圧線も引っかかる(常に図全体を覆うので総量が動かない)。
+# 備品かどうかの決め手は FURNITURE_STABILITY のほう。
 FURNITURE_CV = 0.15
+
+# 「毎回同じ画素が点灯する割合」がこれ以上なら、地図の備品とみなす。
+# 海岸線・経緯度線は毎回まったく同じ場所に描かれるので1に近い。等圧線は
+# 総量こそ動かないが線の位置が日ごとに変わるので、低い値になる。
+FURNITURE_STABILITY = 0.80
 
 
 @dataclass(frozen=True)
@@ -173,6 +179,68 @@ def band_variation(counts_per_image: dict[str, list[int]]) -> dict[str, dict]:
             "looks_like_furniture": bool(mean > 0 and cv < FURNITURE_CV),
         }
     return result
+
+
+def label_auc(values: list[float], has_label: list[bool]) -> float:
+    """ラベルの有無を測定値だけでどれだけ分けられるかを返す(ROC-AUC)。
+
+    しきい値を決めずに順位だけで測るので、値の単位に依らない。
+    0.5 が当てずっぽう、1.0 が完全な分離。同じ値は引き分けとして0.5で数える。
+
+    しきい値最適化つきの本評価は `src/evaluate.py` の仕事で、これはその前の
+    「そもそも信号があるか」を見るための道具である。**この数字を本評価の
+    代わりに報告してはいけない。**
+    """
+    positives = [v for v, flag in zip(values, has_label) if flag]
+    negatives = [v for v, flag in zip(values, has_label) if not flag]
+    if not positives or not negatives:
+        return float("nan")
+    wins = sum(
+        (p > n) + 0.5 * (p == n)
+        for p in positives
+        for n in negatives
+    )
+    return wins / (len(positives) * len(negatives))
+
+
+class MaskAccumulator:
+    """帯ごとに「各画素が何枚の画像で点灯したか」を数える。
+
+    `band_variation()` の画素数だけでは等圧線と海岸線を分けられない。等圧線は
+    常に図全体を覆うので総量が動かず、備品と同じ顔をする。**位置**を見れば
+    分かれる — 海岸線は毎回まったく同じ画素に描かれ、等圧線は日ごとに動く。
+
+    画像の大きさが違うと足し合わせられないので、その場合は諦めて報告する
+    (実測では2023年1月が1453x1500、2024年7月が1453x1499で1画素違った)。
+    """
+
+    def __init__(self):
+        self.counts: dict[str, np.ndarray] = {}
+        self.n_images = 0
+        self.shape: tuple | None = None
+        self.size_mismatch = False
+
+    def add(self, masks: dict[str, np.ndarray]) -> None:
+        shape = next(iter(masks.values())).shape
+        if self.shape is None:
+            self.shape = shape
+        elif shape != self.shape:
+            self.size_mismatch = True
+            return
+        for name, mask in masks.items():
+            if name not in self.counts:
+                self.counts[name] = np.zeros(shape, dtype=np.int32)
+            self.counts[name] += mask.astype(np.int32)
+        self.n_images += 1
+
+    def stability(self) -> dict[str, float]:
+        """毎回点灯した画素 / 一度でも点灯した画素。1に近いほど動いていない。"""
+        result = {}
+        for name, counts in self.counts.items():
+            ever = int(np.count_nonzero(counts))
+            always = int(np.count_nonzero(counts == self.n_images))
+            result[name] = always / ever if ever else float("nan")
+        return result
 
 
 def clean_mask(mask: np.ndarray, min_pixels: int = MIN_FRONT_PIXELS) -> np.ndarray:

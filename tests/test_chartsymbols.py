@@ -15,6 +15,8 @@ from src.chartsymbols import (
     ColorBand,
     band_overlap,
     band_variation,
+    label_auc,
+    MaskAccumulator,
     color_masks,
     crop_template,
     dominant_colors,
@@ -336,3 +338,67 @@ def test_overlap_alone_cannot_catch_the_mixup():
     empty = np.zeros(img.shape[:2], dtype=bool)
     everything = color_masks(img)["coastline"]
     assert band_overlap({"a": everything, "b": empty}) == {}
+
+
+# --- 位置で備品と気象を分ける -------------------------------------------
+
+def test_stability_separates_furniture_from_weather():
+    """毎回同じ画素なら備品、動くなら気象。等圧線の誤判定を直した判定。
+
+    画素数の変動係数だけでは等圧線も備品に見えてしまう。常に図全体を覆う
+    ので総量が動かないからで、実測でも1月0.036・7月0.117と、海岸線
+    (0.010)と見分けが付かなかった。位置を見れば分かれる。
+    """
+    acc = MaskAccumulator()
+    coastline = np.zeros((20, 20), dtype=bool)
+    coastline[0, :] = True                      # 毎回まったく同じ場所
+    for i in range(5):
+        isobar = np.zeros((20, 20), dtype=bool)
+        isobar[5 + i, :] = True                 # 総量は同じだが場所が動く
+        acc.add({"coastline": coastline, "isobar": isobar})
+
+    stability = acc.stability()
+    assert stability["coastline"] == pytest.approx(1.0)
+    assert stability["isobar"] == pytest.approx(0.0)
+
+    # 総量だけでは両者が同じに見えることも示しておく
+    stats = band_variation({"coastline": [20] * 5, "isobar": [20] * 5})
+    assert stats["coastline"]["looks_like_furniture"]
+    assert stats["isobar"]["looks_like_furniture"]
+
+
+def test_accumulator_refuses_to_mix_sizes():
+    """大きさの違う画像は足し合わせない。実測で1画素違う組があった。"""
+    acc = MaskAccumulator()
+    acc.add({"a": np.ones((10, 10), dtype=bool)})
+    acc.add({"a": np.ones((10, 9), dtype=bool)})
+    assert acc.size_mismatch
+    assert acc.n_images == 1
+
+
+# --- 測定値とラベルの対応 -----------------------------------------------
+
+def test_auc_is_one_when_the_measure_separates_perfectly():
+    assert label_auc([9, 8, 7, 3, 2, 1], [True, True, True, False, False, False]) == 1.0
+
+
+def test_auc_is_half_when_the_measure_is_useless():
+    assert label_auc([5, 5, 5, 5], [True, True, False, False]) == 0.5
+
+
+def test_auc_below_half_means_inverted_but_still_informative():
+    """低いほどラベルが付く関係も信号である。実測の japan_sea_low が0.101だった。"""
+    assert label_auc([1, 2, 8, 9], [True, True, False, False]) == 0.0
+
+
+def test_auc_reproduces_the_measured_stationary_front_result():
+    """2024年7月の20枚の実測値。停滞pxで stationary_front を分けたときのAUC。"""
+    stationary_px = [2382, 2303, 2807, 2816, 4032, 3924, 1868, 2448, 1697, 126,
+                     120, 1084, 1453, 2447, 2792, 2890, 2734, 2400, 1724, 2164]
+    has_label = [True, True, True, True, True, True, False, False, False, False,
+                 False, False, False, True, True, True, True, True, True, True]
+    assert label_auc(stationary_px, has_label) == pytest.approx(0.923, abs=0.001)
+
+
+def test_auc_is_nan_without_both_classes():
+    assert np.isnan(label_auc([1, 2, 3], [True, True, True]))
