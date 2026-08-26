@@ -210,16 +210,41 @@ def report_cluster_similarity(clusters: list[dict], min_cluster: int, top: int =
     print("0.2以下なら別の記号。")
 
 
+# 記号の大半を覆えたとみなす割合。残りは汚れや、等圧線が重なった個体。
+COVERAGE = 0.8
+
+
 def report_threshold_sweep(patches: list, current: float) -> None:
-    """しきい値を変えると山の数がどう変わるかを出す。"""
-    print(f"\nしきい値ごとの山の大きさ (今は {current}):")
-    for threshold in (0.5, 0.6, 0.7, 0.8):
+    """しきい値を変えると山の数がどう変わるかを出し、選ぶべき値を示す。
+
+    山の数だけを見ると、しきい値を下げれば必ず減るので判断できない。
+    **候補の大半を覆うのに山がいくつ要るか**を見る。記号の種類は
+    せいぜい数種類なので、その数が一番小さくなるところが答えになる。
+    """
+    print(f"\nしきい値ごとの山 (今は {current}):")
+    best = None
+    for threshold in (0.4, 0.5, 0.6, 0.7, 0.8):
         sizes = [c["size"] for c in cluster_patches(patches, threshold)]
+        needed, covered = 0, 0
+        for n in sizes:
+            if covered >= COVERAGE * len(patches):
+                break
+            covered += n
+            needed += 1
         head = ", ".join(str(n) for n in sizes[:6])
         more = f" ...計{len(sizes)}山" if len(sizes) > 6 else f" (計{len(sizes)}山)"
         mark = " <- 今" if abs(threshold - current) < 1e-9 else ""
-        print(f"  {threshold:.1f}: {head}{more}{mark}")
-    print("記号の種類はせいぜい数種類なので、山が数個に落ち着くしきい値を選ぶ。")
+        print(f"  {threshold:.1f}: {head}{more}  "
+              f"{COVERAGE:.0%}を覆うのに{needed}山{mark}")
+        # 同じ山数なら、しきい値は高いほうが安全(別の記号を混ぜにくい)
+        if best is None or needed <= best[1]:
+            best = (threshold, needed)
+
+    if best:
+        print(f"\n{COVERAGE:.0%}を一番少ない山で覆えるのは しきい値 {best[0]:.1f} "
+              f"({best[1]}山)。記号は{best[1]}種類と見てよい。")
+        if abs(best[0] - current) > 1e-9:
+            print(f"  --threshold {best[0]:.1f} でやり直すと、名前を付けるPNGが{best[1]}枚に絞れる。")
 
 
 def cmd_cut(args):

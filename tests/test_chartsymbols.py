@@ -534,3 +534,24 @@ def test_correlation_tells_the_same_glyph_from_a_different_one():
     a, b, c = glyph_patches(img)[:3]
     assert correlation(a, b) > 0.9     # 同じ記号
     assert correlation(a, c) < 0.5     # 違う記号
+
+
+def test_threshold_sweep_prefers_the_stricter_value_on_a_tie():
+    """同じ山数で覆えるなら、しきい値は高いほうを採る(別の記号を混ぜにくい)。"""
+    import io
+    from contextlib import redirect_stdout
+
+    from scripts.extract_symbols import report_threshold_sweep
+
+    img = blank()
+    for x in (60, 160, 260):
+        put_glyph(img, "H", (x, 200))
+    for x in (60, 160, 260):
+        put_glyph(img, "L", (x, 320))
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        report_threshold_sweep(glyph_patches(img), 0.7)
+    out = buffer.getvalue()
+    # どのしきい値でも同じ山数になるので、一番高い0.8が選ばれる
+    assert "しきい値 0.8" in out
