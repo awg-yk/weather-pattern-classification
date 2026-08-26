@@ -99,7 +99,8 @@ def cmd_scan(args):
     located: list[tuple[str, int, int, int]] = []   # (画像, 番号, 幅, 高さ)
     for path in iter_images(args.in_dir, args.limit):
         rgb = np.array(Image.open(path).convert("RGB"))
-        candidates = glyph_candidates(rgb, min_side=args.min_side, max_side=args.max_side)
+        candidates = glyph_candidates(rgb, min_side=args.min_side,
+                                      max_side=args.max_side, band=args.band)
         counts.append(len(candidates))
         for i, c in enumerate(candidates):
             sizes[(c.width, c.height)] += 1
@@ -151,7 +152,7 @@ def cmd_cluster(args):
     collected = []      # (画像名, 番号, 候補, マスク)
     for path in iter_images(args.in_dir, args.limit):
         rgb = np.array(Image.open(path).convert("RGB"))
-        mask = DEFAULT_BANDS["isobar"].mask(to_hsv(rgb))
+        mask = DEFAULT_BANDS[args.band].mask(to_hsv(rgb))
         for i, c in enumerate(glyph_candidates(rgb, min_side=args.min_side,
                                                max_side=args.max_side)):
             if args.size:
@@ -397,6 +398,8 @@ def main():
     scan.add_argument("--in-dir", required=True)
     scan.add_argument("--limit", type=int, default=20)
     scan.add_argument("--overlay")
+    scan.add_argument("--band", default="isobar", choices=sorted(DEFAULT_BANDS),
+                      help="記号を探す色。高気圧・低気圧の記号は色付きのことがある")
     scan.add_argument("--min-side", type=int, default=6,
                       help="候補とみなす塊の一辺の下限(画素)")
     scan.add_argument("--max-side", type=int, default=64,
@@ -421,6 +424,8 @@ def main():
                          help="同じ山とみなす相関の下限")
     cluster.add_argument("--min-cluster", type=int, default=2,
                          help="これ未満の山は書き出さない")
+    cluster.add_argument("--band", default="isobar", choices=sorted(DEFAULT_BANDS),
+                      help="記号を探す色。高気圧・低気圧の記号は色付きのことがある")
     cluster.add_argument("--min-side", type=int, default=6)
     cluster.add_argument("--max-side", type=int, default=64)
     cluster.add_argument("--patch-width", type=int, default=24)

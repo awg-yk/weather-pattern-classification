@@ -37,6 +37,7 @@ from src.chartsymbols import (
     band_overlap,
     clean_mask,
     color_masks,
+    compact_share,
     label_auc,
     segments,
     stationary_mask,
@@ -75,6 +76,8 @@ def analyse(rgb: np.ndarray) -> dict:
     for name in FRONT_BANDS:
         found = segments(cleaned[name], name)
         result["segments"][name] = found
+    # 前線と同じ色で記号が描かれていれば、前線の画素に文字が混じる。
+    result["compact"] = {name: compact_share(cleaned[name]) for name in FRONT_BANDS}
     result["overlap"] = band_overlap({
         "warm_front": masks["warm_front"],
         "coastline": masks["coastline"],
@@ -157,9 +160,10 @@ def main():
     paths = paths[:args.limit]
 
     print(f"{'画像':24s} {'温暖':>6s} {'寒冷':>6s} {'閉塞':>6s} {'停滞':>6s}  "
-          f"{'海岸線混入':>10s}  ラベル")
+          f"{'海岸線混入':>10s} {'文字混入':>8s}  ラベル")
     totals = defaultdict(int)
     with_front = 0
+    compact_flags: list[float] = []
     measured: list[dict] = []
     for path in paths:
         rgb = np.array(Image.open(path).convert("RGB"))
@@ -182,8 +186,11 @@ def main():
             "停滞px": stationary_px,
         })
         tag = "|".join(sorted(labels.get(path.name, []))) if labels else ""
+        worst_compact = max(result["compact"].values())
+        compact_flags.append(worst_compact)
         print(f"{path.name:24s} {counts['warm_front']:6d} {counts['cold_front']:6d} "
-              f"{counts['occluded_front']:6d} {stationary_px:6d}  {contamination:10d}  {tag}")
+              f"{counts['occluded_front']:6d} {stationary_px:6d}  {contamination:10d} "
+              f"{worst_compact:8.1%}  {tag}")
 
         if args.overlay:
             write_overlay(rgb, result, Path(args.overlay) / f"{path.stem}_fronts.png")
@@ -196,6 +203,15 @@ def main():
     if args.overlay:
         print(f"重ね描き: {args.overlay}/ ― 必ず目で確認すること。")
     print("\n海岸線混入が0でない画像が多いなら、まず scripts/chart_palette.py で色を測り直すこと。")
+    if compact_flags:
+        worst = max(compact_flags)
+        print(f"文字混入(前線の色のうち、細長くない塊にある画素の割合)の最大: {worst:.1%}")
+        if worst > 0.10:
+            print("★高気圧・低気圧の記号が前線と同じ色で描かれている見込みが高い。")
+            print("  停滞pxは細長さで濾していないので、この分だけ水増しされている。")
+            print("  scripts/extract_symbols.py scan --band warm_front で記号を確かめること。")
+        else:
+            print("前線の色はほぼ細長い塊で占められている。文字の混入は小さい。")
 
 
 if __name__ == "__main__":

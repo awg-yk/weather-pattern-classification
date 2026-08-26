@@ -358,6 +358,20 @@ def segments(mask: np.ndarray, kind: str, min_pixels: int = MIN_FRONT_PIXELS) ->
     return sorted(found, key=lambda s: s.pixels, reverse=True)
 
 
+def compact_share(mask: np.ndarray, min_pixels: int = MIN_FRONT_PIXELS) -> float:
+    """マスクの画素のうち、細長くない塊にあるものの割合。
+
+    前線は細長く、文字や記号は丸い。**高気圧・低気圧の記号が前線と同じ色で
+    描かれていれば、前線の画素数に文字が混じる。**その量をここで測る。
+    0に近ければ前線だけを見ている。
+    """
+    total = int(mask.sum())
+    if total == 0:
+        return 0.0
+    compact = sum(s.pixels for s in segments(mask, "", min_pixels) if not s.is_frontlike)
+    return compact / total
+
+
 def stationary_mask(
     warm: np.ndarray, cold: np.ndarray, gap_px: int = STATIONARY_GAP_PX
 ) -> np.ndarray:
@@ -404,6 +418,7 @@ def glyph_candidates(
     min_side: int = 6,
     max_side: int = 64,
     min_fill: float = 0.12,
+    band: str = "isobar",
 ) -> list[Candidate]:
     """記号の候補になる小さな孤立した黒い塊を、テンプレート無しで拾う。
 
@@ -413,6 +428,11 @@ def glyph_candidates(
     区別はテンプレートマッチング(`match_templates`)の仕事で、ここが返すのは
     「1枚あたり何個を相手にすればよいか」という規模の見積もりになる。
 
+    `band` で探す色を選べる。既定は黒(等圧線と同じ帯)だが、**高気圧・低気圧の
+    記号は色付きで描かれていることがある**。黒だけを見ていると、その記号は
+    一度も候補に上がらない。実測では黒の候補は数字と等圧線の切れ端と×印
+    だけで、H も L も出てこなかった。
+
     min_side / max_side は 1453x1500 の気象庁PDF版で測った値に合わせてある
     (記号は28〜32画素に集まり、大きいもので43x46)。前処理の拡大率が違う
     画像を扱うときは、`scripts/extract_symbols.py scan --max-side` で広げて、
@@ -420,9 +440,9 @@ def glyph_candidates(
     """
     bands = bands or DEFAULT_BANDS
     height, width = rgb.shape[:2]
-    black = bands["isobar"].mask(to_hsv(rgb))
+    ink = bands[band].mask(to_hsv(rgb))
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        black.astype(np.uint8), connectivity=8
+        ink.astype(np.uint8), connectivity=8
     )
     found = []
     for i in range(1, count):

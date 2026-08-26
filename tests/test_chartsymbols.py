@@ -603,6 +603,51 @@ def test_cluster_removes_the_previous_run(tmp_path):
     cmd_cluster(argparse.Namespace(
         in_dir=charts, limit=1, out=out, size=None, tolerance=3, threshold=0.5,
         min_cluster=1, min_side=6, max_side=64, patch_width=24, patch_height=32,
+        band="isobar",
     ))
     assert not (out / "cluster07.png").exists()
     assert (out / "H.png").exists()
+
+
+# --- 色付きの記号 -------------------------------------------------------
+
+def put_colored_glyph(img, text, org, color, scale=1.2, thickness=3):
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, color,
+                thickness, lineType=cv2.LINE_8)
+
+
+def test_glyph_search_can_look_in_a_colored_band():
+    """高気圧・低気圧の記号は色付きのことがある。黒だけ見ていると拾えない。
+
+    実測では、黒の候補は数字と等圧線の切れ端と×印だけで、HもLも出てこな
+    かった。色を指定して探せるようにした。
+    """
+    img = blank()
+    put_colored_glyph(img, "L", (100, 150), WARM)
+    put_colored_glyph(img, "H", (250, 150), COLD)
+
+    assert glyph_candidates(img, band="isobar") == []
+    assert len(glyph_candidates(img, band="warm_front")) == 1
+    assert len(glyph_candidates(img, band="cold_front")) == 1
+
+
+def test_compact_share_flags_letters_drawn_in_a_front_color():
+    """前線と同じ色の文字は前線の画素数に混じる。その量を測れること。"""
+    from src.chartsymbols import compact_share
+
+    # 前線だけ: 細長いので混入は0
+    only_front = blank()
+    line(only_front, (20, 200), (380, 200), WARM, 3)
+    assert compact_share(color_masks(only_front)["warm_front"]) == pytest.approx(0.0)
+
+    # 文字だけ: 丸いので全部が混入
+    only_text = blank()
+    put_colored_glyph(only_text, "L", (100, 150), WARM)
+    assert compact_share(color_masks(only_text)["warm_front"]) == pytest.approx(1.0)
+
+    # 両方: あいだの値になる
+    both = blank()
+    line(both, (20, 300), (380, 300), WARM, 3)
+    put_colored_glyph(both, "L", (100, 150), WARM)
+    share = compact_share(color_masks(both)["warm_front"])
+    assert 0.0 < share < 1.0
