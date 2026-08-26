@@ -42,7 +42,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from src.chartsymbols import (
     DEFAULT_BANDS,
@@ -193,12 +193,65 @@ def cmd_cluster(args):
         print(f"  cluster{rank:02d}.png  {cluster['size']:3d}個  "
               f"{template.shape[1]}x{template.shape[0]}  例: {where}")
 
+    sheet = write_contact_sheet(clusters, collected, out_dir, args.min_cluster)
+    if sheet:
+        print(f"\n一覧: {sheet}  <- まずこれを開くと全部の山が1枚で見える")
+
     report_cluster_similarity(clusters, args.min_cluster)
     report_threshold_sweep(patches, args.threshold)
 
     print(f"\n{out_dir}/ の小さなPNGを見て、H や L だと分かったものを")
     print("その名前に付け替えること (例: cluster00.png -> H.png)。")
     print("付け替えたら match で全画像に当てる。数字や目盛の山は消してよい。")
+
+
+def write_contact_sheet(clusters: list[dict], collected: list, out_dir: Path,
+                        min_cluster: int, cell_height: int = 90) -> Path | None:
+    """山の代表を1枚の画像に並べる。番号と個数を添える。
+
+    山が多いと、小さなPNGを1枚ずつ開いて回るのが辛い。並べて一度に見れば、
+    どれが記号でどれが数字かはすぐ分かる。実際、36x57の山は H でも L でも
+    なく、気圧の数値の 0 と 9 だった。
+
+    記号が白・地が黒のままだと読みにくいので、白地に黒で描く。
+    """
+    shown = [c for c in clusters if c["size"] >= min_cluster]
+    if not shown:
+        return None
+
+    tiles = []
+    for rank, cluster in enumerate(shown):
+        _, _, candidate, mask = collected[cluster["members"][0]]
+        patch = mask[candidate.y0:candidate.y1, candidate.x0:candidate.x1]
+        # 記号を黒、地を白にして拡大する
+        glyph = Image.fromarray(((~patch) * 255).astype(np.uint8)).convert("L")
+        scale = cell_height / max(glyph.height, 1)
+        glyph = glyph.resize((max(1, int(glyph.width * scale)), cell_height),
+                             Image.NEAREST)
+        tiles.append((f"{rank:02d} ({cluster['size']})", glyph))
+
+    label_height = 16
+    pad = 8
+    width = sum(t.width + pad for _, t in tiles) + pad
+    height = cell_height + label_height + pad * 2
+    sheet = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(sheet)
+    try:
+        font = ImageFont.load_default()
+    except OSError:                                    # 実行環境によっては無い
+        font = None
+
+    x = pad
+    for label, tile in tiles:
+        sheet.paste(tile.convert("RGB"), (x, pad))
+        draw.text((x, pad + cell_height + 2), label, fill=(0, 0, 0), font=font)
+        draw.rectangle((x - 1, pad - 1, x + tile.width, pad + cell_height),
+                       outline=(180, 180, 180))
+        x += tile.width + pad
+
+    path = out_dir / "clusters.png"
+    sheet.save(path)
+    return path
 
 
 def report_cluster_similarity(clusters: list[dict], min_cluster: int, top: int = 6) -> None:
