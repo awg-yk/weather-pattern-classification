@@ -273,6 +273,63 @@ Phase 1 で YOLO を想定していた理由である。一方、人が画像編
 
 ---
 
+## Phase 3・4 を通せるようにした(2026-08-27)
+
+    天気図 -> 検出 -> 特徴量CSV -> 交差検証 -> compare_runs で既存CNNと比較
+
+| ファイル | 役割 |
+|---|---|
+| `src/chartfeatures.py` | 検出結果を38個の特徴量にする |
+| `scripts/build_features.py` | 天気図を読んで特徴量CSVを書く |
+| `scripts/cv_features.py` | LOYO交差検証。`summary.json`は既存と同じ形 |
+
+```powershell
+python -m scripts.build_features --in-dir $processed_dir `
+    --templates data\templates --out data\features.csv --workers 8
+python -m scripts.cv_features --features data\features.csv `
+    --years 2023 2024 2025 --out runs\cv_features
+python -m scripts.compare_runs runs\cv_baseline runs\cv_features
+```
+
+### 特徴量(38個)
+
+- 個数と位置: `n_high` `n_low` `n_edge_high` `n_edge_low`
+  `high_cx` `high_cy` `low_cx` `low_cy` `high_low_distance`
+  `low_spread` `high_spread`
+- 前線: `n_warm` `n_cold` `n_occluded` `warm_length` `cold_length`
+  `occluded_length` `stationary_px`
+- 地域ごとの高低気圧の有無: `high_in_<ラベル>` `low_in_<ラベル>` を10ラベル分
+
+`low_spread` は二つ玉低気圧のために入れた。個数だけでは、近くに2つある場合と
+離れて2つある場合が区別できない。
+
+**計画にあった「等圧線の向き・density」は入っていない。**今の検出からは
+取れないため。西高東低はそれで決まると計画は書いていたが、いまは
+「高気圧が左寄り・低気圧が右寄り」という位置関係で代用している。
+
+### 決めたこと
+
+**欠測はNaNのまま渡す。**高気圧が1つも無い日を0で埋めると、図の左上に
+高気圧があることになり嘘の位置を教える。既定のモデルを
+HistGradientBoosting にしたのは、依存を増やさずに済むことに加えて
+**NaNを直接扱える**ため。`--model xgboost` でも動く(計画の第一候補)。
+
+**縮小は色で分けたあとの2値マスクに対して行う。**RGBのまま縮めると海岸線の
+赤茶と黒が混ざり、色の切り分けが崩れる。合成図では `--scale 0.7` でも
+検出数は変わらず、原寸の2.7倍速い(1枚21秒 -> 7.8秒)。0.5では取りこぼした。
+
+**評価コードは既存のものをそのまま通す。**そのために2つ切り出した。
+`src/evaluate.py` は冒頭で torch を読むので、しきい値と自明な予測の基準を
+`src/metrics.py` へ。`src/dataset.py` も torch を読むので、分割が使う日付の
+解釈を `src/split.py` へ。**日付の解釈がずれると分割ごとずれ、比較が
+無効になる**ので、実装は1つだけにした。どちらも元の場所から再輸出している。
+
+### 確かめたこと
+
+合成天気図108枚(3年ぶん)に、月ごとに決めた数の記号と前線を置いて通した。
+高気圧の数(4・5・10・11月が2個)、低気圧の数(1・2・12月が2個)、停滞前線
+(6・7月のみ)を、**すべて取り戻せた**。
+
 ## 繰り返してはいけないこと
 
 **この節がこの文書で一番役に立つ。**すべて実際にやって間違えたことである。

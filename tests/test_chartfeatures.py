@@ -205,3 +205,104 @@ def test_compare_runs_does_not_describe_a_tree_run_as_a_cnn(tmp_path):
 
     cnn = {"config": {"input_mode": "chart", "no_pretrained": False}}
     assert "事前学習あり" in describe(cnn)
+
+
+# --- 天気図から特徴量CSVまで ---------------------------------------------
+
+def synthetic_chart_with(n_high: int, n_low: int, stationary: bool):
+    """記号と前線を指定した数だけ置いた天気図。"""
+    import cv2
+    black, warm, cold, coast = (4, 4, 4), (252, 4, 4), (4, 4, 252), (164, 44, 44)
+    img = np.full((600, 600, 3), 255, dtype=np.uint8)
+    cv2.rectangle(img, (10, 10), (590, 590), coast, 3)
+    for i in range(n_high):
+        x = 60 + i * 200
+        cv2.rectangle(img, (x, 60), (x + 20, 160), black, 6)
+        cv2.rectangle(img, (x + 60, 60), (x + 80, 160), black, 6)
+        cv2.line(img, (x, 110), (x + 80, 110), black, 6)
+    for i in range(n_low):
+        x = 60 + i * 200
+        cv2.line(img, (x, 300), (x, 420), black, 8)
+        cv2.line(img, (x, 420), (x + 80, 420), black, 8)
+    if stationary:
+        for k in range(8):
+            colour = warm if k % 2 == 0 else cold
+            cv2.line(img, (60 + k * 60, 520), (60 + k * 60 + 50, 522), colour, 6)
+    return img
+
+
+def glyph_template(kind: str):
+    import cv2
+
+    from src.chartsymbols import crop_template, glyph_candidates
+    tile = np.full((300, 300, 3), 255, dtype=np.uint8)
+    black = (4, 4, 4)
+    if kind == "H":
+        cv2.rectangle(tile, (60, 60), (80, 160), black, 6)
+        cv2.rectangle(tile, (120, 60), (140, 160), black, 6)
+        cv2.line(tile, (60, 110), (140, 110), black, 6)
+    else:
+        cv2.line(tile, (60, 60), (60, 180), black, 8)
+        cv2.line(tile, (60, 180), (140, 180), black, 8)
+    c = glyph_candidates(tile, max_side=250)[0]
+    return crop_template(tile, (c.x0, c.y0, c.x1, c.y1))
+
+
+def test_analyse_chart_recovers_what_was_drawn(tmp_path):
+    """天気図に置いた記号と前線の数を、検出が取り戻せること。
+
+    ここが狂うと、特徴量は正常な形のまま中身だけが嘘になり、学習は最後まで
+    走ってそれらしい数字を出す。
+    """
+    from PIL import Image
+
+    from scripts.build_features import analyse_chart
+
+    chart = tmp_path / "Js_2024070100.png"
+    Image.fromarray(synthetic_chart_with(2, 1, stationary=True)).save(chart)
+    templates = {"H": glyph_template("H"), "L": glyph_template("L")}
+
+    det = analyse_chart(chart, templates, {}, scale=1.0, threshold=0.65,
+                        angle_range=20, angle_step=5)
+    assert len(det.highs) + len(det.edge_highs) == 2
+    assert len(det.lows) + len(det.edge_lows) == 1
+    assert det.stationary_pixels > 0
+
+
+def test_shrinking_happens_on_the_binary_mask_not_the_colours():
+    """RGBのまま縮めると海岸線の赤茶と黒が混ざり、色の切り分けが崩れる。"""
+    import cv2
+
+    from scripts.build_features import ink_image, shrink
+    img = synthetic_chart_with(1, 1, stationary=False)
+    ink = ink_image(img)
+    assert set(np.unique(ink)) <= {0, 255}          # 2値になっている
+    # 海岸線(赤茶)はインクに含まれない
+    assert ink[12, 300].tolist() == [255, 255, 255]
+    small = shrink(ink, 0.5)
+    assert small.shape[0] == img.shape[0] // 2
+
+
+def test_marks_take_over_as_the_position_source(tmp_path):
+    """中心の印があるなら位置の主役はそちら。文字は枠外の系を拾うのに使う。
+
+    ×は中心そのものだが、H/L の文字は中心の近くに置かれたラベルである。
+    """
+    from PIL import Image
+
+    from scripts.build_features import analyse_chart
+
+    chart = tmp_path / "Js_2024070100.png"
+    Image.fromarray(synthetic_chart_with(1, 1, stationary=False)).save(chart)
+    letters = {"H": glyph_template("H"), "L": glyph_template("L")}
+
+    # 印が無いときは文字の位置が中心として使われる
+    without = analyse_chart(chart, letters, {}, 1.0, 0.65, 20, 5)
+    assert len(without.highs) == 1
+
+    # 印(ここでは L の形を cross として渡す)があるとそちらが主役になり、
+    # 文字からは縁のものだけを数える
+    marks = {"cross": glyph_template("L")}
+    with_marks = analyse_chart(chart, letters, marks, 1.0, 0.65, 20, 5)
+    assert len(with_marks.highs) == 1        # cross が高気圧として入る
+    assert with_marks.edge_highs == []       # H の文字は縁に無いので数えない
