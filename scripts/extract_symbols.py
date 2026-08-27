@@ -39,6 +39,7 @@
 
 import argparse
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -175,7 +176,10 @@ def cmd_cluster(args):
     # 前回の山を消してから書く。条件を変えて実行し直すと山の数が減ることが
     # あり、消さないと前回の余りが残る。match はディレクトリの中を全部
     # 読むので、条件の違う山が混ざったまま照合してしまう。
-    stale = sorted(out_dir.glob("cluster*.png"))
+    #
+    # 番号付きのものだけを狙う。"cluster*.png" にすると一覧(clusters.png)も
+    # 巻き込み、消して書き直す形になって「消した数」が1多く出る。
+    stale = sorted(out_dir.glob("cluster[0-9][0-9].png"))
     for path in stale:
         path.unlink()
     if stale:
@@ -197,7 +201,12 @@ def cmd_cluster(args):
 
     sheet = write_contact_sheet(clusters, collected, out_dir, args.min_cluster)
     if sheet:
-        print(f"\n一覧: {sheet}  <- まずこれを開くと全部の山が1枚で見える")
+        stamp = datetime.fromtimestamp(sheet.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n一覧: {sheet.resolve()}")
+        print(f"      {stamp} に書き出し ({sheet.stat().st_size:,} バイト)  "
+              "<- まずこれを開くと全部の山が1枚で見える")
+        print("      開いても古いままなら、画像表示ソフトの再読み込みか、"
+              "エクスプローラの表示更新(F5)を試すこと。")
 
     report_cluster_similarity(clusters, args.min_cluster)
     report_threshold_sweep(patches, args.threshold)
