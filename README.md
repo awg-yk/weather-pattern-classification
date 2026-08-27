@@ -146,6 +146,7 @@ docs/
   2026-08-25-attention-regions.md   # 教師データ側に「見るべき領域」を持たせた記録
   2026-08-26-stale-run-comparisons.md # 別のラベルで測った結果を比べていた件
   2026-08-26-detection-plan.md      # 物体検出を経由する方式の計画と引き継ぎ
+  2026-08-26-detection-prescreen.md # 上の計画の下見。色とテンプレートで取れるか測った
 runs/             # 交差検証の出力。summary.jsonだけ追跡する
                   # (2026-08-26に過去分を削除。docs/2026-08-26-stale-run-comparisons.md)
 webapp/
