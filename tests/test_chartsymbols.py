@@ -849,3 +849,37 @@ def test_angle_report_flags_detections_stuck_at_the_edge(capsys):
 
     report_angles([0.0, 10.0, -20.0], 50.0)
     assert "範囲の端" not in capsys.readouterr().out
+
+
+# --- 固定の誤検出 -------------------------------------------------------
+
+def test_fixed_detections_are_flagged(capsys):
+    """毎回同じ画素・同じ傾きで出る検出は気象ではない。
+
+    実測で H+20度 が20枚中9枚に出て、しかも毎回リストの最後(画像の下端)に
+    あった。高気圧は日ごとに動くので、画素まで一致し続けるのは不自然。
+    """
+    from scripts.extract_symbols import report_fixed_detections
+    placed = []
+    for i in range(10):
+        placed.append(("H", 0.30 + 0.01 * i, 0.20 + 0.005 * i, 0.0))   # 動く
+        placed.append(("H", 0.812, 0.905, 20.0))                        # 動かない
+    report_fixed_detections(placed, 10)
+    out = capsys.readouterr().out
+    assert "0.812" in out and "+20度" in out and "10枚" in out
+    assert "0.300" not in out          # 動くほうは指摘しない
+
+
+def test_moving_detections_are_not_flagged(capsys):
+    from scripts.extract_symbols import report_fixed_detections
+    placed = [("L", 0.2 + 0.05 * i, 0.3 + 0.02 * i, 0.0) for i in range(10)]
+    report_fixed_detections(placed, 10)
+    assert "毎回同じ場所に出続ける検出はない" in capsys.readouterr().out
+
+
+def test_same_place_but_different_tilt_is_not_fixed(capsys):
+    """同じ場所でも傾きが変われば、描き直された記号とみなす。"""
+    from scripts.extract_symbols import report_fixed_detections
+    placed = [("H", 0.5, 0.5, float(5 * i)) for i in range(10)]
+    report_fixed_detections(placed, 10)
+    assert "毎回同じ場所に出続ける検出はない" in capsys.readouterr().out

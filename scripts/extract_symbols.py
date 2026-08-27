@@ -478,6 +478,53 @@ def report_angles(angles: list[float], angle_range: float) -> None:
               f"--angle-range を広げると、まだ見つかる見込みがある。")
 
 
+# 何割の枚数に出たら「毎回同じ場所」とみなすか。
+FIXED_SHARE = 0.6
+
+# 同じ場所とみなす相対座標の差。1453画素なら約7画素にあたる。
+SAME_PLACE = 0.005
+
+
+def report_fixed_detections(placed: list, n_images: int) -> None:
+    """毎回ほぼ同じ場所・同じ傾きで出る検出を指摘する。
+
+    高気圧や低気圧は日ごとに動く。**同じ画素に同じ傾きで出続けるものは
+    気象ではなく、等圧線や図郭を記号と読み違えた固定の誤検出**である可能性が
+    高い。居座る高気圧でも中心は多少動くので、画素まで一致し続けることは
+    少ない。
+
+    `chart_palette.py` で色の帯に対して使ったのと同じ考え方を、検出に当てる。
+    """
+    if n_images < 5 or not placed:
+        return
+
+    groups: list[dict] = []
+    for symbol, cx, cy, angle in placed:
+        for group in groups:
+            if (group["symbol"] == symbol
+                    and abs(group["cx"] - cx) < SAME_PLACE
+                    and abs(group["cy"] - cy) < SAME_PLACE
+                    and abs(group["angle"] - angle) < 1e-6):
+                group["count"] += 1
+                break
+        else:
+            groups.append({"symbol": symbol, "cx": cx, "cy": cy,
+                           "angle": angle, "count": 1})
+
+    fixed = [g for g in groups if g["count"] >= FIXED_SHARE * n_images]
+    if not fixed:
+        print("毎回同じ場所に出続ける検出はない。位置は日ごとに動いている。")
+        return
+
+    print(f"\n★毎回ほぼ同じ場所・同じ傾きで出ている検出 ({n_images}枚中):")
+    for g in sorted(fixed, key=lambda g: -g["count"]):
+        print(f"    {g['symbol']} 相対座標({g['cx']:.3f}, {g['cy']:.3f}) "
+              f"{g['angle']:+.0f}度  {g['count']}枚")
+    print("  高気圧・低気圧は日ごとに動くので、画素まで一致し続けるのは不自然。")
+    print("  等圧線や図郭を記号と読み違えた固定の誤検出の見込みが高い。")
+    print("  重ね描きでこの座標を見て、記号でなければテンプレートを見直すこと。")
+
+
 def cmd_match(args):
     templates = load_templates(args.templates)
     print("テンプレート: " + ", ".join(
@@ -494,6 +541,7 @@ def cmd_match(args):
 
     per_label = Counter()
     all_angles: list[float] = []
+    placed: list[tuple[str, float, float, float]] = []   # (記号, cx, cy, 角度)
     n_images = 0
     n_candidates = 0
     for path in iter_images(args.in_dir, args.limit):
@@ -503,6 +551,7 @@ def cmd_match(args):
         found = Counter(symbol_of(h.label) for h in hits)
         per_label.update(found)
         all_angles.extend(h.angle for h in hits)
+        placed.extend((symbol_of(h.label), h.cx, h.cy, h.angle) for h in hits)
         n_images += 1
         # テンプレートと同じくらいの大きさの候補が、そもそも何個あったか
         n_candidates += sum(
@@ -520,6 +569,7 @@ def cmd_match(args):
     total = sum(per_label.values())
     print("\n合計: " + ", ".join(f"{k}={v}" for k, v in sorted(per_label.items())))
     report_angles(all_angles, args.angle_range)
+    report_fixed_detections(placed, n_images)
     print(f"1枚あたり {total / n_images:.1f}個。"
           "天気図1枚の高気圧・低気圧はふつう2〜6個。")
 
