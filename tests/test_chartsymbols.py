@@ -1141,3 +1141,26 @@ def test_a_hand_made_template_works_in_either_polarity():
     assert white_on_black.mean() == pytest.approx(black_on_white.mean())
     assert (white_on_black == black_on_white).all()
     assert 0.1 < white_on_black.mean() < 0.5     # 記号は画像の一部でしかない
+
+
+def test_hand_made_template_with_an_odd_ink_share_is_flagged(capsys):
+    """記号の割合が極端なら、切り出しの範囲か白黒の閾値を疑う。"""
+    from scripts.extract_symbols import as_template
+    as_template(np.zeros((40, 30), dtype=np.uint8), "H4.png")     # 真っ黒
+    assert "★" in capsys.readouterr().out
+
+    glyph = np.zeros((40, 30), dtype=np.uint8)
+    glyph[5:35, 5:12] = 255
+    glyph[28:35, 5:25] = 255
+    as_template(glyph, "H.png")
+    assert capsys.readouterr().out == ""
+
+
+def test_templates_can_be_other_image_formats(tmp_path):
+    """画像編集ソフトからだと png 以外で保存されることがある。"""
+    from scripts.extract_symbols import load_templates
+    glyph = np.zeros((40, 30), dtype=np.uint8)
+    glyph[5:35, 5:12] = 255
+    Image.fromarray(glyph).save(tmp_path / "H.bmp")
+    Image.fromarray(glyph).convert("RGB").save(tmp_path / "L.jpg")
+    assert sorted(load_templates(tmp_path)) == ["H", "L"]

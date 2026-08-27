@@ -453,6 +453,13 @@ def cmd_cut(args):
 # cluster が書き出す一覧。テンプレートではないので読み込みから外す。
 CONTACT_SHEET = "clusters"
 
+# テンプレートとして読む拡張子。人が画像編集ソフトで作ると png 以外にもなる。
+TEMPLATE_SUFFIXES = (".png", ".bmp", ".gif", ".jpg", ".jpeg", ".tif", ".tiff")
+
+# テンプレートに占めるインクの割合の、妥当な範囲。記号は画像の一部でしかなく、
+# かといって数画素ということもない。外れていたら切り出しを疑う。
+INK_RANGE = (0.05, 0.60)
+
 
 def symbol_of(template_name: str) -> str:
     """テンプレート名から記号名を取り出す。H2 も H_b も「H」として数える。
@@ -480,6 +487,11 @@ def as_template(gray: np.ndarray, label: str = "") -> np.ndarray:
         ink = ~ink
         if label:
             print(f"  {label} は白地に黒と判断して反転した。")
+    share = float(ink.mean())
+    if label and not (INK_RANGE[0] <= share <= INK_RANGE[1]):
+        print(f"  ★{label} は記号の割合が{share:.0%}で、"
+              f"目安({INK_RANGE[0]:.0%}〜{INK_RANGE[1]:.0%})から外れている。")
+        print("    切り出しの範囲か、白黒の閾値を見直すこと。")
     return ink
 
 
@@ -496,7 +508,9 @@ def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
     """
     named: dict[str, np.ndarray] = {}
     unnamed: list[str] = []
-    for path in sorted(Path(template_dir).glob("*.png")):
+    paths = sorted(p for p in Path(template_dir).iterdir()
+                   if p.suffix.lower() in TEMPLATE_SUFFIXES)
+    for path in paths:
         if path.stem == CONTACT_SHEET:
             continue
         if re.fullmatch(r"cluster\d+", path.stem):
