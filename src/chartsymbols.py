@@ -645,6 +645,57 @@ def crop_template(rgb: np.ndarray, box: tuple[int, int, int, int],
     return black[y0:y1, x0:x1]
 
 
+# 枠を合わせたあとに残す余白。0にすると記号の線が縁に接し、見切れの判定
+# (touches_border)が常に反応してしまう。
+FIT_MARGIN = 3
+
+
+def fit_glyph_box(mask: np.ndarray, box: tuple, erode: int = 2,
+                  min_pixels: int = 40) -> tuple:
+    """おおよその枠から、記号がちょうど収まる枠を求める。
+
+    枠を手で指定すると、狭ければ記号が見切れ、広ければ周りの等圧線が
+    大きく入る。**どちらも一致スコアを下げる**。見切れは記号の一部しか
+    比べられなくなるため、広すぎる場合は場所ごとに違う等圧線の模様が
+    テンプレートの大半を占めてしまうためである。
+
+    細らせて細い等圧線を消し、残った太い塊のうち指定した枠に掛かるものだけを
+    集めて、その外接矩形を返す。記号の線は太いので残り、等圧線は消える。
+
+    実測では、余白35画素を四方に足したテンプレート(165x187)は、余白なしの
+    もの(95x117)より当たりが悪かった(1枚あたり5.3個から3.4個)。
+    """
+    x0, y0, x1, y1 = box
+    thick = mask
+    if erode:
+        kernel = np.ones((2 * erode + 1, 2 * erode + 1), np.uint8)
+        thick = cv2.erode(mask.astype(np.uint8), kernel).astype(bool)
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        thick.astype(np.uint8), connectivity=8)
+    keep = []
+    for i in range(1, count):
+        bx = int(stats[i, cv2.CC_STAT_LEFT])
+        by = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if stats[i, cv2.CC_STAT_AREA] < min_pixels:
+            continue
+        # 指定した枠と重なる塊だけを採る
+        if bx < x1 and bx + bw > x0 and by < y1 and by + bh > y0:
+            keep.append((bx, by, bx + bw, by + bh))
+    if not keep:
+        return box
+
+    fitted = (min(b[0] for b in keep), min(b[1] for b in keep),
+              max(b[2] for b in keep), max(b[3] for b in keep))
+    # 細らせたぶんを戻し、少しだけ余白を残す
+    grow = erode + FIT_MARGIN
+    return (max(0, fitted[0] - grow), max(0, fitted[1] - grow),
+            min(mask.shape[1], fitted[2] + grow),
+            min(mask.shape[0], fitted[3] + grow))
+
+
 def touches_border(template: np.ndarray, erode: int = 2) -> float:
     """テンプレートの縁に太い線が掛かっている割合を返す。見切れの検出。
 

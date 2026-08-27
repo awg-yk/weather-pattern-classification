@@ -763,7 +763,7 @@ def test_cut_by_box_works_without_any_candidate(tmp_path):
     assert glyph_candidates(np.array(Image.open(chart)), max_side=150, erode=1) == []
 
     cmd_cut(argparse.Namespace(
-        image=chart, index=-1, box=[75, 145, 145, 255], name="L", pad=0,
+        image=chart, index=-1, box=[75, 145, 145, 255], name="L", pad=0, fit=False,
         out=tmp_path, band="isobar", erode=0, max_side=64,
     ))
     saved = np.array(Image.open(tmp_path / "L.png").convert("L")) > 127
@@ -932,3 +932,40 @@ def test_a_crossing_thin_isobar_is_not_mistaken_for_clipping():
     from src.chartsymbols import touches_border
     img = thick_glyph_with_a_thin_isobar()
     assert touches_border(crop_template(img, (110, 110, 292, 322))) == 0.0
+
+
+# --- 枠を記号に合わせる -------------------------------------------------
+
+def test_fitting_converges_from_a_too_small_and_a_too_large_box():
+    """狭すぎる枠も広すぎる枠も、同じ「記号がちょうど収まる枠」に落ち着く。
+
+    枠が狭ければ記号が見切れ、広ければ周りの等圧線がテンプレートの大半を
+    占める。どちらも一致スコアを下げる。実測では余白35画素を足した
+    テンプレートのほうが当たりが悪かった(5.3個/枚 -> 3.4個/枚)。
+    """
+    from src.chartsymbols import DEFAULT_BANDS, fit_glyph_box, to_hsv
+    img = thick_glyph_with_a_thin_isobar()
+    mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
+    tight = fit_glyph_box(mask, (170, 170, 230, 260))
+    loose = fit_glyph_box(mask, (100, 100, 300, 330))
+    assert tight == loose
+    # 記号の真の範囲(146,146)-(254,284) を、わずかな余白付きで囲むこと
+    assert tight[0] == pytest.approx(146, abs=8)
+    assert tight[3] == pytest.approx(284, abs=8)
+
+
+def test_a_fitted_box_does_not_look_clipped():
+    """合わせた枠には余白が残るので、見切れの判定が誤反応しない。"""
+    from src.chartsymbols import DEFAULT_BANDS, fit_glyph_box, to_hsv, touches_border
+    img = thick_glyph_with_a_thin_isobar()
+    mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
+    fitted = fit_glyph_box(mask, (170, 170, 230, 260))
+    assert touches_border(crop_template(img, fitted)) == 0.0
+
+
+def test_fitting_falls_back_when_the_box_holds_no_thick_ink():
+    """太い塊が無ければ、指定された枠をそのまま返す。"""
+    from src.chartsymbols import DEFAULT_BANDS, fit_glyph_box, to_hsv
+    blank_img = blank()
+    mask = DEFAULT_BANDS["isobar"].mask(to_hsv(blank_img))
+    assert fit_glyph_box(mask, (10, 10, 60, 60)) == (10, 10, 60, 60)

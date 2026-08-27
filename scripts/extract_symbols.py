@@ -52,7 +52,9 @@ from src.chartsymbols import (
     cluster_patches,
     correlation,
     crop_template,
+    fit_glyph_box,
     glyph_candidates,
+    to_hsv,
     touches_border,
     match_templates,
     patch_of,
@@ -400,6 +402,12 @@ def cmd_cut(args):
         if not (0 <= x0 < x1 <= rgb.shape[1] and 0 <= y0 < y1 <= rgb.shape[0]):
             raise SystemExit(
                 f"--box が画像の外です。画像は {rgb.shape[1]}x{rgb.shape[0]} 画素。")
+        if args.fit:
+            fitted = fit_glyph_box(DEFAULT_BANDS[args.band].mask(to_hsv(rgb)),
+                                   (x0, y0, x1, y1))
+            if fitted != (x0, y0, x1, y1):
+                print(f"枠を記号に合わせた: ({x0},{y0},{x1},{y1}) -> {fitted}")
+            x0, y0, x1, y1 = fitted
         template = crop_template(rgb, (x0, y0, x1, y1))
     else:
         candidates = glyph_candidates(rgb, band=args.band, erode=args.erode,
@@ -650,9 +658,11 @@ def main():
     cut.add_argument("--box", type=int, nargs=4, metavar=("X0", "Y0", "X1", "Y1"),
                      help="画素の座標を直に指定して切り出す。等圧線と繋がっていて"
                           "候補にならない記号は、こちらで切り出す")
-    cut.add_argument("--pad", type=int, default=0,
-                     help="--box の四方に足す余白(画素)。記号が見切れるときに増やす。"
-                          "余分な背景は一致スコアをあまり下げないので、多めでよい")
+    cut.add_argument("--pad", type=int, default=40,
+                     help="--box の四方に足す探索の余裕(画素)。記号を探す範囲を"
+                          "広げるだけで、テンプレートの大きさは --fit が決める")
+    cut.add_argument("--no-fit", dest="fit", action="store_false",
+                     help="枠を記号に合わせず、--box と --pad をそのまま使う")
     cut.add_argument("--band", default="isobar", choices=sorted(DEFAULT_BANDS))
     cut.add_argument("--erode", type=int, default=0)
     cut.add_argument("--max-side", type=int, default=64)
