@@ -126,6 +126,7 @@ scripts/
   check_alignment.py  # 天気図が日付をまたいで画素単位で揃っているかを測る
   build_features.py   # 検出結果から Phase 3 の特徴量CSVを作る
   cv_features.py      # 特徴量で分類し交差検証(Phase 4)。既存CNNと同じ形で出力
+  feature_report.py   # どの特徴量がどのラベルの手がかりかをAUCで測る
   explain_date.py     # 日付を1つ指定して天気図・Grad-CAM・確信度を書き出す
   auto_label_era5.py  # ERA5気圧場からの規則ベース自動ラベリング
 src/
@@ -151,6 +152,7 @@ docs/
   2026-08-26-stale-run-comparisons.md # 別のラベルで測った結果を比べていた件
   2026-08-26-detection-plan.md      # 物体検出を経由する方式の計画と引き継ぎ
   2026-08-26-detection-prescreen.md # 上の計画の下見。色とテンプレートで取れるか測った
+  2026-08-27-features-vs-cnn.md   # 検出した特徴量での分類を既存CNNと比べた結果
 runs/             # 交差検証の出力。summary.jsonだけ追跡する
                   # (2026-08-26に過去分を削除。docs/2026-08-26-stale-run-comparisons.md)
 webapp/

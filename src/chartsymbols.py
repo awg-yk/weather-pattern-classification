@@ -209,7 +209,7 @@ def estimate_shift(reference: np.ndarray, target: np.ndarray) -> tuple[float, fl
     return float(dx), float(dy), float(response)
 
 
-def label_auc(values: list[float], has_label: list[bool]) -> float:
+def label_auc(values: list, has_label: list) -> float:
     """ラベルの有無を測定値だけでどれだけ分けられるかを返す(ROC-AUC)。
 
     しきい値を決めずに順位だけで測るので、値の単位に依らない。
@@ -218,17 +218,31 @@ def label_auc(values: list[float], has_label: list[bool]) -> float:
     しきい値最適化つきの本評価は `src/evaluate.py` の仕事で、これはその前の
     「そもそも信号があるか」を見るための道具である。**この数字を本評価の
     代わりに報告してはいけない。**
+
+    総当たりで数えると件数の積に比例して遅くなる(2432件で4.5億回)。
+    順位の和から求めれば同じ値が一度に出る。同じ値には平均順位を与えるので、
+    引き分けを0.5で数えるのと一致する。
     """
-    positives = [v for v, flag in zip(values, has_label) if flag]
-    negatives = [v for v, flag in zip(values, has_label) if not flag]
-    if not positives or not negatives:
+    values = np.asarray(values, dtype=np.float64)
+    positive = np.asarray(has_label, dtype=bool)
+    n_pos = int(positive.sum())
+    n_neg = int(positive.size - n_pos)
+    if n_pos == 0 or n_neg == 0:
         return float("nan")
-    wins = sum(
-        (p > n) + 0.5 * (p == n)
-        for p in positives
-        for n in negatives
-    )
-    return wins / (len(positives) * len(negatives))
+
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(values.size, dtype=np.float64)
+    ranks[order] = np.arange(1, values.size + 1, dtype=np.float64)
+    # 同じ値には平均順位を与える(引き分けを0.5で数えるのと同じ)
+    sorted_values = values[order]
+    start = 0
+    for end in range(1, sorted_values.size + 1):
+        if end == sorted_values.size or sorted_values[end] != sorted_values[start]:
+            if end - start > 1:
+                ranks[order[start:end]] = ranks[order[start:end]].mean()
+            start = end
+
+    return float((ranks[positive].sum() - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg))
 
 
 class MaskAccumulator:
