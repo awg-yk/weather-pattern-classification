@@ -251,6 +251,98 @@ foldごとの標準偏差(すでに出している)も、同じ目的で使え�
 3. **比べる前にばらつきを測る。**同じ条件を seed を変えて3回回す。
    1回1分なので、0.0x の差を追う前に必ずやること
 
+## 手元だけで進められること(Claude抜きの手順)
+
+判断基準まで書いてあるので、この節だけで進められる。
+
+### 1. 中心の印を入れる(一番効く見込み・作業30分)
+
+台風は最良の特徴量が `cold_length` 0.331 で、しかも前線の特徴量である。
+**台風固有の手がかりが皆無**なので、印を入れるまで上がらない
+(現在 0.196、CNNは0.879)。
+
+手順:
+
+1. 天気図を画像編集ソフトで開き、**ただの×**(高気圧の中心)と
+   **丸で囲んだ×**(低気圧・台風の中心)を切り出す。H/L と同じ要領で、
+   周りの等圧線は消す。3〜5個体ずつあるとよい
+2. `data\marks\` に `cross.png` `cross2.png` … `circled.png` `circled2.png` … と置く
+   (末尾の数字は自動でまとめて数える。白地に黒でも自動で反転する)
+3. 走らせる:
+
+```powershell
+python -m scripts.build_features --in-dir $processed_dir `
+    --templates data\templates --marks data\marks `
+    --out data\features_marks.csv --workers 8
+python -m scripts.cv_features --features data\features_marks.csv `
+    --years 2023 2024 2025 --bootstrap 10 --out runs\cv_marks
+python -m scripts.compare_runs runs\cv_baseline runs\cv_features_bs runs\cv_marks
+```
+
+**判断**: 台風の F1 が現在の 0.196 から、ばらつき(±0.067)の2倍
+つまり **0.33 以上**になれば効いている。ならなければ、印だけでは台風は
+取れないということなので、名前の文字(`STS 2405 MARIA`)を狙うことになる。
+
+印が入ると位置の主役が×に変わるので(`build_features` の `--marks`)、
+低気圧の誤検出が減って二つ玉低気圧(現在 0.237、±0.080)も動く見込みがある。
+**0.40 以上**なら効いている。
+
+### 2. オホーツク海高気圧に絞って追試する(作業10分)
+
+唯一 CNN を上回ったが 2.0σ で、foldごとに 0.49 / 0.49 / 0.28 と割れている。
+**このラベルだけを見て、勝ちが本物かを確かめる。**
+
+```powershell
+python -m scripts.feature_report --features data\features.csv --label okhotsk_high
+```
+
+`high_in_okhotsk_high` の AUC(前回 0.883)が下がっていないか。
+そのうえで `--bootstrap 30` にして幅を絞る:
+
+```powershell
+python -m scripts.cv_features --features data\features.csv `
+    --years 2023 2024 2025 --bootstrap 30 --out runs\cv_okhotsk
+```
+
+**判断**: 幅が ±0.04 程度まで絞れて差 +0.122 が 3σ を超えれば、
+勝ちは確定と言ってよい。
+
+### 3. 前線の重ね描きを目で見る(作業10分・未了のまま)
+
+停滞前線は AUC 0.923 だったが F1 は 0.619。**AUCは相関しか示さない。**
+緑の帯が本当に梅雨前線の位置に乗っているかは、まだ誰も見ていない。
+
+```powershell
+python -m scripts.extract_fronts --in-dir $tmp --limit 20 `
+    --overlay reports\fronts_check --labels data\labels_v2.csv
+```
+
+`reports\fronts_check` を数枚開く。**判断**: 緑が日本の南に帯状に
+乗っていれば合格。海岸線や等圧線を拾っていれば、色の帯を測り直す
+(`scripts/chart_palette.py`)。
+
+### 4. regions.csv の矩形を確認する(作業5分・計画からの宿題)
+
+矩形が**全画像に同じように効く**ことは確認済みだが、**正しい海域を
+指しているか**は未確認。オホーツク海高気圧が唯一の勝ちラベルなので、
+その矩形が本当にオホーツク海を指しているかは確かめる価値が高い。
+
+```powershell
+python -m scripts.regions_preview --image $processed_dir\Js_2024070100.png `
+    --out reports\regions_preview.png
+```
+
+**判断**: `okhotsk_high` の矩形が樺太の東・千島列島の西・北海道の北に
+乗っているか。ずれていれば `data\regions.csv` の x0,y0,x1,y1 を直す。
+**直したら特徴量を作り直すこと**(`high_in_okhotsk_high` が変わる)。
+
+### やらなくてよいこと
+
+- **特徴量を1つ2つ足して回し直す。**効果(0.00x)がばらつき(0.011)より
+  小さく、読めない。実際に2つ足して +0.004 だった
+- **seed を変えて回す。**`HistGradientBoosting` は既定で部分抽出をしない
+  ので、結果は完全に同じになる。ばらつきは `--bootstrap` で測る
+
 ## この結果の読み方
 
 **「CNNのほうが良いので物体検出は筋が悪い」と読んではいけない。**
