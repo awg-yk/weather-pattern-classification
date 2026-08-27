@@ -38,6 +38,7 @@
 """
 
 import argparse
+import re
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -411,26 +412,47 @@ def cmd_cut(args):
           f"{int(template.sum())}px)")
 
 
-def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
-    templates = {}
-    for path in sorted(Path(template_dir).glob("*.png")):
-        arr = np.array(Image.open(path).convert("L"))
-        templates[path.stem] = arr > 127
-    if not templates:
-        raise SystemExit(
-            f"テンプレートがありません: {template_dir} (先に cluster か cut を実行)")
+# cluster が書き出す一覧。テンプレートではないので読み込みから外す。
+CONTACT_SHEET = "clusters"
 
-    # clusterNN のままのものが残っていたら、名前を付ける手順が抜けている。
-    # そのまま当てても、どれがHでどれがLか分からない数が並ぶだけになる。
-    unnamed = sorted(name for name in templates if name.startswith("cluster"))
+
+def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
+    """人が名前を付けたテンプレートだけを読む。
+
+    cluster が書き出したものは clusterNN.png のままで、どれがHでどれがLか
+    分からない。名前を付けたものが1つでもあればそちらだけを使い、番号のまま
+    のものは黙って無視せず、無視したと伝える。1つも名前が付いていなければ
+    手順が抜けているので止める。
+
+    一覧(clusters.png)は山の代表を並べた見るための画像で、テンプレートでは
+    ない。名前が cluster で始まるので、名指しで外す。
+    """
+    named: dict[str, np.ndarray] = {}
+    unnamed: list[str] = []
+    for path in sorted(Path(template_dir).glob("*.png")):
+        if path.stem == CONTACT_SHEET:
+            continue
+        if re.fullmatch(r"cluster\d+", path.stem):
+            unnamed.append(path.stem)
+            continue
+        named[path.stem] = np.array(Image.open(path).convert("L")) > 127
+
+    if named:
+        if unnamed:
+            print(f"番号のままの山 {len(unnamed)}個は使いません "
+                  f"({', '.join(unnamed[:5])}{'...' if len(unnamed) > 5 else ''})。")
+            print(f"  消すなら: Remove-Item {template_dir}\\cluster[0-9][0-9].png")
+        return named
+
     if unnamed:
         raise SystemExit(
-            f"名前を付けていないテンプレートがあります: {', '.join(unnamed)}\n"
-            f"{template_dir}/ の小さなPNGを見て、H なら H.png に、L なら L.png に\n"
+            f"名前を付けていないテンプレートしかありません: {', '.join(unnamed)}\n"
+            f"{template_dir}/ の clusters.png を見て、H なら H.png に、L なら L.png に\n"
             "付け替えてください。記号でない山(数字・目盛)は消してください。\n"
             "どの山がHでどれがLかは機械には分かりません。"
         )
-    return templates
+    raise SystemExit(
+        f"テンプレートがありません: {template_dir} (先に cluster か cut を実行)")
 
 
 def cmd_match(args):

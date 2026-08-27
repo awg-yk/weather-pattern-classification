@@ -560,15 +560,41 @@ def test_threshold_sweep_prefers_the_stricter_value_on_a_tie():
 
 # --- コピペで進めても壊れないこと ---------------------------------------
 
-def test_match_refuses_templates_that_were_never_named(tmp_path):
-    """clusterNN のまま当てても意味が無いので止める。
-
-    cluster が書いた山をそのまま match にかけると、どれがHでどれがLか
-    分からない数が並ぶだけになる。名前を付ける手順が抜けている合図。
-    """
+def test_match_refuses_when_nothing_was_ever_named(tmp_path):
+    """clusterNN しか無いなら、名前を付ける手順が抜けているので止める。"""
     from scripts.extract_symbols import load_templates
     Image.fromarray(np.zeros((8, 8), dtype=np.uint8)).save(tmp_path / "cluster00.png")
     with pytest.raises(SystemExit, match="名前を付けていない"):
+        load_templates(tmp_path)
+
+
+def test_named_templates_win_over_leftover_clusters(tmp_path):
+    """名前を付けたものが1つでもあれば、番号のままの山は使わず先へ進む。
+
+    cut で H.png と L.png を作っても、前の cluster の山が残っているだけで
+    止まっていた。名前を付けた側があるなら、それを使えばよい。
+    """
+    from scripts.extract_symbols import load_templates
+    white = Image.fromarray(np.full((8, 8), 255, dtype=np.uint8))
+    for name in ("H", "L", "cluster00", "cluster07"):
+        white.save(tmp_path / f"{name}.png")
+    assert sorted(load_templates(tmp_path)) == ["H", "L"]
+
+
+def test_the_contact_sheet_is_not_a_template(tmp_path):
+    """一覧(clusters.png)は見るための画像で、テンプレートではない。
+
+    名前が cluster で始まるので、番号のままの山と一緒に扱われていた。
+    """
+    from scripts.extract_symbols import load_templates
+    white = Image.fromarray(np.full((8, 8), 255, dtype=np.uint8))
+    white.save(tmp_path / "clusters.png")
+    white.save(tmp_path / "H.png")
+    assert sorted(load_templates(tmp_path)) == ["H"]
+
+    # 一覧しか無いときは「テンプレートが無い」になること
+    (tmp_path / "H.png").unlink()
+    with pytest.raises(SystemExit, match="テンプレートがありません"):
         load_templates(tmp_path)
 
 
