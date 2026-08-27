@@ -392,6 +392,7 @@ def cmd_grid(args):
 
 def cmd_cut(args):
     rgb = np.array(Image.open(args.image).convert("RGB"))
+    isolated = False
     if args.box:
         # 候補になっていない場所からでも切り出せる。等圧線と繋がってしまって
         # 連結成分として取れない記号は、この方法でテンプレートにするしかない。
@@ -436,9 +437,14 @@ def cmd_cut(args):
     print(f"{out_path} に保存 ({template.shape[1]}x{template.shape[0]}, "
           f"{int(template.sum())}px)")
     edge = touches_border(template)
-    if edge > 0.01:
+    if not isolated:
+        # 等圧線を切り離せなかったので、縁に線が掛かるのは当たり前。
+        # ここで見切れを疑うと、原因を見誤る。
+        print(f"縁の{edge:.1%}に太い線が掛かっているが、これは記号を横切る等圧線。"
+              "見切れではない。")
+    elif edge > 0.01:
         print(f"★縁の{edge:.1%}に太い線が掛かっている。記号が見切れている見込みが高い。")
-        print("  --pad を増やして切り直すこと。部分だけのテンプレートは"
+        print("  --box を広げて切り直すこと。部分だけのテンプレートは"
               "完全な記号にうまく当たらない。")
     else:
         print("縁に太い線は掛かっていない。記号は枠に収まっている。")

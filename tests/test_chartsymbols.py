@@ -1094,3 +1094,30 @@ def test_a_long_bold_isobar_is_not_taken_as_the_glyph():
     template, box, ok = glyph_only_template(mask, (296, 196, 394, 344))
     assert ok
     assert box[3] < 400                 # 下の等圧線まで枠が伸びていない
+
+
+def test_border_contact_is_not_called_clipping_when_isolation_failed(capsys):
+    """等圧線を切り離せなかったなら、縁に線が掛かるのは当たり前。
+
+    実測で、記号は見切れていないのに「見切れている」と報告していた。
+    縁に掛かっていたのは記号を横切る等圧線だった。
+    """
+    import argparse
+
+    from scripts.extract_symbols import cmd_cut
+
+    img = np.full((600, 900, 3), 255, dtype=np.uint8)
+    cv2.rectangle(img, (300, 200), (390, 340), BLACK, 7)
+    cv2.line(img, (0, 260), (899, 300), BLACK, 5, lineType=cv2.LINE_8)
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        chart = Path(tmp) / "Js_2024070100.png"
+        Image.fromarray(img).save(chart)
+        cmd_cut(argparse.Namespace(
+            image=chart, index=-1, box=[296, 196, 394, 344], name="L", pad=40,
+            fit=True, clean=True, out=tmp, band="isobar", erode=0, max_side=64,
+        ))
+    out = capsys.readouterr().out
+    assert "切り離せなかった" in out
+    assert "見切れではない" in out
+    assert "★" not in out
