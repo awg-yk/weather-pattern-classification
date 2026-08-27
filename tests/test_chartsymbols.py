@@ -1029,7 +1029,8 @@ def test_removing_isobars_helps_matching_the_other_instances():
     img = glyphs_with_their_own_isobars()
     mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
     plain = crop_template(img, (70, 140, 180, 300))
-    cleaned, _ = glyph_only_template(mask, (70, 140, 180, 300))
+    cleaned, _, isolated = glyph_only_template(mask, (70, 140, 180, 300))
+    assert isolated
 
     plain_hits = match_templates(img, {"L": plain}, threshold=0.5, angles=(0,))
     clean_hits = match_templates(img, {"L": cleaned}, threshold=0.5, angles=(0,))
@@ -1043,12 +1044,53 @@ def test_cleaned_template_holds_fewer_pixels_than_the_raw_crop():
     img = glyphs_with_their_own_isobars()
     mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
     plain = crop_template(img, (70, 140, 180, 300))
-    cleaned, _ = glyph_only_template(mask, (70, 140, 180, 300))
+    cleaned, _, isolated = glyph_only_template(mask, (70, 140, 180, 300))
+    assert isolated
     assert 0 < cleaned.sum() < plain.sum()
 
 
 def test_cleaning_falls_back_when_there_is_no_thick_ink():
     from src.chartsymbols import DEFAULT_BANDS, glyph_only_template, to_hsv
     mask = DEFAULT_BANDS["isobar"].mask(to_hsv(blank()))
-    template, box = glyph_only_template(mask, (10, 10, 60, 60))
+    template, box, isolated = glyph_only_template(mask, (10, 10, 60, 60))
     assert box == (10, 10, 60, 60) and not template.any()
+    assert not isolated
+
+
+def test_isolation_fails_loudly_when_a_bold_isobar_crosses_the_glyph():
+    """太い等圧線が記号を横切ると、細らせても1つの塊のままで分けられない。
+
+    黙って別の枠を返すと、見切れの判定が誤って反応して原因を見誤る。実測で
+    それが起き、記号は見切れていないのに「見切れている」と報告していた。
+    """
+    from src.chartsymbols import DEFAULT_BANDS, glyph_only_template, to_hsv
+
+    def scene(bold_crosses):
+        img = np.full((600, 900, 3), 255, dtype=np.uint8)
+        cv2.rectangle(img, (300, 200), (390, 340), BLACK, 7)
+        if bold_crosses:
+            cv2.line(img, (0, 260), (899, 300), BLACK, 5, lineType=cv2.LINE_8)
+        return img
+
+    box = (296, 196, 394, 344)
+    mask_clear = DEFAULT_BANDS["isobar"].mask(to_hsv(scene(False)))
+    _, _, ok_clear = glyph_only_template(mask_clear, box)
+    assert ok_clear
+
+    mask_crossed = DEFAULT_BANDS["isobar"].mask(to_hsv(scene(True)))
+    template, fallback_box, ok_crossed = glyph_only_template(mask_crossed, box)
+    assert not ok_crossed
+    assert fallback_box == box          # 指定された枠をそのまま返す
+    assert template.any()
+
+
+def test_a_long_bold_isobar_is_not_taken_as_the_glyph():
+    """図を横切る太い等圧線は枠より遥かに長いので、記号の塊として採らない。"""
+    from src.chartsymbols import DEFAULT_BANDS, glyph_only_template, to_hsv
+    img = np.full((600, 900, 3), 255, dtype=np.uint8)
+    cv2.rectangle(img, (300, 200), (390, 340), BLACK, 7)
+    cv2.line(img, (0, 500), (899, 520), BLACK, 5, lineType=cv2.LINE_8)  # 離れた所
+    mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
+    template, box, ok = glyph_only_template(mask, (296, 196, 394, 344))
+    assert ok
+    assert box[3] < 400                 # 下の等圧線まで枠が伸びていない

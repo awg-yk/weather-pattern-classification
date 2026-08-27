@@ -406,8 +406,15 @@ def cmd_cut(args):
         mask = DEFAULT_BANDS[args.band].mask(to_hsv(rgb))
         if args.clean:
             # 記号の線だけを残す。枠の大きさを詰めるより、等圧線を消すほうが効く
-            template, fitted = glyph_only_template(mask, (x0, y0, x1, y1))
-            print(f"記号の線だけを残した: ({x0},{y0},{x1},{y1}) -> {fitted}")
+            template, fitted, isolated = glyph_only_template(mask, tuple(args.box))
+            if isolated:
+                print(f"記号の線だけを残した: {tuple(args.box)} -> {fitted} "
+                      f"(等圧線を除いた)")
+            else:
+                print(f"記号を等圧線から切り離せなかった: {tuple(args.box)} を"
+                      "そのまま使う。")
+                print("  太い等圧線が記号の上を横切ると、細らせても1つの塊のまま"
+                      "になる。連結成分では分けられない。")
         else:
             if args.fit:
                 fitted = fit_glyph_box(mask, (x0, y0, x1, y1))

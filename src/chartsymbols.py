@@ -696,40 +696,64 @@ def fit_glyph_box(mask: np.ndarray, box: tuple, erode: int = 2,
             min(mask.shape[0], fitted[3] + grow))
 
 
+# 記号の塊とみなす大きさの上限。指定した枠の何倍まで許すか。
+# 図を横切る太い等圧線は枠より遥かに長くなるので、これで落ちる。
+GLYPH_SIZE_SLACK = 1.5
+
+
 def glyph_only_template(mask: np.ndarray, box: tuple, erode: int = 2,
-                       min_pixels: int = 40) -> tuple:
+                        min_pixels: int = 40, search: tuple | None = None) -> tuple:
     """記号の線だけを残したテンプレートと、その枠を返す。
 
     枠の大きさをいくら調整しても、記号の周りや上を通る等圧線がテンプレートに
     入る。等圧線の模様は場所ごとに違うので、そのぶん一致スコアが下がる。
     実測では枠を広げるほど当たりが悪くなった。
 
-        元の切り出し(95x117)    1枚あたり5.3個
-        余白35画素(165x187)     1枚あたり3.4個
+        元の切り出し(95x117)      1枚あたり5.3個
+        余白35画素(165x187)       1枚あたり3.4個
         枠を自動で合わせた(175x197) 1枚あたり2.6個
 
     枠を小さくするのではなく、**等圧線そのものを消す**。細らせて残った太い
-    塊(記号の線)だけを採り、太らせて元の太さに戻す。細い等圧線は細らせた
-    時点で消えているので戻ってこない。
+    塊だけを採り、太らせて元の太さに戻す。細い等圧線は細らせた時点で消える。
+
+    採る塊は2つの条件で絞る。**枠に掛かるだけでは足りない**。図を端から端まで
+    横切る太い等圧線は必ず枠に掛かるので、それだけでは落ちない。
+
+      - 重心が指定した枠の中にあること (隣の×印を除くため)
+      - 大きさが枠の GLYPH_SIZE_SLACK 倍を超えないこと (長い等圧線を除くため)
+
+    **切り出せないことがある。**太い等圧線が記号の上を横切ると、細らせても
+    1つの塊のままで、連結成分では分けられない。そのときは指定された枠を
+    そのまま返し、3つめの返り値を False にする。黙って別の枠を返すと、
+    見切れの判定が誤って反応して原因を見誤る。
+
+    返り値は (テンプレート, 枠, 切り出せたか)。
     """
     x0, y0, x1, y1 = box
+    box_w, box_h = x1 - x0, y1 - y0
     kernel = np.ones((2 * erode + 1, 2 * erode + 1), np.uint8)
     thick = cv2.erode(mask.astype(np.uint8), kernel).astype(bool)
 
-    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+    count, labels, stats, centroids = cv2.connectedComponentsWithStats(
         thick.astype(np.uint8), connectivity=8)
     keep = np.zeros(count, dtype=bool)
     for i in range(1, count):
-        bx = int(stats[i, cv2.CC_STAT_LEFT])
-        by = int(stats[i, cv2.CC_STAT_TOP])
-        bw = int(stats[i, cv2.CC_STAT_WIDTH])
-        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
         if stats[i, cv2.CC_STAT_AREA] < min_pixels:
             continue
-        if bx < x1 and bx + bw > x0 and by < y1 and by + bh > y0:
-            keep[i] = True
+        w = int(stats[i, cv2.CC_STAT_WIDTH])
+        h = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if w > GLYPH_SIZE_SLACK * box_w or h > GLYPH_SIZE_SLACK * box_h:
+            continue                       # 図を横切る等圧線
+        cx, cy = centroids[i]
+        if not (x0 <= cx <= x1 and y0 <= cy <= y1):
+            continue                       # 隣の×印や別の記号
+        keep[i] = True
+
     if not keep.any():
-        return mask[y0:y1, x0:x1], box
+        # 記号を切り出せなかった。太い等圧線が記号の上を横切ると、細らせても
+        # 1つの塊のままで、連結成分では分けられない。指定された枠をそのまま
+        # 使う。実測では、この素朴な切り出しが一番よく当たっている。
+        return mask[y0:y1, x0:x1], box, False
 
     glyph = cv2.dilate(keep[labels].astype(np.uint8), kernel).astype(bool)
     glyph &= mask                      # 太らせすぎた分を元のインクで抑える
@@ -737,7 +761,7 @@ def glyph_only_template(mask: np.ndarray, box: tuple, erode: int = 2,
     fitted = (max(0, int(xs.min()) - FIT_MARGIN), max(0, int(ys.min()) - FIT_MARGIN),
               min(mask.shape[1], int(xs.max()) + 1 + FIT_MARGIN),
               min(mask.shape[0], int(ys.max()) + 1 + FIT_MARGIN))
-    return glyph[fitted[1]:fitted[3], fitted[0]:fitted[2]], fitted
+    return glyph[fitted[1]:fitted[3], fitted[0]:fitted[2]], fitted, True
 
 
 def touches_border(template: np.ndarray, erode: int = 2) -> float:
