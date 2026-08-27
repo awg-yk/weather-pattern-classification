@@ -1,4 +1,4 @@
-"""Phase 3: 天気図から検出を行い、分類用の特徴量CSVを作る。
+r"""Phase 3: 天気図から検出を行い、分類用の特徴量CSVを作る。
 
 `scripts/cv_features.py`(Phase 4)の入力になる。
 
@@ -17,6 +17,11 @@
 
 ただし**中心が枠外の系には×が描かれず文字だけになる**。その分は H/L から
 拾い、位置を主張しない特徴量(n_edge_high / n_edge_low)として数える。
+
+印は文字と**別の倍率**で当てる(`--mark-scale`、既定1.0=原寸)。印は約31x31
+しかなく、文字(約95x117)に効く 0.7 では22x22になって丸と×の細部が潰れる。
+その分だけ遅くなるが、印が当たらないと `analyse_chart` は位置の主役を印に
+切り替えたまま何も見つけられず、**文字から得ていた位置の情報まで失う**。
 
 速さ
 ----
@@ -123,8 +128,14 @@ def load_templates_scaled(directory: Path, scale: float) -> dict:
 
 
 def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
-                  threshold: float, angle_range: float, angle_step: float) -> ChartDetections:
-    """1枚から検出結果を取り出す。位置はすべて相対座標(0〜1)。"""
+                  threshold: float, angle_range: float, angle_step: float,
+                  mark_scale: float = 1.0) -> ChartDetections:
+    """1枚から検出結果を取り出す。位置はすべて相対座標(0〜1)。
+
+    文字と印で倍率を変えられる。**印は文字よりずっと小さい**(印は約31x31、
+    H/L の文字は約95x117)ので、文字に効く 0.7 は印には粗すぎる
+    (印は22x22になり、丸と×の細部が潰れる)。既定では印は原寸で当てる。
+    """
     from scripts.extract_symbols import symbol_of
 
     rgb = np.array(Image.open(path).convert("RGB"))
@@ -135,20 +146,22 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
     front_segments = {name: segments(cleaned[name], name) for name in FRONT_BANDS}
     stationary = clean_mask(stationary_mask(cleaned["warm_front"], cleaned["cold_front"]))
 
-    small = shrink(ink_image(rgb), scale)
+    ink = ink_image(rgb)
     angles = np.arange(-angle_range, angle_range + angle_step, angle_step)
 
-    def positions(templates: dict) -> dict:
+    def positions(templates: dict, image_scale: float) -> dict:
         if not templates:
             return {}
-        hits = match_templates(small, templates, threshold=threshold, angles=angles)
+        # cx / cy は画像の幅・高さで割った相対座標なので、倍率が違っても比べられる
+        hits = match_templates(shrink(ink, image_scale), templates,
+                               threshold=threshold, angles=angles)
         grouped: dict = {}
         for hit in hits:
             grouped.setdefault(symbol_of(hit.label), []).append((hit.cx, hit.cy))
         return grouped
 
-    letter_pos = positions(letters)
-    mark_pos = positions(marks)
+    letter_pos = positions(letters, scale)
+    mark_pos = positions(marks, mark_scale)
 
     if mark_pos:
         # 中心の印があるならそちらが位置の主役。文字は枠外の系を拾うのに使う
@@ -168,21 +181,27 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
     )
 
 
-def _init_worker(template_dir, mark_dir, scale):
+def _init_worker(template_dir, mark_dir, scale, mark_scale):
     _WORKER["letters"] = load_templates_scaled(Path(template_dir), scale)
     warn_about_misplaced_marks(_WORKER["letters"])
-    _WORKER["marks"] = load_templates_scaled(Path(mark_dir), scale) if mark_dir else {}
+    _WORKER["marks"] = (load_templates_scaled(Path(mark_dir), mark_scale)
+                        if mark_dir else {})
     _WORKER["regions"] = load_regions()
     _WORKER["scale"] = scale
+    _WORKER["mark_scale"] = mark_scale
 
 
 def _run_one(job) -> tuple:
     path, threshold, angle_range, angle_step = job
     detections = analyse_chart(
         Path(path), _WORKER["letters"], _WORKER["marks"], _WORKER["scale"],
-        threshold, angle_range, angle_step,
+        threshold, angle_range, angle_step, _WORKER["mark_scale"],
     )
-    return Path(path).name, to_row(detections, _WORKER["regions"])
+    counts = {
+        "high": len(detections.highs), "low": len(detections.lows),
+        "edge_high": len(detections.edge_highs), "edge_low": len(detections.edge_lows),
+    }
+    return Path(path).name, to_row(detections, _WORKER["regions"]), counts
 
 
 def already_done(out_path: Path) -> set:
@@ -205,7 +224,9 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--limit", type=int, default=0, help="先頭から何枚まで(0で全部)")
     parser.add_argument("--scale", type=float, default=0.7,
-                        help="記号を探すときの縮小率。0.7で速さ2.7倍、検出は変わらなかった")
+                        help="H/L の文字を探すときの縮小率。0.7で速さ2.7倍、検出は変わらなかった")
+    parser.add_argument("--mark-scale", type=float, default=1.0,
+                        help="中心の印を探すときの縮小率。印は約31x31しかないので既定は原寸")
     parser.add_argument("--threshold", type=float, default=0.65)
     parser.add_argument("--angle-range", type=float, default=60.0)
     parser.add_argument("--angle-step", type=float, default=5.0)
@@ -238,12 +259,17 @@ def main():
 
     started = time()
     written = 0
+    # 何個拾えたかを数える。**印を入れて成績が落ちたときに、それが
+    # 「印が当たっていない」せいなのかを、ここの数字で切り分けられる。**
+    tally = {"high": 0, "low": 0, "edge_high": 0, "edge_low": 0}
     with ProcessPoolExecutor(
         max_workers=args.workers,
         initializer=_init_worker,
-        initargs=(args.templates, args.marks, args.scale),
+        initargs=(args.templates, args.marks, args.scale, args.mark_scale),
     ) as pool, open(out_path, "a", encoding="utf-8") as handle:
-        for name, row in pool.map(_run_one, jobs, chunksize=4):
+        for name, row, counts in pool.map(_run_one, jobs, chunksize=4):
+            for key, value in counts.items():
+                tally[key] += value
             handle.write(name + "," + ",".join(_format(v) for v in row) + "\n")
             handle.flush()      # 途中で止めても、ここまでは残す
             written += 1
@@ -255,6 +281,12 @@ def main():
                       f"{rate:.1f}秒/枚  残り{left / 60:.0f}分", flush=True)
 
     print(f"\n書き出しました: {out_path.resolve()} ({len(done) + written}件)")
+    print("1枚あたりの検出数(この回に処理したぶんだけ):")
+    for key, value in tally.items():
+        print(f"  {key:10s} {value / max(1, written):.2f}")
+    if args.marks and (tally["high"] + tally["low"]) / max(1, written) < 1.0:
+        print("★印がほとんど当たっていません。--mark-scale を上げるか "
+              "--threshold を下げてください。")
     print("次はこれで交差検証する:")
     print(f"  python -m scripts.cv_features --features {args.out} "
           "--years 2023 2024 2025 --out runs\\cv_features")

@@ -309,6 +309,98 @@ def test_marks_take_over_as_the_position_source(tmp_path):
     assert with_marks.edge_highs == []       # H の文字は縁に無いので数えない
 
 
+def test_marks_are_matched_at_their_own_scale(tmp_path):
+    """印は文字と別の倍率で当てられること。
+
+    印は約31x31、H/L の文字は約95x117。文字に効く 0.7 は印には粗すぎて
+    22x22 になり、丸と×の細部が潰れる。ここが繋がっていないと、印を渡した
+    ときだけ位置の情報が消え、成績が静かに落ちる(実測 0.403 -> 0.321)。
+    """
+    from PIL import Image
+
+    from scripts.build_features import analyse_chart
+
+    chart = tmp_path / "Js_2024070100.png"
+    Image.fromarray(synthetic_chart_with(1, 1, stationary=False)).save(chart)
+    letters = {"H": glyph_template("H")}
+    marks = {"cross": glyph_template("L")}
+
+    # 文字は縮めて、印は原寸で当てる。どちらも見つかる
+    det = analyse_chart(chart, letters, marks, scale=0.7, threshold=0.65,
+                        angle_range=20, angle_step=5, mark_scale=1.0)
+    assert len(det.highs) == 1
+
+    # cx / cy は相対座標なので、倍率が違っても同じ場所を指す
+    same = analyse_chart(chart, letters, marks, scale=1.0, threshold=0.65,
+                         angle_range=20, angle_step=5, mark_scale=1.0)
+    assert det.highs[0] == pytest.approx(same.highs[0], abs=0.01)
+
+
+def test_build_features_counts_what_it_found(tmp_path):
+    """検出数を数えて返すこと。
+
+    印を入れて成績が落ちたときに、それが「印が当たっていない」せいなのかを
+    切り分けられるようにする。**数字が無いと、悪化の原因を推測で語ることになる。**
+    """
+    from PIL import Image
+
+    from scripts import build_features
+
+    chart = tmp_path / "Js_2024070100.png"
+    Image.fromarray(synthetic_chart_with(2, 1, stationary=False)).save(chart)
+    build_features._WORKER.update(
+        letters={"H": glyph_template("H"), "L": glyph_template("L")},
+        marks={}, regions=load_regions(), scale=1.0, mark_scale=1.0,
+    )
+    _, _, counts = build_features._run_one((str(chart), 0.65, 20, 5))
+    assert set(counts) == {"high", "low", "edge_high", "edge_low"}
+    assert counts["high"] + counts["edge_high"] == 2
+
+
+# --- 退化した特徴量に対する守り ------------------------------------------
+
+def test_all_nan_column_is_dropped_before_fitting():
+    """1つも値が無い列を落とすこと。定数列は落とさないこと。
+
+    HistGradientBoosting は欠測を扱えるが、全部NaNの列だけは扱えず
+    `window shape cannot be larger than input array shape` で落ちる。
+    ブートストラップで学習データを取り直すと、希な特徴量がたまたま全滅する。
+    """
+    from scripts.cv_features import drop_empty_columns
+
+    train = np.array([[1.0, np.nan, 5.0], [2.0, np.nan, 5.0]])
+    apply = np.array([[3.0, 9.0, 5.0]])
+    kept_train, kept_apply = drop_empty_columns(train, apply)
+    assert kept_train.shape[1] == 2 and kept_apply.shape[1] == 2
+    assert kept_train[0].tolist() == [1.0, 5.0]     # 定数列(5.0)は残る
+    assert kept_apply[0].tolist() == [3.0, 5.0]     # 検証側も同じ列を落とす
+
+
+def test_fit_predict_survives_an_all_nan_feature():
+    """全部NaNの列があっても学習が通ること(落ちていた経路そのもの)。"""
+    from scripts.cv_features import fit_predict
+
+    rng = np.random.default_rng(0)
+    X = np.column_stack([rng.normal(size=40), np.full(40, np.nan)])
+    y = np.zeros((40, len(LABELS)), dtype=int)
+    y[X[:, 0] > 0, 0] = 1
+    probs = fit_predict(X, y, X, "hgb", seed=0)
+    assert probs.shape == (40, len(LABELS))
+    assert np.isfinite(probs).all()
+
+
+def test_fit_predict_survives_when_every_feature_is_empty():
+    """使える特徴量が1つも無いときは、落ちずに確率0を返すこと。"""
+    from scripts.cv_features import fit_predict
+
+    X = np.full((10, 3), np.nan)
+    y = np.zeros((10, len(LABELS)), dtype=int)
+    y[:5, 0] = 1
+    probs = fit_predict(X, y, X, "hgb", seed=0)
+    assert probs.shape == (10, len(LABELS))
+    assert (probs == 0).all()
+
+
 # --- しきい値を決める検証データの季節 ------------------------------------
 
 def test_val_mode_tail_misses_the_summer(tmp_path):

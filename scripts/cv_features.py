@@ -103,6 +103,23 @@ def make_model(kind: str, seed: int):
     )
 
 
+def drop_empty_columns(X_train: np.ndarray, X_apply: np.ndarray):
+    """学習側が全部NaNの列を、両方から落とす。
+
+    HistGradientBoosting は欠測を扱えるが、**1つも値が無い列**だけは扱えず
+    `ValueError: window shape cannot be larger than input array shape` で落ちる
+    (定数列は通る。確かめ済み)。ブートストラップで学習データを取り直すと、
+    もともと希な特徴量がたまたま全滅してここに落ちる。
+
+    落とすのは学習側を見て決める。検証側だけ全部NaNの列は、木が使わないだけで
+    害が無いので残す。
+    """
+    keep = ~np.all(np.isnan(X_train), axis=0)
+    if keep.all():
+        return X_train, X_apply
+    return X_train[:, keep], X_apply[:, keep]
+
+
 def fit_predict(X_train, y_train, X_apply, kind: str, seed: int) -> np.ndarray:
     """ラベルごとに分類器を作り、確率を並べて返す。
 
@@ -110,6 +127,9 @@ def fit_predict(X_train, y_train, X_apply, kind: str, seed: int) -> np.ndarray:
     二値分類にする。`src/labels.py` の「ラベルの併用についての決まり」を参照。
     """
     probs = np.zeros((len(X_apply), len(LABELS)), dtype=np.float64)
+    X_train, X_apply = drop_empty_columns(X_train, X_apply)
+    if X_train.shape[1] == 0:
+        return probs        # 使える特徴量が1つも無い。全部0のまま返す
     for i, label in enumerate(LABELS):
         column = y_train[:, i]
         if column.sum() == 0:

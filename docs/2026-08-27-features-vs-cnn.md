@@ -268,7 +268,19 @@ foldごとの標準偏差(すでに出している)も、同じ目的で使え�
    周りの等圧線は消す。3〜5個体ずつあるとよい
 2. `data\marks\` に `cross.png` `cross2.png` … `circled.png` `circled2.png` … と置く
    (末尾の数字は自動でまとめて数える。白地に黒でも自動で反転する)
-3. 走らせる:
+3. **まず20枚で当たり具合を見る**(全部走らせる前に。1〜2分):
+
+```powershell
+python -m scripts.build_features --in-dir $processed_dir `
+    --templates data\templates --marks data\marks `
+    --out data\check_marks.csv --limit 20 --workers 4
+```
+
+最後に1枚あたりの検出数が出る。**high + low が 1.0 を下回るなら印が
+当たっていない**ので、先に `--mark-scale` や `--threshold` を調整する。
+当たっていれば `data\check_marks.csv` を消して本番へ。
+
+4. 走らせる:
 
 ```powershell
 python -m scripts.build_features --in-dir $processed_dir `
@@ -309,6 +321,22 @@ python -m scripts.compare_runs runs\cv_baseline runs\cv_features_bs runs\cv_mark
 印は小さく丸い塊で、閉じた等圧線の内側にあって線と重なりにくい。**H/L と
 違って `cut --box` がそのまま使える**(黒の帯で切り出すので前線は自動的に
 除かれる)。手で消すより確実である。
+
+**印は文字より小さいので、縮小率を分ける。**実測で、H/L の文字は約95x117
+だが中心の印は約31x31しかない。文字に効く `--scale 0.7` を印にも当てると
+22x22になり、丸と×の細部が潰れる。`--mark-scale`(既定1.0=原寸)で分けた。
+
+最初にこれを分けずに走らせたとき、2023年foldの macro F1 が印なしの
+**0.403 から 0.321 に落ちた**。`analyse_chart` はその画像で印が1つでも
+当たれば位置の主役を印に切り替えるので、**印が半端にしか当たらないと、
+文字から得ていた位置の情報まで失う**。悪化はここが原因の可能性が高い。
+だから本番の前に20枚で検出数を見ること(上の手順3)。
+
+**全部NaNの列があると学習が落ちる。**`ValueError: window shape cannot be
+larger than input array shape` が `bootstrap_spread` の中から出る。
+HistGradientBoosting は欠測を扱えるが、1つも値が無い列だけは扱えない
+(定数列は通る)。ブートストラップで学習データを取り直すと、希な特徴量が
+たまたま全滅してここに落ちる。`drop_empty_columns` で落とすようにした。
 
 ### 2. オホーツク海高気圧に絞って追試する(作業10分)
 
