@@ -768,3 +768,60 @@ def test_cut_by_box_works_without_any_candidate(tmp_path):
     ))
     saved = np.array(Image.open(tmp_path / "L.png").convert("L")) > 127
     assert saved.any() and saved.shape == (110, 70)
+
+
+# --- 傾きの違う記号 -----------------------------------------------------
+
+def tilted_glyphs(angles=(0, 20, -25)):
+    """同じ記号を、傾きを変えて並べた図。天気図の記号は傾きが揃っていない。"""
+    img = np.full((500, 900, 3), 255, dtype=np.uint8)
+    for x, angle in zip((100, 400, 700), angles):
+        tile = np.full((200, 200, 3), 255, dtype=np.uint8)
+        cv2.rectangle(tile, (60, 40), (140, 160), BLACK, 7)
+        matrix = cv2.getRotationMatrix2D((100, 100), angle, 1.0)
+        img[150:350, x:x + 200] = cv2.warpAffine(
+            tile, matrix, (200, 200), borderValue=(255, 255, 255))
+    return img
+
+
+def one_template_from(img):
+    c = glyph_candidates(img, max_side=200)[0]
+    return crop_template(img, (c.x0, c.y0, c.x1, c.y1))
+
+
+def test_matching_without_rotation_only_finds_the_one_it_was_cut_from():
+    """実測でこれが起きた。切り出した記号だけがスコア1.00で当たり、他は
+    しきい値を0.5まで下げても当たらなかった。"""
+    img = tilted_glyphs()
+    hits = match_templates(img, {"L": one_template_from(img)}, threshold=0.5)
+    assert len(hits) == 1
+    assert hits[0].score == pytest.approx(1.0)
+
+
+def test_rotating_the_template_finds_the_tilted_ones():
+    img = tilted_glyphs()
+    hits = match_templates(img, {"L": one_template_from(img)}, threshold=0.6,
+                           angles=range(-50, 55, 5))
+    assert len(hits) == 3
+    assert min(h.score for h in hits) > 0.9
+
+
+def test_a_ten_degree_step_is_too_coarse():
+    """5度ずれると一致スコアが0.72まで落ちる。刻みは5度が目安。"""
+    img = tilted_glyphs()
+    coarse = match_templates(img, {"L": one_template_from(img)}, threshold=0.6,
+                             angles=range(-50, 60, 10))
+    fine = match_templates(img, {"L": one_template_from(img)}, threshold=0.6,
+                           angles=range(-50, 55, 5))
+    assert len(coarse) == len(fine) == 3
+    assert min(h.score for h in coarse) < min(h.score for h in fine)
+
+
+def test_rotate_template_keeps_every_pixel():
+    """回しても角が切れないこと(画布を広げている)。"""
+    from src.chartsymbols import rotate_template
+    template = np.zeros((20, 30), dtype=bool)
+    template[5:15, 5:25] = True
+    turned = rotate_template(template, 45)
+    assert turned.shape[0] > 20 and turned.shape[1] > 30
+    assert turned.sum() == pytest.approx(template.sum(), rel=0.2)

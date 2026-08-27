@@ -460,13 +460,18 @@ def cmd_match(args):
     print("テンプレート: " + ", ".join(
         f"{k}({v.shape[1]}x{v.shape[0]})" for k, v in templates.items()))
     template_sizes = [(v.shape[1], v.shape[0]) for v in templates.values()]
+    angles = np.arange(-args.angle_range, args.angle_range + args.angle_step,
+                       args.angle_step)
+    print(f"テンプレートを {angles[0]:+.0f}度から{angles[-1]:+.0f}度まで "
+          f"{args.angle_step}度刻みで回して当てる ({len(angles)}通り)。")
 
     per_label = Counter()
     n_images = 0
     n_candidates = 0
     for path in iter_images(args.in_dir, args.limit):
         rgb = np.array(Image.open(path).convert("RGB"))
-        hits = match_templates(rgb, templates, threshold=args.threshold)
+        hits = match_templates(rgb, templates, threshold=args.threshold,
+                               angles=angles)
         found = Counter(h.label for h in hits)
         per_label.update(found)
         n_images += 1
@@ -477,7 +482,9 @@ def cmd_match(args):
                    for w, h in template_sizes)
         )
         detail = ", ".join(f"{k}={v}" for k, v in sorted(found.items())) or "なし"
-        print(f"{path.name:24s} {detail}")
+        tilt = ("  傾き " + ", ".join(f"{h.label}{h.angle:+.0f}度" for h in hits)
+                if hits else "")
+        print(f"{path.name:24s} {detail}{tilt}")
         if args.overlay:
             draw_boxes(rgb, hits, Path(args.overlay) / f"{path.stem}_match.png", False)
 
@@ -562,6 +569,11 @@ def main():
     match.add_argument("--in-dir", required=True)
     match.add_argument("--templates", default="data/templates")
     match.add_argument("--limit", type=int, default=20)
+    match.add_argument("--angle-range", type=float, default=50.0,
+                       help="テンプレートを何度まで回して当てるか。天気図の記号は"
+                            "傾きが揃っていないので、回さないと当たらない")
+    match.add_argument("--angle-step", type=float, default=5.0,
+                       help="回す刻み。10度にすると一致スコアが0.74まで落ちるので5度が目安")
     match.add_argument("--threshold", type=float, default=0.8,
                        help="テンプレートの一致スコアの下限。誤検出が多ければ上げる")
     match.add_argument("--overlay")
