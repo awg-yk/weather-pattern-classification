@@ -426,3 +426,6 @@ def test_bootstrap_moves_the_training_data_not_the_seed():
     assert spread["repeats"] == 4
     assert spread["min"] <= spread["mean"] <= spread["max"]
     assert spread["std"] >= 0.0
+    # ラベル別も返す。macroの幅では、あるラベルの勝ち負けが本物かを言えない
+    assert set(spread["per_label_std"]) == set(LABELS)
+    assert all(v >= 0.0 for v in spread["per_label_std"].values())

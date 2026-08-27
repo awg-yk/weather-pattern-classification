@@ -170,17 +170,24 @@ def bootstrap_spread(X, y, train, test, thresholds, kind: str, seed: int,
     """
     rng = np.random.default_rng(seed)
     scores = []
+    per_label: dict = {label: [] for label in LABELS}
     for _ in range(repeats):
         picked = rng.choice(train, size=len(train), replace=True)
         probs = fit_predict(X[picked], y[picked], X[test], kind, seed)
         preds = (probs > thresholds).astype(int)
         fold = evaluate_fold(y[test], preds, None)
         scores.append(fold["macro_f1_evaluable"])
+        for label in LABELS:
+            per_label[label].append(fold["per_label"][label]["f1"])
     arr = np.array(scores)
     return {
         "repeats": repeats,
         "min": float(arr.min()), "max": float(arr.max()),
         "mean": float(arr.mean()), "std": float(arr.std(ddof=1)),
+        # ラベル別も出す。macroの幅では、あるラベルの勝ち負けが本物かを言えない
+        "per_label_std": {
+            label: float(np.std(values, ddof=1)) for label, values in per_label.items()
+        },
     }
 
 
@@ -267,12 +274,36 @@ def main():
         per_fold = ", ".join(f"{r[key]:.3f}" for r in results)
         print(f"  {name:<32} {summarize([r[key] for r in results])}   (各fold: {per_fold})")
 
+    # 学習データを取り直したときの幅も、まとめに出す。foldごとの出力にしか
+    # 出さないと、まとめだけを見て「この差は読めるのか」を判断できない
+    spreads = [r["bootstrap"] for r in results if "bootstrap" in r]
+    if spreads:
+        widest = max(s["std"] for s in spreads)
+        low = min(s["min"] for s in spreads)
+        high = max(s["max"] for s in spreads)
+        print(f"\n  学習データを取り直したときの幅(各fold {spreads[0]['repeats']}回): "
+              f"{low:.3f}〜{high:.3f}  標準偏差は最大 {widest:.3f}")
+        print(f"  ★これより小さい差は読めない。特徴量を足したときの比較はこの幅と見比べること。")
+
     print("\n【ラベル別 F1】")
+    has_bootstrap = any("bootstrap" in r for r in results)
+    if has_bootstrap:
+        print(f"  {'ラベル':<22} {'平均 ± fold間':<18} {'取り直しの幅':>12}  foldごと")
     for label in LABELS:
         f1s = [r["per_label"][label]["f1"] for r in results]
         supports = [r["per_label"][label]["support"] for r in results]
         detail = " ".join(f"{f:.2f}({s})" for f, s in zip(f1s, supports))
-        print(f"  {LABEL_JA[label]:<22} {summarize(f1s):<18} {detail}")
+        if has_bootstrap:
+            stds = [r["bootstrap"]["per_label_std"][label]
+                    for r in results if "bootstrap" in r]
+            widest = max(stds) if stds else float("nan")
+            print(f"  {LABEL_JA[label]:<22} {summarize(f1s):<18} "
+                  f"{'±' + format(widest, '.3f'):>12}  {detail}")
+        else:
+            print(f"  {LABEL_JA[label]:<22} {summarize(f1s):<18} {detail}")
+    if has_bootstrap:
+        print("\n  「取り直しの幅」は学習データを取り直したときの標準偏差(foldの最大)。")
+        print("  ラベルごとの勝ち負けは、この幅と見比べて読むこと。")
 
     summary_path = out_dir / "summary.json"
     summary_path.write_text(
