@@ -177,9 +177,16 @@ def build_features(detections: ChartDetections, regions: dict) -> dict:
     return values
 
 
-# 中心の印と H / L の文字を結びつける距離(相対座標)。実測で決めること。
-# `scripts/build_features.py` が処理のあとに距離の分布を出す。
-MARK_LETTER_RADIUS = 0.08
+# 中心の印と H / L の文字を結びつける距離(相対座標)。**実測で決めた値**で、
+# 当てずっぽうではない。20枚での印から一番近い文字までの距離は
+#
+#     10%:0.056  30%:0.067  50%:0.074  70%:0.081  80%:0.095  90%:0.134  100%:0.308
+#
+# 8割までが 0.095 以内に固まり、そこから先へ飛ぶ。0.10 はその固まりの外縁。
+# 広げすぎると、誤検出の印(数字の「4」「6」の交差など)が、中心が枠外の系の
+# 文字を横取りして偽の位置を作る。`scripts/build_features.py` が毎回この
+# 分布を出すので、データが変わったら見直すこと。
+MARK_LETTER_RADIUS = 0.10
 
 
 def assign_marks_to_letters(marks: list, letters: dict, radius: float = MARK_LETTER_RADIUS):
