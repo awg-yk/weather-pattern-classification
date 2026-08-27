@@ -167,6 +167,12 @@ def main():
     parser.add_argument("--gap-days", type=int, default=3,
                         help="テスト年からこの日数以内の学習データを除く(リーク防止)")
     parser.add_argument("--val-ratio", type=float, default=0.2)
+    parser.add_argument("--val-mode", default="tail", choices=("spread", "tail"),
+                        help="検証データの取り方。しきい値はここで決まる。"
+                             "tailは直近をまとめて取るので季節が偏る"
+                             "(実測では1〜4月と11〜12月しか入らなかった)。"
+                             "spreadは通年になるので、梅雨や台風のような季節性の"
+                             "強いラベルでもしきい値が偏らない")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -178,12 +184,16 @@ def main():
         splits = make_splits(
             merged, mode="loyo", test_year=test_year,
             val_ratio=args.val_ratio, gap_days=args.gap_days, seed=args.seed,
+            val_mode=args.val_mode,
         )
         train, val, test = splits["train"], splits["val"], splits["test"]
         print(f"\n=== fold: テスト={test_year}年 "
               f"(学習{len(train)} / 検証{len(val)} / テスト{len(test)}) ===")
 
-        # 閾値は検証データで決める。テストで決めるとテストに合わせたことになる
+        # 閾値は検証データで決める。テストで決めるとテストに合わせたことになる。
+        # **検証データの季節が偏ると、その季節にしか出ないラベルの閾値が
+        # 見当違いになる。**実測では tail だと1〜4月と11〜12月しか入らず、
+        # 停滞前線(梅雨・秋雨)はAUC 0.874の信号があるのにF1は0.516だった。
         val_probs = fit_predict(X[train], y[train], X[val], args.model, args.seed)
         thresholds = find_best_thresholds(val_probs, y[val])
 

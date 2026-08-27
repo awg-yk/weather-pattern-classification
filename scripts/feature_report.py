@@ -32,6 +32,40 @@ WEAK_AUC = 0.05
 KEY_COLUMNS = ("filename", "date", "parsed_datetime")
 
 
+def score_all(merged, columns: list, has: list) -> list:
+    """特徴量ごとの (0.5からの距離, AUC, 名前) を、強い順に返す。"""
+    scored = []
+    for name in columns:
+        values = merged[name].to_numpy(dtype=float)
+        # 欠測は中央値で埋める。極端な値にすると「欠測かどうか」を見ている
+        # だけの偽の信号が出る
+        if np.isnan(values).any():
+            values = np.where(np.isnan(values), np.nanmedian(values), values)
+        auc = label_auc(list(values), has)
+        if auc == auc:
+            scored.append((abs(auc - 0.5), auc, name))
+    scored.sort(reverse=True)
+    return scored
+
+
+def report_one_label(merged, columns: list, label: str) -> None:
+    """1ラベルについて、全特徴量をAUCの強い順に並べる。
+
+    上位だけを見ていると「期待した特徴量が効いていない」ことに気づけない。
+    実測では、二つ玉低気圧の手がかりが領域の在否であって、計画が挙げていた
+    低気圧の数(n_low)ではなかった。
+    """
+    if label not in LABELS:
+        raise SystemExit(f"未知のラベル: {label}。{LABELS} のいずれか。")
+    has = [label in str(t).split("|") for t in merged["label"].fillna("")]
+    print(f"{LABEL_JA[label]} (陽性 {sum(has)}件) の全特徴量\n")
+    print(f"{'特徴量':<34} {'AUC':>7}  {'0.5からの距離':>12}")
+    print("-" * 60)
+    for distance, auc, name in score_all(merged, columns, has):
+        mark = "  " if distance >= WEAK_AUC else "  (弱い)"
+        print(f"{name:<34} {auc:7.3f}  {distance:12.3f}{mark}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--features", required=True)
@@ -39,6 +73,7 @@ def main():
     parser.add_argument("--top", type=int, default=5, help="ラベルごとに何個まで出すか")
     parser.add_argument("--min-positive", type=int, default=20,
                         help="これ未満の陽性しか無いラベルは飛ばす")
+    parser.add_argument("--label", help="このラベルだけ、全特徴量を並べて出す")
     args = parser.parse_args()
 
     features = pd.read_csv(args.features)
@@ -50,6 +85,10 @@ def main():
     columns = [c for c in features.columns if c not in KEY_COLUMNS]
     print(f"{len(merged)}件、特徴量{len(columns)}個\n")
 
+    if args.label:
+        report_one_label(merged, columns, args.label)
+        return
+
     print(f"{'ラベル':<24} {'陽性':>5}  手がかりになっている特徴量 (AUC)")
     print("-" * 88)
     weak_labels = []
@@ -60,17 +99,7 @@ def main():
             print(f"{LABEL_JA[label]:<24} {n_pos:>5}  (件数が足りず測れない)")
             continue
 
-        scored = []
-        for name in columns:
-            values = merged[name].to_numpy(dtype=float)
-            # 欠測は中央値で埋める。AUCは順位で測るので、欠測を極端な値に
-            # すると「欠測かどうか」を見ているだけの偽の信号が出る
-            if np.isnan(values).any():
-                values = np.where(np.isnan(values), np.nanmedian(values), values)
-            auc = label_auc(list(values), has)
-            if auc == auc:
-                scored.append((abs(auc - 0.5), auc, name))
-        scored.sort(reverse=True)
+        scored = score_all(merged, columns, has)
 
         best = scored[:args.top]
         if not best or best[0][0] < WEAK_AUC:

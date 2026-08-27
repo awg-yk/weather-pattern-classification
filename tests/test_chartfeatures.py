@@ -306,3 +306,44 @@ def test_marks_take_over_as_the_position_source(tmp_path):
     with_marks = analyse_chart(chart, letters, marks, 1.0, 0.65, 20, 5)
     assert len(with_marks.highs) == 1        # cross が高気圧として入る
     assert with_marks.edge_highs == []       # H の文字は縁に無いので数えない
+
+
+# --- しきい値を決める検証データの季節 ------------------------------------
+
+def test_val_mode_tail_misses_the_summer(tmp_path):
+    """直近をまとめて検証にすると、季節が偏る。
+
+    実測で、検証データに1〜4月と11〜12月しか入らなかった。梅雨や秋雨の
+    停滞前線はAUC 0.874の信号があったのにF1は0.516に留まった。しきい値を
+    その季節のデータを見ずに決めていたためである。
+    """
+    import pandas as pd
+
+    from src.split import add_parsed_datetime, make_splits
+
+    days = pd.date_range("2023-01-01", "2025-12-31", freq="D")
+    df = add_parsed_datetime(pd.DataFrame({
+        "filename": [f"Js_{d.strftime('%Y%m%d')}00.png" for d in days],
+        "date": [d.strftime("%Y%m%d") for d in days],
+    }))
+
+    tail = make_splits(df, mode="loyo", test_year="2024", val_mode="tail")
+    spread = make_splits(df, mode="loyo", test_year="2024", val_mode="spread")
+
+    def months(rows):
+        return set(df.loc[rows, "parsed_datetime"].dt.month)
+
+    assert 7 not in months(tail["val"]), "tailで7月が入るなら、この前提が変わっている"
+    assert months(spread["val"]) >= set(range(1, 13)), "spreadは通年になるはず"
+
+
+def test_cv_features_passes_val_mode_through():
+    """--val-mode を受け取って make_splits に渡していること。
+
+    渡し忘れると既定のtailになり、季節性の強いラベルのしきい値が偏る。
+    黙って悪い結果が出るので、繋がっていることをここで縛る。
+    """
+    source = Path(__file__).resolve().parent.parent / "scripts" / "cv_features.py"
+    text = source.read_text(encoding="utf-8")
+    assert '"--val-mode"' in text
+    assert "val_mode=args.val_mode" in text
