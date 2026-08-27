@@ -26,6 +26,7 @@
 記号がある」ことだけを伝える特徴量で、位置そのものは主張しない。
 """
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -174,6 +175,69 @@ def build_features(detections: ChartDetections, regions: dict) -> dict:
         values[f"high_in_{label}"] = int(any(region.contains(x, y) for x, y in highs))
         values[f"low_in_{label}"] = int(any(region.contains(x, y) for x, y in lows))
     return values
+
+
+# 中心の印と H / L の文字を結びつける距離(相対座標)。実測で決めること。
+# `scripts/build_features.py` が処理のあとに距離の分布を出す。
+MARK_LETTER_RADIUS = 0.08
+
+
+def assign_marks_to_letters(marks: list, letters: dict, radius: float = MARK_LETTER_RADIUS):
+    """中心の印に、いちばん近い H / L の文字で種別を付ける。
+
+    **印の形では高低を見分けない。**丸で囲んだ×(低気圧)を `circle_cross`
+    テンプレートで拾おうとすると失敗する ― 図の側の丸は大きさも太さも
+    まちまちなので、丸ごと当てるテンプレートはしきい値を割る一方、丸の内側の
+    ×はいつでも完璧に当たる。結果として**低気圧がすべて高気圧として数えられる**
+    (実測: 1枚あたり高7.70 / 低0.20)。
+
+    そこで役割を分ける。**位置は印から、種別は文字から取る。**
+    ×は中心そのものなので位置として正しく、文字は形が安定していて種別として
+    正しい。どちらも得意なほうだけを使う。
+
+    近いものから順に1対1で組にする。返り値は3つ:
+
+    * 種別の付いた印 `{"H": [(cx, cy), ...], "L": [...]}`
+    * 組にならなかった文字(中心が枠外の系。×が描かれない)
+    * 組にならなかった印(種別が決まらないので位置としては使えない)
+    """
+    pairs = []
+    for i, mark in enumerate(marks):
+        for kind, points in letters.items():
+            for j, point in enumerate(points):
+                distance = math.dist(mark, point)
+                if distance <= radius:
+                    pairs.append((distance, i, kind, j))
+    pairs.sort()
+
+    typed: dict = {kind: [] for kind in letters}
+    used_marks: set = set()
+    used_letters: set = set()
+    for _, i, kind, j in pairs:
+        if i in used_marks or (kind, j) in used_letters:
+            continue
+        used_marks.add(i)
+        used_letters.add((kind, j))
+        typed[kind].append(marks[i])
+
+    spare_letters = {
+        kind: [point for j, point in enumerate(points) if (kind, j) not in used_letters]
+        for kind, points in letters.items()
+    }
+    orphan_marks = [mark for i, mark in enumerate(marks) if i not in used_marks]
+    return typed, spare_letters, orphan_marks
+
+
+def nearest_letter_distances(marks: list, letters: dict) -> list:
+    """印ごとに、いちばん近い文字までの距離を返す(半径を決めるための実測用)。
+
+    半径は当てずっぽうで決めてよい数ではない。狭すぎれば種別が付かず、
+    広すぎれば隣の系の文字を拾う。
+    """
+    points = [point for values in letters.values() for point in values]
+    if not points:
+        return []
+    return [min(math.dist(mark, point) for point in points) for mark in marks]
 
 
 def split_by_edge(points: list, margin: float = EDGE_MARGIN) -> tuple:

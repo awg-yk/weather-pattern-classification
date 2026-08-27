@@ -503,7 +503,7 @@ def as_template(gray: np.ndarray, label: str = "") -> np.ndarray:
     return ink
 
 
-def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
+def load_templates(template_dir: Path, quiet: bool = False) -> dict[str, np.ndarray]:
     """人が名前を付けたテンプレートだけを読む。
 
     cluster が書き出したものは clusterNN.png のままで、どれがHでどれがLか
@@ -525,7 +525,7 @@ def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
             unnamed.append(path.stem)
             continue
         named[path.stem] = as_template(np.array(Image.open(path).convert("L")),
-                                       path.name)
+                                       "" if quiet else path.name)
 
     if named:
         if unnamed:

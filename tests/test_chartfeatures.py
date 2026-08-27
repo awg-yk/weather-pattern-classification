@@ -263,8 +263,8 @@ def test_analyse_chart_recovers_what_was_drawn(tmp_path):
     Image.fromarray(synthetic_chart_with(2, 1, stationary=True)).save(chart)
     templates = {"H": glyph_template("H"), "L": glyph_template("L")}
 
-    det = analyse_chart(chart, templates, {}, scale=1.0, threshold=0.65,
-                        angle_range=20, angle_step=5)
+    det, _ = analyse_chart(chart, templates, {}, scale=1.0, threshold=0.65,
+                           angle_range=20, angle_step=5)
     assert len(det.highs) + len(det.edge_highs) == 2
     assert len(det.lows) + len(det.edge_lows) == 1
     assert det.stationary_pixels > 0
@@ -284,10 +284,12 @@ def test_shrinking_happens_on_the_binary_mask_not_the_colours():
     assert small.shape[0] == img.shape[0] // 2
 
 
-def test_marks_take_over_as_the_position_source(tmp_path):
-    """中心の印があるなら位置の主役はそちら。文字は枠外の系を拾うのに使う。
+def test_marks_supply_the_position_and_letters_supply_the_type(tmp_path):
+    """印は位置を、文字は種別を担うこと。
 
-    ×は中心そのものだが、H/L の文字は中心の近くに置かれたラベルである。
+    ×は中心そのものなので位置として正しく、文字は形が安定していて種別として
+    正しい。**印の形(丸の有無)で高低を見分けようとすると壊れる**ので、
+    種別はいちばん近い文字から取る。
     """
     from PIL import Image
 
@@ -298,15 +300,15 @@ def test_marks_take_over_as_the_position_source(tmp_path):
     letters = {"H": glyph_template("H"), "L": glyph_template("L")}
 
     # 印が無いときは文字の位置が中心として使われる
-    without = analyse_chart(chart, letters, {}, 1.0, 0.65, 20, 5)
+    without, _ = analyse_chart(chart, letters, {}, 1.0, 0.65, 20, 5)
     assert len(without.highs) == 1
 
-    # 印(ここでは L の形を cross として渡す)があるとそちらが主役になり、
-    # 文字からは縁のものだけを数える
-    marks = {"cross": glyph_template("L")}
-    with_marks = analyse_chart(chart, letters, marks, 1.0, 0.65, 20, 5)
-    assert len(with_marks.highs) == 1        # cross が高気圧として入る
-    assert with_marks.edge_highs == []       # H の文字は縁に無いので数えない
+    # 印が高気圧の場所に当たると、種別は近くの H から取られる
+    marks = {"mark": glyph_template("H")}
+    with_marks, report = analyse_chart(chart, letters, marks, 1.0, 0.65, 20, 5)
+    assert len(with_marks.highs) == 1
+    assert with_marks.edge_highs == []       # H の文字は印と組になったので余らない
+    assert report["marks"] == 1 and report["orphan_marks"] == 0
 
 
 def test_marks_are_matched_at_their_own_scale(tmp_path):
@@ -322,18 +324,20 @@ def test_marks_are_matched_at_their_own_scale(tmp_path):
 
     chart = tmp_path / "Js_2024070100.png"
     Image.fromarray(synthetic_chart_with(1, 1, stationary=False)).save(chart)
-    letters = {"H": glyph_template("H")}
-    marks = {"cross": glyph_template("L")}
+    letters = {"H": glyph_template("H"), "L": glyph_template("L")}
+    marks = {"mark": glyph_template("H")}
 
-    # 文字は縮めて、印は原寸で当てる。どちらも見つかる
-    det = analyse_chart(chart, letters, marks, scale=0.7, threshold=0.65,
-                        angle_range=20, angle_step=5, mark_scale=1.0)
-    assert len(det.highs) == 1
+    # 文字の倍率を変えても、印の当たり方は変わらない(別々に照合している)
+    _, full = analyse_chart(chart, letters, marks, scale=1.0, threshold=0.65,
+                            angle_range=20, angle_step=5, mark_scale=1.0)
+    _, mixed = analyse_chart(chart, letters, marks, scale=0.7, threshold=0.65,
+                             angle_range=20, angle_step=5, mark_scale=1.0)
+    assert full["marks"] == mixed["marks"] == 1
 
-    # cx / cy は相対座標なので、倍率が違っても同じ場所を指す
-    same = analyse_chart(chart, letters, marks, scale=1.0, threshold=0.65,
-                         angle_range=20, angle_step=5, mark_scale=1.0)
-    assert det.highs[0] == pytest.approx(same.highs[0], abs=0.01)
+    # 印を縮めると当たらなくなる。**これが 0.403 -> 0.321 の正体**
+    _, shrunk = analyse_chart(chart, letters, marks, scale=1.0, threshold=0.65,
+                              angle_range=20, angle_step=5, mark_scale=0.3)
+    assert shrunk["marks"] == 0
 
 
 def test_build_features_counts_what_it_found(tmp_path):
@@ -351,10 +355,11 @@ def test_build_features_counts_what_it_found(tmp_path):
     build_features._WORKER.update(
         letters={"H": glyph_template("H"), "L": glyph_template("L")},
         marks={}, regions=load_regions(), scale=1.0, mark_scale=1.0,
+        mark_radius=0.08,
     )
-    _, _, counts = build_features._run_one((str(chart), 0.65, 20, 5))
-    assert set(counts) == {"high", "low", "edge_high", "edge_low"}
-    assert counts["high"] + counts["edge_high"] == 2
+    _, _, report = build_features._run_one((str(chart), 0.65, 20, 5))
+    assert {"high", "low", "edge_high", "edge_low", "marks", "orphan_marks"} <= set(report)
+    assert report["high"] + report["edge_high"] == 2
 
 
 # --- 退化した特徴量に対する守り ------------------------------------------
@@ -523,22 +528,91 @@ def test_bootstrap_moves_the_training_data_not_the_seed():
     assert all(v >= 0.0 for v in spread["per_label_std"].values())
 
 
-# --- 中心の印の名前 ------------------------------------------------------
+# --- 中心の印の種別 ------------------------------------------------------
 
-def test_circle_cross_counts_as_the_low_mark():
-    """丸で囲んだ×の名前は circle で始まっていればよい。
+def test_the_ring_around_a_cross_cannot_be_templated():
+    """丸で囲んだ×を丸ごとテンプレートで拾おうとすると失敗すること。
 
-    symbol_of は末尾の数字と _ 以降を落とすので、circle_cross は「circle」に
-    なる。MARK_LOW を "circled" と決め打ちしていたため、実際に使われた
-    circle_cross が低気圧として数えられていなかった。
+    **この失敗が「印の形では見分けない」設計の理由**なので、前提が変わって
+    いないかをここで縛る。図の側の丸は大きさも太さもまちまちなので、丸ごと
+    当てるテンプレートはしきい値を割る。一方、丸の内側の×はいつでも完璧に
+    当たるので、低気圧がすべて高気圧として数えられる(実測 高7.70 / 低0.20)。
     """
-    from scripts.build_features import MARK_HIGH, MARK_LOW_PREFIX
-    from scripts.extract_symbols import symbol_of
+    import cv2
 
-    for name in ("cross", "cross2", "cross_b"):
-        assert symbol_of(name) == MARK_HIGH
-    for name in ("circle_cross", "circle_cross2", "circled", "circle2"):
-        assert symbol_of(name).startswith(MARK_LOW_PREFIX)
+    from src.chartsymbols import match_templates
+
+    def template(circled: bool):
+        tile = np.zeros((80, 80), np.uint8)
+        cv2.line(tile, (25, 25), (55, 55), 1, 5)
+        cv2.line(tile, (55, 25), (25, 55), 1, 5)
+        if circled:
+            cv2.circle(tile, (40, 40), 28, 1, 4)
+        ys, xs = np.nonzero(tile)
+        return tile[ys.min():ys.max() + 1, xs.min():xs.max() + 1].astype(bool)
+
+    templates = {"cross": template(False), "circle_cross": template(True)}
+    labels = []
+    for radius, thickness in ((28, 4), (24, 3), (33, 5), (22, 6)):
+        chart = np.full((400, 400, 3), 255, np.uint8)
+        cv2.line(chart, (185, 185), (215, 215), (4, 4, 4), 5)
+        cv2.line(chart, (215, 185), (185, 215), (4, 4, 4), 5)
+        cv2.circle(chart, (200, 200), radius, (4, 4, 4), thickness)
+        hits = match_templates(chart, templates, threshold=0.65, angles=(0.0,))
+        labels.append(hits[0].label if hits else "なし")
+
+    # 丸の大きさがテンプレートと合う1つ以外は、ただの×として拾われてしまう
+    assert labels.count("cross") >= 2, labels
+
+
+def test_marks_take_their_type_from_the_nearest_letter():
+    """印の種別は、いちばん近い H / L の文字から取ること。"""
+    from src.chartfeatures import assign_marks_to_letters
+
+    marks = [(0.20, 0.30), (0.60, 0.40)]
+    letters = {"H": [(0.22, 0.32)], "L": [(0.63, 0.41)]}
+    typed, spare, orphans = assign_marks_to_letters(marks, letters, radius=0.08)
+    assert typed["H"] == [(0.20, 0.30)]
+    assert typed["L"] == [(0.60, 0.40)]
+    assert spare == {"H": [], "L": []} and orphans == []
+
+
+def test_a_letter_serves_only_one_mark():
+    """1つの文字が2つの印の種別になってはいけない。
+
+    近い順に1対1で組む。余った印は種別が決まらないので位置として使わない。
+    """
+    from src.chartfeatures import assign_marks_to_letters
+
+    marks = [(0.50, 0.50), (0.52, 0.50)]
+    typed, spare, orphans = assign_marks_to_letters(
+        marks, {"H": [(0.51, 0.51)], "L": []}, radius=0.08)
+    assert len(typed["H"]) == 1
+    assert len(orphans) == 1
+
+
+def test_letters_without_a_mark_are_the_off_frame_systems():
+    """組にならなかった文字は、中心が枠外の系として扱えること。
+
+    中心が図郭の外にある系には×が描かれず、文字だけになる。
+    """
+    from src.chartfeatures import assign_marks_to_letters
+
+    typed, spare, orphans = assign_marks_to_letters(
+        [(0.50, 0.50)], {"H": [(0.51, 0.50)], "L": [(0.02, 0.90)]}, radius=0.08)
+    assert typed["H"] == [(0.50, 0.50)]
+    assert spare["L"] == [(0.02, 0.90)]      # 印の無い L = 枠外の低気圧
+
+
+def test_nearest_letter_distances_measures_the_radius():
+    """半径は当てずっぽうではなく、実測の分布から決める。"""
+    from src.chartfeatures import nearest_letter_distances
+
+    got = nearest_letter_distances([(0.10, 0.10), (0.90, 0.90)],
+                                   {"H": [(0.13, 0.14)], "L": []})
+    assert got[0] == pytest.approx(0.05, abs=1e-6)
+    assert got[1] > 0.5
+    assert nearest_letter_distances([(0.1, 0.1)], {"H": [], "L": []}) == []
 
 
 def test_marks_left_in_the_templates_folder_are_reported(capsys):

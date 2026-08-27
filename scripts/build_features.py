@@ -10,18 +10,26 @@ r"""Phase 3: 天気図から検出を行い、分類用の特徴量CSVを作る�
 
 中心の印を使う場合
 ------------------
-`--marks` に `cross*.png`(ただの×=高気圧)と `circled*.png`(丸で囲んだ×=
-低気圧・台風)を置いたディレクトリを渡すと、そちらを位置の主役に使う。
-**×は中心そのものだが、H/L の文字は中心の近くに置かれたラベル**なので、
-位置としては×のほうが正しい。
+`--marks` に中心の印(×)のテンプレートを置いたディレクトリを渡すと、
+**位置は印から、種別は文字から**取るようになる。×は中心そのものなので位置
+として正しく、H/L の文字は形が安定していて種別として正しい。それぞれ得意な
+ほうだけを使う。名前は自由でよい。
 
-ただし**中心が枠外の系には×が描かれず文字だけになる**。その分は H/L から
-拾い、位置を主張しない特徴量(n_edge_high / n_edge_low)として数える。
+**印の形では高低を見分けない。**丸で囲んだ×(低気圧)を `circle_cross`
+テンプレートで拾おうとすると失敗する ― 図の側の丸は大きさも太さもまちまち
+なので、丸ごと当てるテンプレートはしきい値を割る一方、丸の内側の×はいつでも
+完璧に当たる。結果として**低気圧がすべて高気圧として数えられた**
+(実測: 1枚あたり高7.70 / 低0.20)。
+
+印と文字は `--mark-radius`(既定0.08、相対座標)以内で近いものから順に
+1対1で組にする。**この半径は当てずっぽうで決めない。**処理のあとに実測の
+分布が出るので、それを見て決める。
+
+組にならなかった文字は**中心が枠外の系**である(×が描かれない)。位置は
+主張させず、n_edge_high / n_edge_low として数だけ数える。
 
 印は文字と**別の倍率**で当てる(`--mark-scale`、既定1.0=原寸)。印は約31x31
 しかなく、文字(約95x117)に効く 0.7 では22x22になって丸と×の細部が潰れる。
-その分だけ遅くなるが、印が当たらないと `analyse_chart` は位置の主役を印に
-切り替えたまま何も見つけられず、**文字から得ていた位置の情報まで失う**。
 
 速さ
 ----
@@ -50,7 +58,15 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from src.chartfeatures import ChartDetections, feature_names, split_by_edge, to_row
+from src.chartfeatures import (
+    MARK_LETTER_RADIUS,
+    ChartDetections,
+    assign_marks_to_letters,
+    feature_names,
+    nearest_letter_distances,
+    split_by_edge,
+    to_row,
+)
 from src.chartsymbols import (
     DEFAULT_BANDS,
     FRONT_BANDS,
@@ -65,13 +81,9 @@ from src.regions import load_regions
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 
-# 中心の印のテンプレート名の決まり。
-#
-# 名前の末尾の数字と _ 以降は落として数えるので(`symbol_of`)、
-# cross / cross2 / cross_b は「cross」に、circle_cross / circled / circle2 は
-# 「circle」で始まる名前になる。**丸で囲んだ×は circle で始まる名前にすること。**
-MARK_HIGH = "cross"        # ただの× = 高気圧
-MARK_LOW_PREFIX = "circle"  # 丸で囲んだ× = 低気圧・台風
+# 中心の印の名前は自由でよい。**印の形では高低を見分けない**ので、
+# cross でも circle_cross でも同じ「中心の印」として扱い、種別はいちばん近い
+# H / L の文字から取る(`src.chartfeatures.assign_marks_to_letters`)。
 
 # 記号として扱う名前。これ以外が --templates に入っていると黙って無視される
 LETTER_SYMBOLS = ("H", "L")
@@ -109,14 +121,18 @@ def warn_about_misplaced_marks(templates: dict) -> None:
     if stray:
         print(f"★--templates に H/L 以外があります: {', '.join(stray)}")
         print("  これらは使われません。中心の印は --marks に渡してください。")
-        print(f"  (高気圧は {MARK_HIGH}、低気圧は {MARK_LOW_PREFIX} で始まる名前)")
+        print("  (印の名前は自由。種別はいちばん近い H/L の文字から取る)")
 
 
-def load_templates_scaled(directory: Path, scale: float) -> dict:
-    """テンプレートを読み、画像と同じ倍率に縮める。"""
+def load_templates_scaled(directory: Path, scale: float, quiet: bool = False) -> dict:
+    """テンプレートを読み、画像と同じ倍率に縮める。
+
+    `quiet` は並列の子側で使う。同じ知らせを人数ぶん繰り返すと、そのあとに
+    出る検出数がスクロールで流れてしまう。
+    """
     from scripts.extract_symbols import load_templates
 
-    templates = load_templates(directory)
+    templates = load_templates(directory, quiet=quiet)
     if scale >= 1.0:
         return templates
     scaled = {}
@@ -129,7 +145,8 @@ def load_templates_scaled(directory: Path, scale: float) -> dict:
 
 def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
                   threshold: float, angle_range: float, angle_step: float,
-                  mark_scale: float = 1.0) -> ChartDetections:
+                  mark_scale: float = 1.0,
+                  mark_radius: float = MARK_LETTER_RADIUS) -> tuple:
     """1枚から検出結果を取り出す。位置はすべて相対座標(0〜1)。
 
     文字と印で倍率を変えられる。**印は文字よりずっと小さい**(印は約31x31、
@@ -162,46 +179,59 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
 
     letter_pos = positions(letters, scale)
     mark_pos = positions(marks, mark_scale)
+    letter_groups = {"H": letter_pos.get("H", []), "L": letter_pos.get("L", [])}
+    distances: list = []
+    found_marks = 0
+    orphans = 0
 
     if mark_pos:
-        # 中心の印があるならそちらが位置の主役。文字は枠外の系を拾うのに使う
-        highs = mark_pos.get(MARK_HIGH, [])
-        lows = [p for name, points in mark_pos.items()
-                if name.startswith(MARK_LOW_PREFIX) for p in points]
-        _, edge_highs = split_by_edge(letter_pos.get("H", []))
-        _, edge_lows = split_by_edge(letter_pos.get("L", []))
+        # 印は位置だけを担い、種別はいちばん近い文字から取る。
+        # **印の形(ただの×か、丸で囲んだ×か)では見分けない。**理由は
+        # `src/chartfeatures.assign_marks_to_letters` に書いてある。
+        all_marks = [point for points in mark_pos.values() for point in points]
+        found_marks = len(all_marks)
+        # 文字が1つも無いと距離は空になる。**印の数とは別に数えること**
+        distances = nearest_letter_distances(all_marks, letter_groups)
+        typed, spare, unmatched = assign_marks_to_letters(
+            all_marks, letter_groups, mark_radius)
+        highs, lows = typed["H"], typed["L"]
+        orphans = len(unmatched)
+        # 組にならなかった文字 = 中心が枠外の系。位置は主張させず数だけ数える
+        _, edge_highs = split_by_edge(spare["H"])
+        _, edge_lows = split_by_edge(spare["L"])
     else:
         # 文字しか無い。文字の位置は中心ではないので、縁のものは位置を主張させない
-        highs, edge_highs = split_by_edge(letter_pos.get("H", []))
-        lows, edge_lows = split_by_edge(letter_pos.get("L", []))
+        highs, edge_highs = split_by_edge(letter_groups["H"])
+        lows, edge_lows = split_by_edge(letter_groups["L"])
 
     return ChartDetections(
         highs=highs, lows=lows, edge_highs=edge_highs, edge_lows=edge_lows,
         front_segments=front_segments, stationary_pixels=int(stationary.sum()),
-    )
+    ), {"marks": found_marks, "orphan_marks": orphans, "distances": distances}
 
 
-def _init_worker(template_dir, mark_dir, scale, mark_scale):
-    _WORKER["letters"] = load_templates_scaled(Path(template_dir), scale)
-    warn_about_misplaced_marks(_WORKER["letters"])
-    _WORKER["marks"] = (load_templates_scaled(Path(mark_dir), mark_scale)
+def _init_worker(template_dir, mark_dir, scale, mark_scale, mark_radius):
+    _WORKER["letters"] = load_templates_scaled(Path(template_dir), scale, quiet=True)
+    _WORKER["marks"] = (load_templates_scaled(Path(mark_dir), mark_scale, quiet=True)
                         if mark_dir else {})
     _WORKER["regions"] = load_regions()
     _WORKER["scale"] = scale
     _WORKER["mark_scale"] = mark_scale
+    _WORKER["mark_radius"] = mark_radius
 
 
 def _run_one(job) -> tuple:
     path, threshold, angle_range, angle_step = job
-    detections = analyse_chart(
+    detections, report = analyse_chart(
         Path(path), _WORKER["letters"], _WORKER["marks"], _WORKER["scale"],
         threshold, angle_range, angle_step, _WORKER["mark_scale"],
+        _WORKER["mark_radius"],
     )
-    counts = {
-        "high": len(detections.highs), "low": len(detections.lows),
-        "edge_high": len(detections.edge_highs), "edge_low": len(detections.edge_lows),
-    }
-    return Path(path).name, to_row(detections, _WORKER["regions"]), counts
+    report.update(
+        high=len(detections.highs), low=len(detections.lows),
+        edge_high=len(detections.edge_highs), edge_low=len(detections.edge_lows),
+    )
+    return Path(path).name, to_row(detections, _WORKER["regions"]), report
 
 
 def already_done(out_path: Path) -> set:
@@ -227,6 +257,9 @@ def main():
                         help="H/L の文字を探すときの縮小率。0.7で速さ2.7倍、検出は変わらなかった")
     parser.add_argument("--mark-scale", type=float, default=1.0,
                         help="中心の印を探すときの縮小率。印は約31x31しかないので既定は原寸")
+    parser.add_argument("--mark-radius", type=float, default=MARK_LETTER_RADIUS,
+                        help="印と H/L の文字を組にする距離(相対座標)。"
+                             "処理のあとに実測の分布が出るので、それを見て決める")
     parser.add_argument("--threshold", type=float, default=0.65)
     parser.add_argument("--angle-range", type=float, default=60.0)
     parser.add_argument("--angle-step", type=float, default=5.0)
@@ -254,6 +287,15 @@ def main():
     if not out_path.exists():
         out_path.write_text(",".join(columns) + "\n", encoding="utf-8")
 
+    # テンプレートの検分は親で1度だけ。子でやると人数ぶん繰り返される
+    letters = load_templates_scaled(Path(args.templates), args.scale)
+    warn_about_misplaced_marks(letters)
+    print(f"文字 {len(letters)}枚(縮小{args.scale})", end="")
+    if args.marks:
+        marks = load_templates_scaled(Path(args.marks), args.mark_scale)
+        print(f"、印 {len(marks)}枚(縮小{args.mark_scale})", end="")
+    print()
+
     jobs = [(str(p), args.threshold, args.angle_range, args.angle_step) for p in todo]
     print(f"{len(todo)}枚、縮小{args.scale}、{args.workers}並列で処理する。")
 
@@ -261,14 +303,18 @@ def main():
     written = 0
     # 何個拾えたかを数える。**印を入れて成績が落ちたときに、それが
     # 「印が当たっていない」せいなのかを、ここの数字で切り分けられる。**
-    tally = {"high": 0, "low": 0, "edge_high": 0, "edge_low": 0}
+    tally = {"high": 0, "low": 0, "edge_high": 0, "edge_low": 0,
+             "marks": 0, "orphan_marks": 0}
+    distances: list = []
     with ProcessPoolExecutor(
         max_workers=args.workers,
         initializer=_init_worker,
-        initargs=(args.templates, args.marks, args.scale, args.mark_scale),
+        initargs=(args.templates, args.marks, args.scale, args.mark_scale,
+                  args.mark_radius),
     ) as pool, open(out_path, "a", encoding="utf-8") as handle:
-        for name, row, counts in pool.map(_run_one, jobs, chunksize=4):
-            for key, value in counts.items():
+        for name, row, report in pool.map(_run_one, jobs, chunksize=4):
+            distances.extend(report.pop("distances"))
+            for key, value in report.items():
                 tally[key] += value
             handle.write(name + "," + ",".join(_format(v) for v in row) + "\n")
             handle.flush()      # 途中で止めても、ここまでは残す
@@ -281,15 +327,44 @@ def main():
                       f"{rate:.1f}秒/枚  残り{left / 60:.0f}分", flush=True)
 
     print(f"\n書き出しました: {out_path.resolve()} ({len(done) + written}件)")
-    print("1枚あたりの検出数(この回に処理したぶんだけ):")
-    for key, value in tally.items():
-        print(f"  {key:10s} {value / max(1, written):.2f}")
-    if args.marks and (tally["high"] + tally["low"]) / max(1, written) < 1.0:
-        print("★印がほとんど当たっていません。--mark-scale を上げるか "
-              "--threshold を下げてください。")
+    report_counts(tally, distances, written, args)
     print("次はこれで交差検証する:")
     print(f"  python -m scripts.cv_features --features {args.out} "
           "--years 2023 2024 2025 --out runs\\cv_features")
+
+
+def report_counts(tally: dict, distances: list, written: int, args) -> None:
+    """1枚あたりの検出数と、印から文字までの距離の分布を出す。
+
+    **印を入れて成績が落ちたときに、原因を推測ではなく数字で切り分けるため。**
+    高と低の比が偏っていれば種別の付け方が壊れているし、印が文字と組に
+    ならないなら --mark-radius が狭すぎる。
+    """
+    per_chart = max(1, written)
+    print("1枚あたりの検出数(この回に処理したぶんだけ):")
+    for key in ("high", "low", "edge_high", "edge_low", "marks", "orphan_marks"):
+        print(f"  {key:12s} {tally[key] / per_chart:.2f}")
+
+    if not args.marks:
+        return
+
+    found = (tally["high"] + tally["low"]) / per_chart
+    if found < 1.0:
+        print("★印がほとんど組になっていません。--mark-scale を上げるか "
+              "--threshold を下げてください。")
+    if tally["marks"] and tally["orphan_marks"] / tally["marks"] > 0.3:
+        print("★印の3割以上が文字と組になっていません。--mark-radius が狭すぎるか、"
+              "文字を取りこぼしています。")
+
+    if distances:
+        values = np.sort(np.array(distances))
+        marks = [("中央値", 50), ("7割", 70), ("9割", 90), ("最大", 100)]
+        line = "  ".join(
+            f"{name} {np.percentile(values, q):.3f}" for name, q in marks
+        )
+        print(f"印から一番近い文字までの距離: {line}")
+        print(f"  今の --mark-radius {args.mark_radius:.3f} で "
+              f"{100 * (values <= args.mark_radius).mean():.0f}% が届く")
 
 
 def _format(value) -> str:
