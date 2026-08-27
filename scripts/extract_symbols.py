@@ -465,6 +465,25 @@ def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
         f"テンプレートがありません: {template_dir} (先に cluster か cut を実行)")
 
 
+def report_scores(scores: list[float], threshold: float) -> None:
+    """一致スコアの分布を出す。しきい値に張り付いていれば取りこぼしている。
+
+    当たったものの最低スコアがしきい値のすぐ上なら、あと少しで届かなかった
+    記号が下に埋もれている。テンプレートを増やすか、しきい値を下げる。
+    """
+    if not scores:
+        return
+    arr = np.array(scores)
+    print(f"一致スコア: {arr.min():.2f} 〜 {arr.max():.2f} "
+          f"(中央値 {np.median(arr):.2f}、しきい値 {threshold:.2f})")
+    margin = arr.min() - threshold
+    if margin < 0.05:
+        print(f"★最低スコアがしきい値の{margin:+.2f}しかない。あと少しで届かなかった"
+              "記号が埋もれている見込みが高い。")
+        print("  取りこぼした記号を別個体としてテンプレートに足すこと"
+              "(cut --box ... --name L3)。")
+
+
 def report_angles(angles: list[float], angle_range: float) -> None:
     """当たった角度の分布を出す。範囲の端に張り付いていれば広げる合図。"""
     if not angles:
@@ -548,6 +567,7 @@ def cmd_match(args):
 
     per_label = Counter()
     all_angles: list[float] = []
+    all_scores: list[float] = []
     placed: list[tuple[str, float, float, float]] = []   # (記号, cx, cy, 角度)
     n_images = 0
     n_candidates = 0
@@ -558,6 +578,7 @@ def cmd_match(args):
         found = Counter(symbol_of(h.label) for h in hits)
         per_label.update(found)
         all_angles.extend(h.angle for h in hits)
+        all_scores.extend(h.score for h in hits)
         placed.extend((symbol_of(h.label), h.cx, h.cy, h.angle) for h in hits)
         n_images += 1
         # テンプレートと同じくらいの大きさの候補が、そもそも何個あったか
@@ -576,6 +597,7 @@ def cmd_match(args):
     total = sum(per_label.values())
     print("\n合計: " + ", ".join(f"{k}={v}" for k, v in sorted(per_label.items())))
     report_angles(all_angles, args.angle_range)
+    report_scores(all_scores, args.threshold)
     report_fixed_detections(placed, n_images)
     print(f"1枚あたり {total / n_images:.1f}個。"
           "天気図1枚の高気圧・低気圧はふつう2〜6個。")

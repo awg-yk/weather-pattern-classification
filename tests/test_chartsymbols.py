@@ -883,3 +883,18 @@ def test_same_place_but_different_tilt_is_not_fixed(capsys):
     placed = [("H", 0.5, 0.5, float(5 * i)) for i in range(10)]
     report_fixed_detections(placed, 10)
     assert "画素まで一致し続ける検出はない" in capsys.readouterr().out
+
+
+def test_score_report_flags_a_thin_margin(capsys):
+    """当たったものの最低スコアがしきい値のすぐ上なら、取りこぼしている。
+
+    実測で、当たった記号のスコアが0.67〜0.88、しきい値0.65だった。
+    余裕が0.02しかなく、届かなかった記号が下に埋もれていた。
+    """
+    from scripts.extract_symbols import report_scores
+    report_scores([0.67, 0.72, 0.88], 0.65)
+    out = capsys.readouterr().out
+    assert "★" in out and "埋もれている" in out
+
+    report_scores([0.85, 0.92, 0.97], 0.65)
+    assert "★" not in capsys.readouterr().out
