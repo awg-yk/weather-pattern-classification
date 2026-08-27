@@ -61,8 +61,15 @@ from src.regions import load_regions
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 
 # 中心の印のテンプレート名の決まり。
-MARK_HIGH = "cross"      # ただの×
-MARK_LOW = "circled"     # 丸で囲んだ×
+#
+# 名前の末尾の数字と _ 以降は落として数えるので(`symbol_of`)、
+# cross / cross2 / cross_b は「cross」に、circle_cross / circled / circle2 は
+# 「circle」で始まる名前になる。**丸で囲んだ×は circle で始まる名前にすること。**
+MARK_HIGH = "cross"        # ただの× = 高気圧
+MARK_LOW_PREFIX = "circle"  # 丸で囲んだ× = 低気圧・台風
+
+# 記号として扱う名前。これ以外が --templates に入っていると黙って無視される
+LETTER_SYMBOLS = ("H", "L")
 
 _WORKER = {}
 
@@ -83,6 +90,21 @@ def shrink(image: np.ndarray, scale: float) -> np.ndarray:
     if scale >= 1.0:
         return image
     return cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+
+def warn_about_misplaced_marks(templates: dict) -> None:
+    """記号でない名前が --templates に入っていたら知らせる。
+
+    中心の印を --templates に置くと、H と L しか見ないので**黙って無視される**。
+    印は --marks に渡すこと。
+    """
+    from scripts.extract_symbols import symbol_of
+
+    stray = sorted({symbol_of(name) for name in templates} - set(LETTER_SYMBOLS))
+    if stray:
+        print(f"★--templates に H/L 以外があります: {', '.join(stray)}")
+        print("  これらは使われません。中心の印は --marks に渡してください。")
+        print(f"  (高気圧は {MARK_HIGH}、低気圧は {MARK_LOW_PREFIX} で始まる名前)")
 
 
 def load_templates_scaled(directory: Path, scale: float) -> dict:
@@ -131,7 +153,8 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
     if mark_pos:
         # 中心の印があるならそちらが位置の主役。文字は枠外の系を拾うのに使う
         highs = mark_pos.get(MARK_HIGH, [])
-        lows = mark_pos.get(MARK_LOW, [])
+        lows = [p for name, points in mark_pos.items()
+                if name.startswith(MARK_LOW_PREFIX) for p in points]
         _, edge_highs = split_by_edge(letter_pos.get("H", []))
         _, edge_lows = split_by_edge(letter_pos.get("L", []))
     else:
@@ -147,6 +170,7 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
 
 def _init_worker(template_dir, mark_dir, scale):
     _WORKER["letters"] = load_templates_scaled(Path(template_dir), scale)
+    warn_about_misplaced_marks(_WORKER["letters"])
     _WORKER["marks"] = load_templates_scaled(Path(mark_dir), scale) if mark_dir else {}
     _WORKER["regions"] = load_regions()
     _WORKER["scale"] = scale

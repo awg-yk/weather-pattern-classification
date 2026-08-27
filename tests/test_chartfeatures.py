@@ -429,3 +429,34 @@ def test_bootstrap_moves_the_training_data_not_the_seed():
     # ラベル別も返す。macroの幅では、あるラベルの勝ち負けが本物かを言えない
     assert set(spread["per_label_std"]) == set(LABELS)
     assert all(v >= 0.0 for v in spread["per_label_std"].values())
+
+
+# --- 中心の印の名前 ------------------------------------------------------
+
+def test_circle_cross_counts_as_the_low_mark():
+    """丸で囲んだ×の名前は circle で始まっていればよい。
+
+    symbol_of は末尾の数字と _ 以降を落とすので、circle_cross は「circle」に
+    なる。MARK_LOW を "circled" と決め打ちしていたため、実際に使われた
+    circle_cross が低気圧として数えられていなかった。
+    """
+    from scripts.build_features import MARK_HIGH, MARK_LOW_PREFIX
+    from scripts.extract_symbols import symbol_of
+
+    for name in ("cross", "cross2", "cross_b"):
+        assert symbol_of(name) == MARK_HIGH
+    for name in ("circle_cross", "circle_cross2", "circled", "circle2"):
+        assert symbol_of(name).startswith(MARK_LOW_PREFIX)
+
+
+def test_marks_left_in_the_templates_folder_are_reported(capsys):
+    """印を --templates に置くと H/L しか見ないので黙って無視される。"""
+    from scripts.build_features import warn_about_misplaced_marks
+
+    warn_about_misplaced_marks({"H": None, "L2": None,
+                                "cross": None, "circle_cross": None})
+    out = capsys.readouterr().out
+    assert "★" in out and "cross" in out and "--marks" in out
+
+    warn_about_misplaced_marks({"H": None, "H2": None, "L": None})
+    assert capsys.readouterr().out == ""
