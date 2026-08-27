@@ -82,6 +82,24 @@ def _spread(points: list) -> float:
     )
 
 
+def _in_both(points: list, region_a, region_b) -> int:
+    """2つの領域の**両方**に、それぞれ点があるか。
+
+    領域ごとの在否を別々の特徴量にしていても、木は「両方ある」という組を
+    作るのに深さを使う。定義そのものが組であるなら、最初から渡したほうがよい。
+
+    実測では、二つ玉低気圧の手がかりとして `low_in_japan_sea_low` が0.693、
+    `low_in_nankigan_low` が0.605あったが、計画が「数えるだけの問題」と
+    書いていた `n_low` は0.622に留まった。定義は数ではなく配置である。
+    """
+    if region_a is None or region_b is None:
+        return 0
+    return int(
+        any(region_a.contains(x, y) for x, y in points)
+        and any(region_b.contains(x, y) for x, y in points)
+    )
+
+
 def _on_edge(point: tuple, margin: float = EDGE_MARGIN) -> bool:
     x, y = point
     return x < margin or x > 1 - margin or y < margin or y > 1 - margin
@@ -93,6 +111,7 @@ def feature_names(regions: dict) -> list:
         "n_high", "n_low", "n_edge_high", "n_edge_low",
         "high_cx", "high_cy", "low_cx", "low_cy",
         "high_low_distance", "low_spread", "high_spread",
+        "west_high_east_low", "low_in_japan_sea_and_nankigan",
         "n_warm", "n_cold", "n_occluded",
         "warm_length", "cold_length", "occluded_length",
         "stationary_px",
@@ -131,6 +150,15 @@ def build_features(detections: ChartDetections, regions: dict) -> dict:
         "high_low_distance": _nearest_distance(highs, lows),
         "low_spread": _spread(lows),
         "high_spread": _spread(highs),
+        # 西高東低はラベル名がそのまま配置を表す。負なら高気圧が西、低気圧が東
+        "west_high_east_low": (
+            _mean_or_nan(highs, 0) - _mean_or_nan(lows, 0)
+            if highs and lows else float("nan")
+        ),
+        # 二つ玉低気圧の定義そのもの。src/labels.py の規約が
+        # 「japan_sea_low と nankigan_low を置き換える」と定めている
+        "low_in_japan_sea_and_nankigan": _in_both(
+            lows, regions.get("japan_sea_low"), regions.get("nankigan_low")),
         "n_warm": count_frontlike("warm_front"),
         "n_cold": count_frontlike("cold_front"),
         "n_occluded": count_frontlike("occluded_front"),

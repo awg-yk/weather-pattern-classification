@@ -347,3 +347,39 @@ def test_cv_features_passes_val_mode_through():
     text = source.read_text(encoding="utf-8")
     assert '"--val-mode"' in text
     assert "val_mode=args.val_mode" in text
+
+
+# --- 定義そのものを表す特徴量 --------------------------------------------
+
+def test_futatsudama_needs_lows_in_both_regions():
+    """二つ玉低気圧の定義は「日本海側に1つかつ南岸に1つ」。
+
+    src/labels.py の規約が「japan_sea_low と nankigan_low を置き換える」と
+    定めている。実測では low_in_japan_sea_low が0.693、low_in_nankigan_low が
+    0.605あったのに、計画が「数えるだけの問題」と書いていた n_low は0.622
+    しかなかった。定義は数ではなく配置である。
+    """
+    js, nk = REGIONS["japan_sea_low"], REGIONS["nankigan_low"]
+    in_js = ((js.x0 + js.x1) / 2, (js.y0 + js.y1) / 2)
+    in_nk = ((nk.x0 + nk.x1) / 2, (nk.y0 + nk.y1) / 2)
+
+    both = build_features(ChartDetections(lows=[in_js, in_nk]), REGIONS)
+    assert both["low_in_japan_sea_and_nankigan"] == 1
+
+    # 片方だけ、あるいは同じ領域に2つでは立たない
+    for lows in ([in_js], [in_nk], [in_js, in_js]):
+        f = build_features(ChartDetections(lows=lows), REGIONS)
+        assert f["low_in_japan_sea_and_nankigan"] == 0
+        assert f["n_low"] == len(lows)      # 数は数えている
+
+
+def test_west_high_east_low_is_negative_when_the_high_is_west():
+    """西高東低はラベル名がそのまま配置を表す。"""
+    west = build_features(
+        ChartDetections(highs=[(0.2, 0.5)], lows=[(0.8, 0.5)]), REGIONS)
+    east = build_features(
+        ChartDetections(highs=[(0.8, 0.5)], lows=[(0.2, 0.5)]), REGIONS)
+    assert west["west_high_east_low"] < 0 < east["west_high_east_low"]
+    # 片方が無ければ配置は決まらない
+    lonely = build_features(ChartDetections(highs=[(0.2, 0.5)]), REGIONS)
+    assert math.isnan(lonely["west_high_east_low"])
