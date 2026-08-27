@@ -124,6 +124,8 @@ scripts/
   extract_fronts.py   # 前線を色マスクだけで取れるか見る(物体検出の下見)
   extract_symbols.py  # H/L/T/TD をテンプレートマッチングで取れるか見る(scan/cluster/grid/cut/match)
   check_alignment.py  # 天気図が日付をまたいで画素単位で揃っているかを測る
+  build_features.py   # 検出結果から Phase 3 の特徴量CSVを作る
+  cv_features.py      # 特徴量で分類し交差検証(Phase 4)。既存CNNと同じ形で出力
   explain_date.py     # 日付を1つ指定して天気図・Grad-CAM・確信度を書き出す
   auto_label_era5.py  # ERA5気圧場からの規則ベース自動ラベリング
 src/
@@ -137,6 +139,8 @@ src/
   labels.py       # ラベル定義
   regions.py      # ラベルごとの「見るべき領域」とGrad-CAMとの突き合わせ
   chartsymbols.py # 天気図の色マスクと記号拾い（学習を使わない抽出）
+  chartfeatures.py# 検出結果を分類用の特徴量にする（Phase 3）
+  metrics.py      # しきい値の最適化と自明な予測の基準（torch不要）
 docs/
   2026-08-21-chart-vs-era5-grid.md  # 天気図とERA5格子の比較。結論と未解決の課題
   2026-08-22-next-chart-only.md     # ERA5を外したあとの計画

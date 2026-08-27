@@ -8,22 +8,13 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 from src.labels import LABEL_TO_INDEX, LABELS, parse_labels  # noqa: F401  (従来の import 経路を保つ)
+# 観測日時の解釈は src/split.py に移した。分割がそれを要求する当人であり、
+# torch を必要としないので木のモデルからも同じものを使える。日付の解釈が
+# ずれると分割ごとずれるので、実装は1つだけにする。
+from src.split import parse_datetime  # noqa: F401  (従来の import 経路を保つ)
 
 # ファイル名に含まれるYYYYMMDDHH。"Js_2001070300_page001.jpg" にも
 # "Js_2025010100.png" にも対応する。
-_DATE_IN_FILENAME = re.compile(r"(\d{10})")
-
-
-def parse_datetime(filename: str, date_field=None) -> pd.Timestamp:
-    """観測日時を取り出す。取れなければ NaT を返す。
-
-    labels.csvのdate列ではなくファイル名を優先して見る。date列は、ファイル名から
-    日付を抜き出すロジックを修正する前にラベル付けした行で "page001" のような
-    誤った値が入っていることがあるため。ファイル名は常に正しい。
-    """
-    match = _DATE_IN_FILENAME.search(str(filename))
-    raw = match.group(1) if match else str(date_field)
-    return pd.to_datetime(raw, format="%Y%m%d%H", errors="coerce")
 
 
 def index_images_by_stamp(images_dir: Path) -> dict:

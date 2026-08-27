@@ -12,6 +12,8 @@
     test  : 最終報告の数値を1回だけ測る(上のどれにも使ってはいけない)
 """
 
+import re
+
 import numpy as np
 import pandas as pd
 
@@ -21,6 +23,45 @@ SPLIT_MODES = ("temporal", "by_year", "loyo", "random")
 #   tail   : 学習期間の末尾をまとめて検証にする(従来)
 #   spread : 1年を通して等間隔に週を抜き取る
 VAL_MODES = ("spread", "tail")
+
+
+
+_DATE_IN_FILENAME = re.compile(r"(\d{10})")
+
+
+def parse_datetime(filename: str, date_field=None) -> pd.Timestamp:
+    """観測日時を取り出す。取れなければ NaT を返す。
+
+    labels.csvのdate列ではなくファイル名を優先して見る。date列は、ファイル名から
+    日付を抜き出すロジックを修正する前にラベル付けした行で "page001" のような
+    誤った値が入っていることがあるため。ファイル名は常に正しい。
+    """
+    match = _DATE_IN_FILENAME.search(str(filename))
+    raw = match.group(1) if match else str(date_field)
+    return pd.to_datetime(raw, format="%Y%m%d%H", errors="coerce")
+
+
+def add_parsed_datetime(df: pd.DataFrame) -> pd.DataFrame:
+    """分割に使う観測日時の列を足して返す。元のdfは変更しない。
+
+    `make_splits` は "parsed_datetime" 列を要求する。これまでは
+    `src/dataset.py` だけがその列を作っていたが、dataset.py は torch を
+    読み込むので、木のモデル(`scripts/cv_features.py`)からは使えなかった。
+
+    **日付の解釈がずれると分割そのものがずれ、比較が無効になる。**
+    別々に実装せず、ここに1つだけ置く。
+    """
+    out = df.copy()
+    out["parsed_datetime"] = pd.to_datetime(
+        pd.Series(
+            [
+                parse_datetime(fn, dt)
+                for fn, dt in zip(out["filename"], out.get("date", [None] * len(out)))
+            ],
+            index=out.index,
+        )
+    )
+    return out
 
 
 def _sizes(n: int, val_ratio: float, test_ratio: float) -> tuple:

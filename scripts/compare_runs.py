@@ -46,6 +46,16 @@ def describe(summary: dict) -> str:
     config = summary.get("config")
     if not config:
         return "(設定の記録なし: configを保存する前に実行された結果)"
+
+    # CNN以外の手法。configのキーがまるごと違うので、CNNの言葉で説明すると
+    # 嘘になる(「事前学習あり」など)。取り違えの元なので分けて書く。
+    if summary.get("method") == "features":
+        parts = ["検出した特徴量", str(config.get("model", "?"))]
+        columns = summary.get("feature_columns")
+        if columns:
+            parts.append(f"{len(columns)}個")
+        return " / ".join(parts)
+
     parts = [config.get("input_mode", "chart")]
     parts.append("事前学習なし" if config.get("no_pretrained") else "事前学習あり")
     if config.get("coordconv"):

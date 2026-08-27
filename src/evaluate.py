@@ -10,48 +10,14 @@ from src import calibration as calib
 from src.dataset import WeatherMapDataset
 from src.era5_grid import ERA5GridDataset, compute_grid_stats
 from src.labels import LABELS
+# しきい値の最適化と自明な予測の基準は src/metrics.py に移した。
+# torch を必要としないので、木のモデル(scripts/cv_features.py)からも
+# 同じものを使える。ここでの再輸出は、既存の import を壊さないため。
+from src.metrics import find_best_thresholds, trivial_macro_f1  # noqa: F401
 from src.model import load_model
 from src.split import SPLIT_MODES, VAL_MODES, make_splits
 from src.train import get_transforms
 
-
-
-def trivial_macro_f1(labels: np.ndarray) -> tuple:
-    """「全部を陽性と予測する」だけで得られるmacro F1と、そのラベル別の値。
-
-    出現率pのラベルは、常に陽性と答えるだけでF1 = 2p/(1+p) を得る。頻出ラベルでは
-    これが0.5を超えるため、macro F1の絶対値は学習の成果を表さない。この下駄を
-    引いて初めて、モデルが何を足したのかが分かる。
-
-    実際、ERA5格子を224で学習した回はmacro F1 0.250で、この基準(約0.29)を
-    下回っていた -- 数字だけ見ていると「低いが学習はできている」と読めてしまう。
-    """
-    prevalence = labels.mean(axis=0)
-    per_label = np.where(prevalence > 0, 2 * prevalence / (1 + prevalence), 0.0)
-    evaluable = prevalence > 0
-    return (float(per_label[evaluable].mean()) if evaluable.any() else 0.0), per_label
-
-
-def find_best_thresholds(probs: np.ndarray, labels: np.ndarray, steps: int = 19) -> np.ndarray:
-    """ラベルごとにF1を最大化する閾値を探索する。
-
-    マルチラベルではラベルごとに陽性/陰性の出現頻度が大きく異なり、一律0.5では
-    少数派ラベルを取りこぼしやすい。0.05刻みでF1が最大になる点をラベルごとに選ぶ。
-    """
-    candidates = np.linspace(0.05, 0.95, steps)
-    best_thresholds = np.full(labels.shape[1], 0.5)
-    for i in range(labels.shape[1]):
-        col_labels = labels[:, i]
-        if col_labels.sum() == 0:
-            continue
-        best_f1 = -1.0
-        for t in candidates:
-            preds = (probs[:, i] > t).astype(float)
-            f1 = f1_score(col_labels, preds, zero_division=0)
-            if f1 > best_f1:
-                best_f1 = f1
-                best_thresholds[i] = t
-    return best_thresholds
 
 
 def main():
