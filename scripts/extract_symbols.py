@@ -416,6 +416,16 @@ def cmd_cut(args):
 CONTACT_SHEET = "clusters"
 
 
+def symbol_of(template_name: str) -> str:
+    """テンプレート名から記号名を取り出す。H2 も H_b も「H」として数える。
+
+    1つの個体から作ったテンプレートでは、同じ記号でも汚れ方や重なり方が
+    違うと外れる。別の個体からもう1枚作って両方当てられるようにするための
+    決まりで、末尾の数字と _ 以降を落とす。
+    """
+    return re.split(r"[_\d]", template_name, maxsplit=1)[0] or template_name
+
+
 def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
     """人が名前を付けたテンプレートだけを読む。
 
@@ -455,10 +465,27 @@ def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
         f"テンプレートがありません: {template_dir} (先に cluster か cut を実行)")
 
 
+def report_angles(angles: list[float], angle_range: float) -> None:
+    """当たった角度の分布を出す。範囲の端に張り付いていれば広げる合図。"""
+    if not angles:
+        return
+    arr = np.array(angles)
+    at_edge = int(np.count_nonzero(np.abs(np.abs(arr) - angle_range) < 1e-6))
+    print(f"傾き: {arr.min():+.0f}度 〜 {arr.max():+.0f}度 "
+          f"(中央値 {np.median(arr):+.0f}度)")
+    if at_edge:
+        print(f"★{at_edge}個が範囲の端({angle_range:+.0f}度)で当たっている。"
+              f"--angle-range を広げると、まだ見つかる見込みがある。")
+
+
 def cmd_match(args):
     templates = load_templates(args.templates)
     print("テンプレート: " + ", ".join(
         f"{k}({v.shape[1]}x{v.shape[0]})" for k, v in templates.items()))
+    by_symbol = Counter(symbol_of(k) for k in templates)
+    if any(n > 1 for n in by_symbol.values()):
+        print("  同じ記号の別個体: " + ", ".join(
+            f"{k}={n}枚" for k, n in sorted(by_symbol.items()) if n > 1))
     template_sizes = [(v.shape[1], v.shape[0]) for v in templates.values()]
     angles = np.arange(-args.angle_range, args.angle_range + args.angle_step,
                        args.angle_step)
@@ -466,14 +493,16 @@ def cmd_match(args):
           f"{args.angle_step}度刻みで回して当てる ({len(angles)}通り)。")
 
     per_label = Counter()
+    all_angles: list[float] = []
     n_images = 0
     n_candidates = 0
     for path in iter_images(args.in_dir, args.limit):
         rgb = np.array(Image.open(path).convert("RGB"))
         hits = match_templates(rgb, templates, threshold=args.threshold,
                                angles=angles)
-        found = Counter(h.label for h in hits)
+        found = Counter(symbol_of(h.label) for h in hits)
         per_label.update(found)
+        all_angles.extend(h.angle for h in hits)
         n_images += 1
         # テンプレートと同じくらいの大きさの候補が、そもそも何個あったか
         n_candidates += sum(
@@ -490,6 +519,7 @@ def cmd_match(args):
 
     total = sum(per_label.values())
     print("\n合計: " + ", ".join(f"{k}={v}" for k, v in sorted(per_label.items())))
+    report_angles(all_angles, args.angle_range)
     print(f"1枚あたり {total / n_images:.1f}個。"
           "天気図1枚の高気圧・低気圧はふつう2〜6個。")
 

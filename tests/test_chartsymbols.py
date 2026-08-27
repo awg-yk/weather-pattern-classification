@@ -825,3 +825,27 @@ def test_rotate_template_keeps_every_pixel():
     turned = rotate_template(template, 45)
     assert turned.shape[0] > 20 and turned.shape[1] > 30
     assert turned.sum() == pytest.approx(template.sum(), rel=0.2)
+
+
+def test_extra_templates_of_the_same_symbol_are_counted_together():
+    """1個体から作ったテンプレートで外れるとき、別個体を足して両方当てる。
+
+    H2.png や L_b.png のように増やしても、数えるときは H と L にまとまる。
+    """
+    from scripts.extract_symbols import symbol_of
+    assert symbol_of("H") == "H"
+    assert symbol_of("H2") == "H"
+    assert symbol_of("L_b") == "L"
+    assert symbol_of("TD") == "TD"      # 数字も_も無い名前はそのまま
+    assert symbol_of("TD2") == "TD"
+
+
+def test_angle_report_flags_detections_stuck_at_the_edge(capsys):
+    """範囲の端で当たっているなら、まだ外にある記号を取り逃がしている。"""
+    from scripts.extract_symbols import report_angles
+    report_angles([0.0, 10.0, -50.0], 50.0)
+    out = capsys.readouterr().out
+    assert "範囲の端" in out and "広げる" in out
+
+    report_angles([0.0, 10.0, -20.0], 50.0)
+    assert "範囲の端" not in capsys.readouterr().out
