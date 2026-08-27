@@ -898,3 +898,37 @@ def test_score_report_flags_a_thin_margin(capsys):
 
     report_scores([0.85, 0.92, 0.97], 0.65)
     assert "★" not in capsys.readouterr().out
+
+
+# --- テンプレートの見切れ -----------------------------------------------
+
+def thick_glyph_with_a_thin_isobar():
+    img = np.full((400, 400, 3), 255, dtype=np.uint8)
+    cv2.rectangle(img, (150, 150), (250, 280), BLACK, 7)          # 太い記号
+    cv2.line(img, (0, 215), (399, 215), BLACK, 1, lineType=cv2.LINE_8)  # 細い等圧線
+    return img
+
+
+def test_clipped_template_is_detected():
+    """枠が記号を切っていれば、細らせても縁に太い線が残る。
+
+    実測で、切り出したテンプレートが見切れていた。部分だけのテンプレートは
+    完全な記号にうまく当たらず、これが取りこぼしの主因だった。
+    """
+    from src.chartsymbols import touches_border
+    img = thick_glyph_with_a_thin_isobar()
+    assert touches_border(crop_template(img, (160, 160, 300, 330))) > 0.01
+    assert touches_border(crop_template(img, (100, 100, 240, 270))) > 0.01
+
+
+def test_a_template_that_fits_does_not_look_clipped():
+    from src.chartsymbols import touches_border
+    img = thick_glyph_with_a_thin_isobar()
+    assert touches_border(crop_template(img, (140, 140, 262, 292))) == 0.0
+
+
+def test_a_crossing_thin_isobar_is_not_mistaken_for_clipping():
+    """等圧線は細いので、細らせれば縁から消える。余白を取っても誤判定しない。"""
+    from src.chartsymbols import touches_border
+    img = thick_glyph_with_a_thin_isobar()
+    assert touches_border(crop_template(img, (110, 110, 292, 322))) == 0.0

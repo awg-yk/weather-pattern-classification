@@ -645,6 +645,28 @@ def crop_template(rgb: np.ndarray, box: tuple[int, int, int, int],
     return black[y0:y1, x0:x1]
 
 
+def touches_border(template: np.ndarray, erode: int = 2) -> float:
+    """テンプレートの縁に太い線が掛かっている割合を返す。見切れの検出。
+
+    記号が枠からはみ出していると、切り出したテンプレートは記号の一部だけに
+    なる。部分だけのテンプレートは完全な記号にうまく当たらない。
+
+    細らせてから縁を見るのが要点。等圧線は細いので細らせると消え、縁に
+    残るのは**太い記号の線**だけになる。等圧線が横切っているだけの場合と、
+    記号そのものが切れている場合を分けられる。
+    """
+    if template.size == 0:
+        return 0.0
+    thick = template
+    if erode:
+        kernel = np.ones((2 * erode + 1, 2 * erode + 1), np.uint8)
+        thick = cv2.erode(template.astype(np.uint8), kernel).astype(bool)
+    border = np.concatenate([
+        thick[0, :], thick[-1, :], thick[:, 0], thick[:, -1],
+    ])
+    return float(border.mean()) if border.size else 0.0
+
+
 def dominant_colors(rgb: np.ndarray, top: int = 12, ignore_near_white: int = 235) -> list[dict]:
     """画像に多い色を、画素数の多い順に返す。閾値を決めるための実測用。
 

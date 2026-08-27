@@ -53,6 +53,7 @@ from src.chartsymbols import (
     correlation,
     crop_template,
     glyph_candidates,
+    touches_border,
     match_templates,
     patch_of,
     to_hsv,
@@ -393,6 +394,9 @@ def cmd_cut(args):
         # 連結成分として取れない記号は、この方法でテンプレートにするしかない。
         # 一度テンプレートさえ作れば、match は連結成分を使わずに探すので当たる。
         x0, y0, x1, y1 = args.box
+        x0, y0 = max(0, x0 - args.pad), max(0, y0 - args.pad)
+        x1 = min(rgb.shape[1], x1 + args.pad)
+        y1 = min(rgb.shape[0], y1 + args.pad)
         if not (0 <= x0 < x1 <= rgb.shape[1] and 0 <= y0 < y1 <= rgb.shape[0]):
             raise SystemExit(
                 f"--box が画像の外です。画像は {rgb.shape[1]}x{rgb.shape[0]} 画素。")
@@ -410,6 +414,13 @@ def cmd_cut(args):
     Image.fromarray((template * 255).astype(np.uint8)).save(out_path)
     print(f"{out_path} に保存 ({template.shape[1]}x{template.shape[0]}, "
           f"{int(template.sum())}px)")
+    edge = touches_border(template)
+    if edge > 0.01:
+        print(f"★縁の{edge:.1%}に太い線が掛かっている。記号が見切れている見込みが高い。")
+        print("  --pad を増やして切り直すこと。部分だけのテンプレートは"
+              "完全な記号にうまく当たらない。")
+    else:
+        print("縁に太い線は掛かっていない。記号は枠に収まっている。")
 
 
 # cluster が書き出す一覧。テンプレートではないので読み込みから外す。
@@ -639,6 +650,9 @@ def main():
     cut.add_argument("--box", type=int, nargs=4, metavar=("X0", "Y0", "X1", "Y1"),
                      help="画素の座標を直に指定して切り出す。等圧線と繋がっていて"
                           "候補にならない記号は、こちらで切り出す")
+    cut.add_argument("--pad", type=int, default=0,
+                     help="--box の四方に足す余白(画素)。記号が見切れるときに増やす。"
+                          "余分な背景は一致スコアをあまり下げないので、多めでよい")
     cut.add_argument("--band", default="isobar", choices=sorted(DEFAULT_BANDS))
     cut.add_argument("--erode", type=int, default=0)
     cut.add_argument("--max-side", type=int, default=64)
