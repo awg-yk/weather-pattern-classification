@@ -385,6 +385,11 @@ def main():
         print(f"{len(done)}件は書き出し済み。残り{len(todo)}件から再開する。")
     if not todo:
         print("すべて済んでいます。")
+        if args.overlay:
+            # 重ね描きは見るためのものなので、済んでいても作り直したいのがふつう。
+            # 黙って何もしないと、条件を変えて走らせたつもりで前回の絵を見てしまう
+            print(f"★--overlay を指定していますが、書き出すものがありません。"
+                  f"見直すには先に {out_path} を消してください。")
         return
 
     columns = ["filename"] + feature_names(load_regions())
