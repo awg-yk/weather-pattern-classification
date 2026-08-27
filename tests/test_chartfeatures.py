@@ -355,11 +355,30 @@ def test_build_features_counts_what_it_found(tmp_path):
     build_features._WORKER.update(
         letters={"H": glyph_template("H"), "L": glyph_template("L")},
         marks={}, regions=load_regions(), scale=1.0, mark_scale=1.0,
-        mark_radius=0.08,
+        mark_radius=0.08, overlay=None,
     )
     _, _, report = build_features._run_one((str(chart), 0.65, 20, 5))
-    assert {"high", "low", "edge_high", "edge_low", "marks", "orphan_marks"} <= set(report)
+    assert {"high", "low", "edge_high", "edge_low", "marks", "orphan_marks",
+            "letters_H", "letters_L"} <= set(report)
     assert report["high"] + report["edge_high"] == 2
+
+
+def test_overlay_is_written_so_the_numbers_can_be_checked(tmp_path):
+    """重ね描きが書き出せること。
+
+    **数字だけでは「印が出すぎ」と「文字が足りない」を区別できない。**
+    印7.9に対して種別が付いたのが3.1、という数字はどちらでも起こりうる。
+    """
+    from PIL import Image
+
+    from scripts.build_features import analyse_chart
+
+    chart = tmp_path / "Js_2024070100.png"
+    Image.fromarray(synthetic_chart_with(1, 1, stationary=False)).save(chart)
+    out = tmp_path / "overlay"
+    analyse_chart(chart, {"H": glyph_template("H")}, {"mark": glyph_template("H")},
+                  1.0, 0.65, 20, 5, 1.0, 0.08, overlay_dir=out)
+    assert (out / "Js_2024070100_marks.png").exists()
 
 
 # --- 退化した特徴量に対する守り ------------------------------------------
