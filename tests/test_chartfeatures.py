@@ -649,6 +649,34 @@ def test_a_letter_serves_only_one_mark():
     assert len(orphans) == 1
 
 
+def test_an_unpaired_letter_keeps_its_own_position(tmp_path):
+    """印と組にならなかった文字の位置を捨てないこと。
+
+    **印を入れて位置の総数が減ってはいけない。**以前は縁のものだけ数えて
+    残りを捨てていたため、印を入れると macro F1 が 0.408 から 0.340 に落ち、
+    印と無関係なはずの停滞前線(0.619 -> 0.473)まで巻き添えになった。
+    位置の特徴量は全ラベルの木に入るので、そこが濁ると全体が濁る。
+    """
+    from PIL import Image
+
+    from scripts.build_features import analyse_chart
+
+    chart = tmp_path / "Js_2024070100.png"
+    Image.fromarray(synthetic_chart_with(2, 1, stationary=False)).save(chart)
+    letters = {"H": glyph_template("H"), "L": glyph_template("L")}
+
+    # 印を渡さないときに拾えた位置の数
+    without, _ = analyse_chart(chart, letters, {}, 1.0, 0.65, 20, 5)
+    baseline = len(without.highs) + len(without.lows)
+    assert baseline >= 2, "この合成図で位置が拾えていないなら、前提が変わっている"
+
+    # 印を渡しても、位置の数は減らない
+    marks = {"mark": glyph_template("H")}
+    with_marks, _ = analyse_chart(chart, letters, marks, 1.0, 0.65, 20, 5,
+                                  mark_scale=1.0, mark_radius=0.10)
+    assert len(with_marks.highs) + len(with_marks.lows) >= baseline
+
+
 def test_letters_without_a_mark_are_the_off_frame_systems():
     """組にならなかった文字は、中心が枠外の系として扱えること。
 

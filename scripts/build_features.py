@@ -36,8 +36,15 @@ r"""Phase 3: 天気図から検出を行い、分類用の特徴量CSVを作る�
 逆向きも効く。数字の「4」や「6」の交差、L のラベルと等圧線の交差に×が
 誤検出されるが、**近くに文字が無いので種別が付かず、特徴量に入らない**。
 
-組にならなかった文字は**中心が枠外の系**である(×が描かれない)。位置は
-主張させず、n_edge_high / n_edge_low として数だけ数える。
+組にならなかった強い文字は、**文字の位置のまま使う**。印は位置を良くする
+ためのもので、位置を減らすためのものではない。縁にあるものだけは中心が枠外
+の系(×が描かれない)なので、位置は主張させず n_edge_high / n_edge_low と
+して数だけ数える。
+
+**ここを取り違えると、印と無関係なラベルまで巻き添えで落ちる。**以前は縁の
+もの以外を捨てていたため、位置の総数が減り、しかも減り方が画像ごとに違って
+同じ列の意味が行によって変わった。実測で macro F1 が 0.408 -> 0.340、停滞
+前線は 0.619 -> 0.473 になった。位置の特徴量は全ラベルの木に入る。
 
 印は文字と**別の倍率**で当てる(`--mark-scale`、既定1.0=原寸)。印は約31x31
 しかなく、文字(約95x117)に効く 0.7 では22x22になって丸と×の細部が潰れる。
@@ -240,10 +247,19 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
         paired = {kind: set(points) - set(spare[kind]) for kind, points in
                   letter_groups.items()}
         confirmed = sum(len(points - strong[kind]) for kind, points in paired.items())
-        # 組にならなかった文字のうち**強いものだけ**が枠外の系。弱いまま余った
-        # ものは、裏書きが無いので誤検出として捨てる
-        _, edge_highs = split_by_edge([p for p in spare["H"] if p in strong["H"]])
-        _, edge_lows = split_by_edge([p for p in spare["L"] if p in strong["L"]])
+        # 組にならなかった強い文字は、**文字の位置のまま使う**。捨ててはいけない。
+        #
+        # 以前は縁のものだけ数えて残りを捨てていた。印は位置を良くするはずが
+        # 位置の総数を減らし、しかも減り方が画像ごとに違うので、同じ列の意味が
+        # 行によって変わった。実測で macro F1 が 0.408 -> 0.340 に落ち、
+        # 印と無関係なはずの停滞前線(0.619 -> 0.473)まで巻き添えになった。
+        #
+        # 弱いまま余ったものは裏書きが無いので誤検出として捨てる。
+        keep_highs, edge_highs = split_by_edge(
+            [p for p in spare["H"] if p in strong["H"]])
+        keep_lows, edge_lows = split_by_edge(
+            [p for p in spare["L"] if p in strong["L"]])
+        highs, lows = highs + keep_highs, lows + keep_lows
     else:
         # 文字しか無い。文字の位置は中心ではないので、縁のものは位置を主張させない
         highs, edge_highs = split_by_edge(letter_groups["H"])
