@@ -42,6 +42,7 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -94,8 +95,32 @@ def size_cluster(sizes: Counter, tolerance: int = 3) -> tuple[tuple[int, int], i
     return best, best_votes
 
 
+def oversized_components(rgb, band: str, erode: int, max_side: int):
+    """大きさで落とした連結成分の数と、最大のものの枠を返す。
+
+    記号が等圧線と繋がっていると、図の端から端まで伸びる巨大な成分の一部に
+    なって落ちる。落とした成分の最大が画像とほぼ同じ大きさなら、等圧線網が
+    1つに繋がったままということで、細らせ方が足りない。
+    """
+    ink = DEFAULT_BANDS[band].mask(to_hsv(rgb))
+    if erode:
+        kernel = np.ones((2 * erode + 1, 2 * erode + 1), np.uint8)
+        ink = cv2.erode(ink.astype(np.uint8), kernel).astype(bool)
+    count, _, stats, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), 8)
+    rejected, biggest = 0, (0, 0)
+    for i in range(1, count):
+        w = int(stats[i, cv2.CC_STAT_WIDTH])
+        h = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if max(w, h) > max_side:
+            rejected += 1
+            if w * h > biggest[0] * biggest[1]:
+                biggest = (w, h)
+    return rejected, biggest
+
+
 def cmd_scan(args):
     counts = []
+    oversize = []
     sizes = Counter()
     located: list[tuple[str, int, int, int]] = []   # (画像, 番号, 幅, 高さ)
     for path in iter_images(args.in_dir, args.limit):
@@ -107,7 +132,11 @@ def cmd_scan(args):
         for i, c in enumerate(candidates):
             sizes[(c.width, c.height)] += 1
             located.append((path.name, i, c.width, c.height))
-        print(f"{path.name:24s} 候補 {len(candidates):4d}")
+        rejected, biggest = oversized_components(rgb, args.band, args.erode,
+                                                 args.max_side)
+        oversize.append((rejected, biggest))
+        print(f"{path.name:24s} 候補 {len(candidates):4d}   "
+              f"大きすぎて落とした成分 {rejected:3d} (最大 {biggest[0]}x{biggest[1]})")
         if args.overlay:
             draw_boxes(rgb, candidates, Path(args.overlay) / f"{path.stem}_cands.png", True)
 
@@ -322,13 +351,58 @@ def report_threshold_sweep(patches: list, current: float) -> None:
         print("  H と L はそのうちの2つなので、一覧(clusters.png)を見て選ぶ。")
 
 
+def cmd_grid(args):
+    """座標のめもりを重ねた天気図を書き出す。cut --box に渡す数を読むため。
+
+    等圧線と繋がった記号は連結成分として取れないので、候補の番号では
+    指せない。画素の座標で切り出すしかなく、その座標を読むための道具。
+    """
+    rgb = np.array(Image.open(args.image).convert("RGB"))
+    image = Image.fromarray(rgb).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    height, width = rgb.shape[:2]
+    try:
+        font = ImageFont.load_default()
+    except OSError:
+        font = None
+
+    for x in range(0, width, args.step):
+        heavy = (x % (args.step * 5) == 0)
+        draw.line((x, 0, x, height), fill=(0, 200, 0) if heavy else (150, 220, 150))
+        if heavy:
+            draw.text((x + 2, 2), str(x), fill=(0, 140, 0), font=font)
+    for y in range(0, height, args.step):
+        heavy = (y % (args.step * 5) == 0)
+        draw.line((0, y, width, y), fill=(0, 200, 0) if heavy else (150, 220, 150))
+        if heavy:
+            draw.text((2, y + 2), str(y), fill=(0, 140, 0), font=font)
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    image.save(out)
+    print(f"{out.resolve()} ({width}x{height}画素、{args.step}画素ごとのめもり)")
+    print("記号を囲む枠の左上と右下を読み、cut --box X0 Y0 X1 Y1 に渡すこと。")
+    print("枠は記号より少し大きめでよい。多少の余白は一致スコアをあまり下げない。")
+
+
 def cmd_cut(args):
     rgb = np.array(Image.open(args.image).convert("RGB"))
-    candidates = glyph_candidates(rgb)
-    if not 0 <= args.index < len(candidates):
-        raise SystemExit(f"--index は 0〜{len(candidates) - 1} で指定してください")
-    c = candidates[args.index]
-    template = crop_template(rgb, (c.x0, c.y0, c.x1, c.y1))
+    if args.box:
+        # 候補になっていない場所からでも切り出せる。等圧線と繋がってしまって
+        # 連結成分として取れない記号は、この方法でテンプレートにするしかない。
+        # 一度テンプレートさえ作れば、match は連結成分を使わずに探すので当たる。
+        x0, y0, x1, y1 = args.box
+        if not (0 <= x0 < x1 <= rgb.shape[1] and 0 <= y0 < y1 <= rgb.shape[0]):
+            raise SystemExit(
+                f"--box が画像の外です。画像は {rgb.shape[1]}x{rgb.shape[0]} 画素。")
+        template = crop_template(rgb, (x0, y0, x1, y1))
+    else:
+        candidates = glyph_candidates(rgb, band=args.band, erode=args.erode,
+                                      max_side=args.max_side)
+        if not 0 <= args.index < len(candidates):
+            raise SystemExit(f"--index は 0〜{len(candidates) - 1} で指定してください")
+        c = candidates[args.index]
+        template = crop_template(rgb, (c.x0, c.y0, c.x1, c.y1))
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{args.name}.png"
@@ -422,7 +496,14 @@ def main():
 
     cut = sub.add_parser("cut", help="候補からテンプレートを切り出す")
     cut.add_argument("--image", required=True)
-    cut.add_argument("--index", type=int, required=True)
+    cut.add_argument("--index", type=int, default=-1,
+                     help="scan が振った候補の番号から切り出す")
+    cut.add_argument("--box", type=int, nargs=4, metavar=("X0", "Y0", "X1", "Y1"),
+                     help="画素の座標を直に指定して切り出す。等圧線と繋がっていて"
+                          "候補にならない記号は、こちらで切り出す")
+    cut.add_argument("--band", default="isobar", choices=sorted(DEFAULT_BANDS))
+    cut.add_argument("--erode", type=int, default=0)
+    cut.add_argument("--max-side", type=int, default=64)
     cut.add_argument("--name", required=True, help="H / L / T / TD / cross など")
     cut.add_argument("--out", default="data/templates")
     cut.set_defaults(func=cmd_cut)
@@ -448,6 +529,12 @@ def main():
     cluster.add_argument("--patch-width", type=int, default=24)
     cluster.add_argument("--patch-height", type=int, default=32)
     cluster.set_defaults(func=cmd_cluster)
+
+    grid = sub.add_parser("grid", help="座標のめもりを重ねた天気図を書き出す")
+    grid.add_argument("--image", required=True)
+    grid.add_argument("--out", default="reports/grid.png")
+    grid.add_argument("--step", type=int, default=50)
+    grid.set_defaults(func=cmd_grid)
 
     match = sub.add_parser("match", help="テンプレートを当てる")
     match.add_argument("--in-dir", required=True)

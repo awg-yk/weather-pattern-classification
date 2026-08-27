@@ -685,3 +685,60 @@ def test_eroding_too_much_breaks_the_glyph_apart():
     """やりすぎると記号自体が切れて、線ごとにばらばらになる。"""
     found = glyph_candidates(outlined_glyph_crossed_by_an_isobar(), max_side=120, erode=3)
     assert len(found) > 1
+
+
+# --- 等圧線と繋がった記号はテンプレートでしか取れない --------------------
+
+def outlined_glyphs(with_thick_isobar: bool):
+    """中抜きの記号3個。太い等圧線が横切る版と、横切らない版。"""
+    img = np.full((400, 600, 3), 255, dtype=np.uint8)
+    for x in (80, 300, 480):
+        cv2.rectangle(img, (x, 150), (x + 60, 250), BLACK, 6)
+    if with_thick_isobar:
+        cv2.line(img, (0, 200), (599, 200), BLACK, 4, lineType=cv2.LINE_8)
+    return img
+
+
+def test_connected_components_cannot_find_a_glyph_joined_to_a_thick_isobar():
+    """太い等圧線は細らせても残り、記号と繋がったままになる。
+
+    実測でこれが起きていた。--erode 1 でも H と L は候補に出ず、山として
+    出たのは数字と等圧線の断片と×印だけだった。
+    """
+    merged = outlined_glyphs(with_thick_isobar=True)
+    assert glyph_candidates(merged, max_side=150, erode=1) == []
+    # 横切っていなければ普通に取れる。取れない原因が合流だと分かる
+    assert len(glyph_candidates(outlined_glyphs(False), max_side=150, erode=1)) == 3
+
+
+def test_template_matching_finds_glyphs_that_are_joined_to_an_isobar():
+    """テンプレートさえあれば当たる。match は連結成分を使わないため。
+
+    これが Phase 1 の道になる。候補拾いで取れない記号でも、1つ切り出して
+    テンプレートにすれば、残りは全部見つかる。
+    """
+    clean = outlined_glyphs(with_thick_isobar=False)
+    c = glyph_candidates(clean, max_side=150)[0]
+    template = crop_template(clean, (c.x0, c.y0, c.x1, c.y1))
+
+    merged = outlined_glyphs(with_thick_isobar=True)
+    for threshold in (0.6, 0.8):
+        assert len(match_templates(merged, {"L": template}, threshold=threshold)) == 3
+
+
+def test_cut_by_box_works_without_any_candidate(tmp_path):
+    """候補にならない場所からでもテンプレートを切り出せること。"""
+    import argparse
+
+    from scripts.extract_symbols import cmd_cut
+
+    chart = tmp_path / "Js_2024070100.png"
+    Image.fromarray(outlined_glyphs(with_thick_isobar=True)).save(chart)
+    assert glyph_candidates(np.array(Image.open(chart)), max_side=150, erode=1) == []
+
+    cmd_cut(argparse.Namespace(
+        image=chart, index=-1, box=[75, 145, 145, 255], name="L",
+        out=tmp_path, band="isobar", erode=0, max_side=64,
+    ))
+    saved = np.array(Image.open(tmp_path / "L.png").convert("L")) > 127
+    assert saved.any() and saved.shape == (110, 70)
