@@ -484,6 +484,38 @@ def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
         f"テンプレートがありません: {template_dir} (先に cluster か cut を実行)")
 
 
+# 同じ記号のテンプレートの大きさが、これ以上ばらついたら切り出しを疑う。
+SIZE_SPREAD = 1.4
+
+
+def warn_uneven_sizes(templates: dict) -> None:
+    """同じ記号なのに大きさが揃わないテンプレートを指摘する。
+
+    記号は同じ大きさで描かれるので、正しく切り出せていれば揃うはずである。
+    **1枚だけ極端に小さければ、その枠は記号の一部しか捉えていない。**
+    半端なテンプレートは本物に当たらないだけでなく、記号の一部に似た形
+    (等圧線の曲がりなど)に当たって誤検出を増やす。
+
+    実測で、L のテンプレートが4枚中1枚だけ84x131(他は160x192前後)になり、
+    Lの検出数が61個から82個へ不自然に増えた。
+    """
+    grouped: dict[str, list] = {}
+    for name, template in templates.items():
+        grouped.setdefault(symbol_of(name), []).append(
+            (name, template.shape[1], template.shape[0]))
+
+    for symbol, entries in sorted(grouped.items()):
+        if len(entries) < 2:
+            continue
+        areas = [w * h for _, w, h in entries]
+        if max(areas) > SIZE_SPREAD ** 2 * min(areas):
+            print(f"  ★{symbol} のテンプレートの大きさが揃っていない: " + ", ".join(
+                f"{n}({w}x{h})" for n, w, h in entries))
+            print("    記号は同じ大きさで描かれるので、極端に小さいものは"
+                  "記号の一部しか捉えていない。")
+            print("    そのテンプレートを切り直すか、消してから当て直すこと。")
+
+
 def report_scores(scores: list[float], threshold: float) -> None:
     """一致スコアの分布を出す。しきい値に張り付いていれば取りこぼしている。
 
@@ -578,6 +610,7 @@ def cmd_match(args):
     if any(n > 1 for n in by_symbol.values()):
         print("  同じ記号の別個体: " + ", ".join(
             f"{k}={n}枚" for k, n in sorted(by_symbol.items()) if n > 1))
+    warn_uneven_sizes(templates)
     template_sizes = [(v.shape[1], v.shape[0]) for v in templates.values()]
     angles = np.arange(-args.angle_range, args.angle_range + args.angle_step,
                        args.angle_step)

@@ -969,3 +969,32 @@ def test_fitting_falls_back_when_the_box_holds_no_thick_ink():
     blank_img = blank()
     mask = DEFAULT_BANDS["isobar"].mask(to_hsv(blank_img))
     assert fit_glyph_box(mask, (10, 10, 60, 60)) == (10, 10, 60, 60)
+
+
+def test_uneven_template_sizes_are_flagged(capsys):
+    """同じ記号なのに大きさが揃わなければ、切り出しが失敗している。
+
+    実測で L のテンプレートが4枚中1枚だけ84x131(他は160x192前後)になり、
+    L の検出数が61個から82個へ不自然に増えた。半端なテンプレートは本物に
+    当たらないうえ、記号の一部に似た形に当たって誤検出を増やす。
+    """
+    from scripts.extract_symbols import warn_uneven_sizes
+    tile = lambda w, h: np.ones((h, w), dtype=bool)
+    warn_uneven_sizes({"L": tile(84, 131), "L2": tile(160, 192),
+                       "L3": tile(157, 210), "L4": tile(160, 210)})
+    out = capsys.readouterr().out
+    assert "★L" in out and "84x131" in out
+
+
+def test_similar_template_sizes_are_not_flagged(capsys):
+    from scripts.extract_symbols import warn_uneven_sizes
+    tile = lambda w, h: np.ones((h, w), dtype=bool)
+    warn_uneven_sizes({"L": tile(158, 195), "L2": tile(160, 192),
+                       "L3": tile(157, 210)})
+    assert capsys.readouterr().out == ""
+
+
+def test_a_lone_template_is_never_flagged(capsys):
+    from scripts.extract_symbols import warn_uneven_sizes
+    warn_uneven_sizes({"H": np.ones((100, 90), dtype=bool)})
+    assert capsys.readouterr().out == ""
