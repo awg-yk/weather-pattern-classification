@@ -874,7 +874,7 @@ def test_moving_detections_are_not_flagged(capsys):
     from scripts.extract_symbols import report_fixed_detections
     placed = [("L", 0.2 + 0.05 * i, 0.3 + 0.02 * i, 0.0) for i in range(10)]
     report_fixed_detections(placed, 10)
-    assert "毎回同じ場所に出続ける検出はない" in capsys.readouterr().out
+    assert "画素まで一致し続ける検出はない" in capsys.readouterr().out
 
 
 def test_same_place_but_different_tilt_is_not_fixed(capsys):
@@ -882,4 +882,4 @@ def test_same_place_but_different_tilt_is_not_fixed(capsys):
     from scripts.extract_symbols import report_fixed_detections
     placed = [("H", 0.5, 0.5, float(5 * i)) for i in range(10)]
     report_fixed_detections(placed, 10)
-    assert "毎回同じ場所に出続ける検出はない" in capsys.readouterr().out
+    assert "画素まで一致し続ける検出はない" in capsys.readouterr().out
