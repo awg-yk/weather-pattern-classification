@@ -1121,3 +1121,23 @@ def test_border_contact_is_not_called_clipping_when_isolation_failed(capsys):
     assert "切り離せなかった" in out
     assert "見切れではない" in out
     assert "★" not in out
+
+
+# --- 人が作ったテンプレート ---------------------------------------------
+
+def test_a_hand_made_template_works_in_either_polarity():
+    """手で作ったテンプレートは白地に黒になりやすい。どちらでも受け付ける。
+
+    太い等圧線が記号を横切ると連結成分では分けられないが、人なら消せるし、
+    重なっていない個体を選べる。手作りのほうが確実な場合がある。
+    """
+    from scripts.extract_symbols import as_template
+    glyph = np.zeros((40, 30), dtype=np.uint8)
+    glyph[5:35, 5:12] = 255
+    glyph[28:35, 5:25] = 255
+
+    white_on_black = as_template(glyph)
+    black_on_white = as_template(255 - glyph)
+    assert white_on_black.mean() == pytest.approx(black_on_white.mean())
+    assert (white_on_black == black_on_white).all()
+    assert 0.1 < white_on_black.mean() < 0.5     # 記号は画像の一部でしかない

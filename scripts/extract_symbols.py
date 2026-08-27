@@ -464,6 +464,25 @@ def symbol_of(template_name: str) -> str:
     return re.split(r"[_\d]", template_name, maxsplit=1)[0] or template_name
 
 
+def as_template(gray: np.ndarray, label: str = "") -> np.ndarray:
+    """濃淡画像を2値のテンプレートにする。白地に黒で描いた画像も受け付ける。
+
+    テンプレートは人が画像編集ソフトで作ってもよい。**そのほうが確実な場合が
+    ある** — 太い等圧線が記号の上を横切ると、細らせても1つの塊のままで
+    連結成分では分けられないが、人なら消せるし、重なっていない個体を選べる。
+
+    cut が書き出すのは「記号が白・地が黒」だが、手で作ると逆になりやすい。
+    記号は画像の一部でしかないはずなので、**白のほうが多ければ白地とみなして
+    反転する**。
+    """
+    ink = gray > 127
+    if ink.mean() > 0.5:
+        ink = ~ink
+        if label:
+            print(f"  {label} は白地に黒と判断して反転した。")
+    return ink
+
+
 def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
     """人が名前を付けたテンプレートだけを読む。
 
@@ -483,7 +502,8 @@ def load_templates(template_dir: Path) -> dict[str, np.ndarray]:
         if re.fullmatch(r"cluster\d+", path.stem):
             unnamed.append(path.stem)
             continue
-        named[path.stem] = np.array(Image.open(path).convert("L")) > 127
+        named[path.stem] = as_template(np.array(Image.open(path).convert("L")),
+                                       path.name)
 
     if named:
         if unnamed:
