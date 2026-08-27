@@ -763,7 +763,7 @@ def test_cut_by_box_works_without_any_candidate(tmp_path):
     assert glyph_candidates(np.array(Image.open(chart)), max_side=150, erode=1) == []
 
     cmd_cut(argparse.Namespace(
-        image=chart, index=-1, box=[75, 145, 145, 255], name="L",
+        image=chart, index=-1, box=[75, 145, 145, 255], name="L", pad=0,
         out=tmp_path, band="isobar", erode=0, max_side=64,
     ))
     saved = np.array(Image.open(tmp_path / "L.png").convert("L")) > 127
