@@ -23,7 +23,18 @@ r"""Phase 3: 天気図から検出を行い、分類用の特徴量CSVを作る�
 
 印と文字は `--mark-radius`(既定0.08、相対座標)以内で近いものから順に
 1対1で組にする。**この半径は当てずっぽうで決めない。**処理のあとに実測の
-分布が出るので、それを見て決める。
+分布が10%刻みで出るので、値がほぼ倍に飛ぶところ(本物と無関係の境目)の
+手前を取る。
+
+二つの検出は互いを裏書きする
+----------------------------
+文字は `--letter-threshold`(既定0.50)まで緩めて拾い、**しきい値を割った
+文字は印と組になったものだけを採る**。実物の重ね描きで、998hPa と 996hPa の
+低気圧の L が等圧線に横切られて 0.65 を割っていた。×は拾えていたので、
+そこに文字があるという裏書きになる。
+
+逆向きも効く。数字の「4」や「6」の交差、L のラベルと等圧線の交差に×が
+誤検出されるが、**近くに文字が無いので種別が付かず、特徴量に入らない**。
 
 組にならなかった文字は**中心が枠外の系**である(×が描かれない)。位置は
 主張させず、n_edge_high / n_edge_low として数だけ数える。
@@ -148,6 +159,7 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
                   threshold: float, angle_range: float, angle_step: float,
                   mark_scale: float = 1.0,
                   mark_radius: float = MARK_LETTER_RADIUS,
+                  letter_threshold: float = 0.50,
                   overlay_dir=None) -> tuple:
     """1枚から検出結果を取り出す。位置はすべて相対座標(0〜1)。
 
@@ -168,30 +180,42 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
     ink = ink_image(rgb)
     angles = np.arange(-angle_range, angle_range + angle_step, angle_step)
 
-    def positions(templates: dict, image_scale: float) -> dict:
+    def positions(templates: dict, image_scale: float, at: float) -> dict:
         if not templates:
             return {}
         # cx / cy は画像の幅・高さで割った相対座標なので、倍率が違っても比べられる
         hits = match_templates(shrink(ink, image_scale), templates,
-                               threshold=threshold, angles=angles)
+                               threshold=at, angles=angles)
         grouped: dict = {}
         for hit in hits:
-            grouped.setdefault(symbol_of(hit.label), []).append((hit.cx, hit.cy))
+            grouped.setdefault(symbol_of(hit.label), []).append(
+                (hit.cx, hit.cy, hit.score))
         return grouped
 
-    letter_pos = positions(letters, scale)
-    mark_pos = positions(marks, mark_scale)
-    letter_groups = {"H": letter_pos.get("H", []), "L": letter_pos.get("L", [])}
+    # 文字は低いしきい値まで拾い、弱いものは印との相互確認で採否を決める。
+    # **等圧線に横切られた L は 0.65 を割る**が、そこに×があるなら本物である。
+    weak = letter_threshold if marks else threshold
+    letter_pos = positions(letters, scale, min(threshold, weak))
+    mark_pos = positions(marks, mark_scale, threshold)
+
+    def drop_scores(kind: str, only_strong: bool = False) -> list:
+        return [(x, y) for x, y, score in letter_pos.get(kind, [])
+                if not only_strong or score >= threshold]
+
+    letter_groups = {"H": drop_scores("H"), "L": drop_scores("L")}
+    strong = {"H": set(drop_scores("H", True)), "L": set(drop_scores("L", True))}
     distances: list = []
     found_marks = 0
     orphans = 0
+    confirmed = 0
     unmatched: list = []
+    paired: dict = {"H": set(), "L": set()}
 
     if mark_pos:
         # 印は位置だけを担い、種別はいちばん近い文字から取る。
         # **印の形(ただの×か、丸で囲んだ×か)では見分けない。**理由は
         # `src/chartfeatures.assign_marks_to_letters` に書いてある。
-        all_marks = [point for points in mark_pos.values() for point in points]
+        all_marks = [(x, y) for points in mark_pos.values() for x, y, _ in points]
         found_marks = len(all_marks)
         # 文字が1つも無いと距離は空になる。**印の数とは別に数えること**
         distances = nearest_letter_distances(all_marks, letter_groups)
@@ -199,9 +223,14 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
             all_marks, letter_groups, mark_radius)
         highs, lows = typed["H"], typed["L"]
         orphans = len(unmatched)
-        # 組にならなかった文字 = 中心が枠外の系。位置は主張させず数だけ数える
-        _, edge_highs = split_by_edge(spare["H"])
-        _, edge_lows = split_by_edge(spare["L"])
+        # 組になった弱い文字は印が裏書きしたので採る。数えて出す
+        paired = {kind: set(points) - set(spare[kind]) for kind, points in
+                  letter_groups.items()}
+        confirmed = sum(len(points - strong[kind]) for kind, points in paired.items())
+        # 組にならなかった文字のうち**強いものだけ**が枠外の系。弱いまま余った
+        # ものは、裏書きが無いので誤検出として捨てる
+        _, edge_highs = split_by_edge([p for p in spare["H"] if p in strong["H"]])
+        _, edge_lows = split_by_edge([p for p in spare["L"] if p in strong["L"]])
     else:
         # 文字しか無い。文字の位置は中心ではないので、縁のものは位置を主張させない
         highs, edge_highs = split_by_edge(letter_groups["H"])
@@ -216,15 +245,20 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
         # 文字が何枚見つかったかは、印が余る原因を切り分けるのに要る。
         # 印7.9に対して文字3.5なら、狭いのは半径ではなく文字の取りこぼしである
         "letters_H": len(letter_groups["H"]), "letters_L": len(letter_groups["L"]),
+        "confirmed_letters": confirmed,
     }
     if overlay_dir:
-        draw_overlay(rgb, letter_groups, detections, unmatched,
+        # 採ったものだけ描く。捨てた弱い文字まで描くと図が読めなくなる
+        shown = {kind: [p for p in points if p in strong[kind] or p in paired[kind]]
+                 for kind, points in letter_groups.items()}
+        weak = {p for kind, points in paired.items() for p in points - strong[kind]}
+        draw_overlay(rgb, shown, weak, detections, unmatched,
                      Path(overlay_dir) / f"{path.stem}_marks.png")
     return detections, report
 
 
-def draw_overlay(rgb: np.ndarray, letter_groups: dict, detections,
-                 orphan_marks: list, out_path: Path) -> None:
+def draw_overlay(rgb: np.ndarray, letter_groups: dict, weak_letters: set,
+                 detections, orphan_marks: list, out_path: Path) -> None:
     """検出を天気図に重ね描きする。
 
     **数字だけでは「印が出すぎ」と「文字が足りない」を区別できない。**
@@ -232,9 +266,12 @@ def draw_overlay(rgb: np.ndarray, letter_groups: dict, detections,
     目で見るのが一番速い。
 
         青の枠   H の文字      水色の枠 L の文字
+        橙の枠   しきい値を割ったが、印が裏書きして採った文字
         緑の丸   種別の付いた印(H / L と書く)
         赤の丸   種別の付かなかった印(近くに文字が無い)
         細い線   印と、組にした文字を結ぶ
+
+    捨てた弱い文字は描かない。全部描くと図が読めなくなる。
     """
     from PIL import ImageDraw
 
@@ -248,8 +285,9 @@ def draw_overlay(rgb: np.ndarray, letter_groups: dict, detections,
     for kind, colour in (("H", (0, 80, 255)), ("L", (0, 190, 220))):
         for point in letter_groups[kind]:
             x, y = xy(point)
-            draw.rectangle((x - 34, y - 40, x + 34, y + 40), outline=colour, width=3)
-            draw.text((x - 34, y - 56), f"文字{kind}", fill=colour)
+            shade = (255, 140, 0) if point in weak_letters else colour
+            draw.rectangle((x - 34, y - 40, x + 34, y + 40), outline=shade, width=3)
+            draw.text((x - 34, y - 56), f"文字{kind}", fill=shade)
 
     for kind, points in (("H", detections.highs), ("L", detections.lows)):
         for point in points:
@@ -268,7 +306,8 @@ def draw_overlay(rgb: np.ndarray, letter_groups: dict, detections,
     image.save(out_path)
 
 
-def _init_worker(template_dir, mark_dir, scale, mark_scale, mark_radius, overlay):
+def _init_worker(template_dir, mark_dir, scale, mark_scale, mark_radius,
+                 letter_threshold, overlay):
     _WORKER["letters"] = load_templates_scaled(Path(template_dir), scale, quiet=True)
     _WORKER["marks"] = (load_templates_scaled(Path(mark_dir), mark_scale, quiet=True)
                         if mark_dir else {})
@@ -276,6 +315,7 @@ def _init_worker(template_dir, mark_dir, scale, mark_scale, mark_radius, overlay
     _WORKER["scale"] = scale
     _WORKER["mark_scale"] = mark_scale
     _WORKER["mark_radius"] = mark_radius
+    _WORKER["letter_threshold"] = letter_threshold
     _WORKER["overlay"] = overlay
 
 
@@ -284,7 +324,7 @@ def _run_one(job) -> tuple:
     detections, report = analyse_chart(
         Path(path), _WORKER["letters"], _WORKER["marks"], _WORKER["scale"],
         threshold, angle_range, angle_step, _WORKER["mark_scale"],
-        _WORKER["mark_radius"], _WORKER["overlay"],
+        _WORKER["mark_radius"], _WORKER["letter_threshold"], _WORKER["overlay"],
     )
     report.update(
         high=len(detections.highs), low=len(detections.lows),
@@ -322,6 +362,9 @@ def main():
                         help="印と H/L の文字を組にする距離(相対座標)。"
                              "処理のあとに実測の分布が出るので、それを見て決める")
     parser.add_argument("--threshold", type=float, default=0.65)
+    parser.add_argument("--letter-threshold", type=float, default=0.50,
+                        help="印と組になった文字だけに使う、緩めのしきい値。"
+                             "等圧線に横切られた L はここまで下げないと拾えない")
     parser.add_argument("--angle-range", type=float, default=60.0)
     parser.add_argument("--angle-step", type=float, default=5.0)
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
@@ -366,13 +409,14 @@ def main():
     # 何個拾えたかを数える。**印を入れて成績が落ちたときに、それが
     # 「印が当たっていない」せいなのかを、ここの数字で切り分けられる。**
     tally = {"high": 0, "low": 0, "edge_high": 0, "edge_low": 0,
-             "marks": 0, "orphan_marks": 0, "letters_H": 0, "letters_L": 0}
+             "marks": 0, "orphan_marks": 0, "letters_H": 0, "letters_L": 0,
+             "confirmed_letters": 0}
     distances: list = []
     with ProcessPoolExecutor(
         max_workers=args.workers,
         initializer=_init_worker,
         initargs=(args.templates, args.marks, args.scale, args.mark_scale,
-                  args.mark_radius, args.overlay),
+                  args.mark_radius, args.letter_threshold, args.overlay),
     ) as pool, open(out_path, "a", encoding="utf-8") as handle:
         for name, row, report in pool.map(_run_one, jobs, chunksize=4):
             distances.extend(report.pop("distances"))
@@ -404,7 +448,7 @@ def report_counts(tally: dict, distances: list, written: int, args) -> None:
     """
     per_chart = max(1, written)
     print("1枚あたりの検出数(この回に処理したぶんだけ):")
-    for key in ("letters_H", "letters_L", "marks",
+    for key in ("letters_H", "letters_L", "confirmed_letters", "marks",
                 "high", "low", "edge_high", "edge_low", "orphan_marks"):
         print(f"  {key:12s} {tally[key] / per_chart:.2f}")
 
@@ -427,14 +471,15 @@ def report_counts(tally: dict, distances: list, written: int, args) -> None:
                   "--mark-radius が狭すぎます。下の分布から決めてください。")
 
     if distances:
+        # 本物の組は近くに固まり、無関係な組はぐっと離れる。その谷が半径である。
+        # 10%刻みで出すのは、中央値と7割だけでは谷の位置が読めなかったため
         values = np.sort(np.array(distances))
-        marks = [("中央値", 50), ("7割", 70), ("9割", 90), ("最大", 100)]
-        line = "  ".join(
-            f"{name} {np.percentile(values, q):.3f}" for name, q in marks
-        )
-        print(f"印から一番近い文字までの距離: {line}")
+        print("印から一番近い文字までの距離(10%刻み):")
+        print("  " + "  ".join(f"{q}%:{np.percentile(values, q):.3f}"
+                               for q in range(10, 101, 10)))
         print(f"  今の --mark-radius {args.mark_radius:.3f} で "
               f"{100 * (values <= args.mark_radius).mean():.0f}% が届く")
+        print("  値がほぼ倍に飛ぶところが本物と無関係の境目。その手前を半径にする。")
 
 
 def _format(value) -> str:

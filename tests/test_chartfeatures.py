@@ -355,12 +355,51 @@ def test_build_features_counts_what_it_found(tmp_path):
     build_features._WORKER.update(
         letters={"H": glyph_template("H"), "L": glyph_template("L")},
         marks={}, regions=load_regions(), scale=1.0, mark_scale=1.0,
-        mark_radius=0.08, overlay=None,
+        mark_radius=0.08, letter_threshold=0.50, overlay=None,
     )
     _, _, report = build_features._run_one((str(chart), 0.65, 20, 5))
     assert {"high", "low", "edge_high", "edge_low", "marks", "orphan_marks",
             "letters_H", "letters_L"} <= set(report)
     assert report["high"] + report["edge_high"] == 2
+
+
+def test_a_weak_letter_is_accepted_only_when_a_mark_confirms_it(tmp_path):
+    """等圧線に横切られた文字は本来のしきい値を割る。印がそこにあるなら採る。
+
+    実物の重ね描きで、998hPa と 996hPa の低気圧の L が等圧線に重なって
+    拾えていなかった。×は拾えていたので、**二つの検出が互いを裏書きする**
+    形にすれば取り戻せる。裏書きの無い弱い文字は誤検出として捨てる。
+    """
+    import cv2
+    from PIL import Image
+
+    from scripts.build_features import analyse_chart
+
+    def cross(size: int = 31, thickness: int = 4):
+        tile = np.zeros((size, size), np.uint8)
+        cv2.line(tile, (2, 2), (size - 3, size - 3), 1, thickness)
+        cv2.line(tile, (size - 3, 2), (2, size - 3), 1, thickness)
+        return tile.astype(bool)
+
+    img = synthetic_chart_with(1, 1, stationary=False)
+    # 低気圧の L の上に太い線を斜めに引いて、しきい値を割らせる
+    cv2.line(img, (20, 300), (170, 430), (4, 4, 4), 15)
+    # その L のすぐそばに中心の×を描く。**文字とは別物の形**であることが要点で、
+    # 同じ形を印にすると「互いを裏書きする」検査にならない
+    cv2.line(img, (147, 377), (173, 403), (4, 4, 4), 4)
+    cv2.line(img, (173, 377), (147, 403), (4, 4, 4), 4)
+    chart = tmp_path / "Js_2024070100.png"
+    Image.fromarray(img).save(chart)
+    letters = {"H": glyph_template("H"), "L": glyph_template("L")}
+
+    strict, _ = analyse_chart(chart, letters, {}, 1.0, 0.65, 20, 5)
+    loose, report = analyse_chart(chart, letters, {"mark": cross()}, 1.0, 0.65, 20, 5,
+                                  mark_scale=1.0, mark_radius=0.12,
+                                  letter_threshold=0.40)
+
+    assert len(strict.lows) == 0, "この線で L が拾えているなら、前提が変わっている"
+    assert len(loose.lows) == 1
+    assert report["confirmed_letters"] == 1
 
 
 def test_overlay_is_written_so_the_numbers_can_be_checked(tmp_path):
