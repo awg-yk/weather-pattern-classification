@@ -321,6 +321,14 @@ def report_cluster_similarity(clusters: list[dict], min_cluster: int, top: int =
 # 記号の大半を覆えたとみなす割合。残りは汚れや、等圧線が重なった個体。
 COVERAGE = 0.8
 
+# しきい値ぎわとみなす幅と、そこに溜まっていると判断する割合。
+NEAR_THRESHOLD = 0.03
+PILEUP_SHARE = 0.20
+
+# 角度の範囲の端に張り付いていると判断する、最低の個数と割合。
+EDGE_MIN_COUNT = 3
+EDGE_SHARE = 0.05
+
 
 def report_threshold_sweep(patches: list, current: float) -> None:
     """しきい値を変えると山の数がどう変わるかを出し、選ぶべき値を示す。
@@ -580,12 +588,13 @@ def report_scores(scores: list[float], threshold: float) -> None:
     arr = np.array(scores)
     print(f"一致スコア: {arr.min():.2f} 〜 {arr.max():.2f} "
           f"(中央値 {np.median(arr):.2f}、しきい値 {threshold:.2f})")
-    margin = arr.min() - threshold
-    if margin < 0.05:
-        print(f"★最低スコアがしきい値の{margin:+.2f}しかない。あと少しで届かなかった"
-              "記号が埋もれている見込みが高い。")
-        print("  取りこぼした記号を別個体としてテンプレートに足すこと"
-              "(cut --box ... --name L3)。")
+    # 最低スコアを見てはいけない。検出が増えれば必ずしきい値に張り付くので、
+    # 常に警告が出てしまう。しきい値ぎわに**どれだけ溜まっているか**を見る。
+    near = float(np.mean(arr < threshold + NEAR_THRESHOLD))
+    if near >= PILEUP_SHARE:
+        print(f"★検出の{near:.0%}がしきい値ぎわ(+{NEAR_THRESHOLD:.2f}以内)に溜まって"
+              "いる。あと少しで届かなかった記号が下に埋もれている見込みが高い。")
+        print("  取りこぼした記号を別個体としてテンプレートに足すこと。")
 
 
 def report_angles(angles: list[float], angle_range: float) -> None:
@@ -596,9 +605,15 @@ def report_angles(angles: list[float], angle_range: float) -> None:
     at_edge = int(np.count_nonzero(np.abs(np.abs(arr) - angle_range) < 1e-6))
     print(f"傾き: {arr.min():+.0f}度 〜 {arr.max():+.0f}度 "
           f"(中央値 {np.median(arr):+.0f}度)")
-    if at_edge:
-        print(f"★{at_edge}個が範囲の端({angle_range:+.0f}度)で当たっている。"
-              f"--angle-range を広げると、まだ見つかる見込みがある。")
+    # 1個が端に来ただけでは広げる理由にならない。検出が増えれば端の1個は
+    # ほぼ必ず出る。まとまった数が端に張り付いているときだけ指摘する。
+    if at_edge >= max(EDGE_MIN_COUNT, EDGE_SHARE * arr.size):
+        print(f"★{at_edge}個({at_edge / arr.size:.0%})が範囲の端"
+              f"({angle_range:+.0f}度)に張り付いている。"
+              "--angle-range を広げると、まだ見つかる見込みがある。")
+    elif at_edge:
+        print(f"  ({at_edge}個が端の{angle_range:+.0f}度ちょうど。"
+              "この数なら広げても増えない見込み)")
 
 
 # 何割の枚数に出たら「毎回同じ場所」とみなすか。

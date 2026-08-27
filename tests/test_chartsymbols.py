@@ -840,12 +840,12 @@ def test_extra_templates_of_the_same_symbol_are_counted_together():
     assert symbol_of("TD2") == "TD"
 
 
-def test_angle_report_flags_detections_stuck_at_the_edge(capsys):
-    """範囲の端で当たっているなら、まだ外にある記号を取り逃がしている。"""
+def test_angle_report_flags_a_real_pileup_at_the_edge(capsys):
+    """まとまった数が端に張り付いていれば、外にまだ記号がある。"""
     from scripts.extract_symbols import report_angles
-    report_angles([0.0, 10.0, -50.0], 50.0)
+    report_angles([-50.0] * 5 + [0.0, 10.0], 50.0)
     out = capsys.readouterr().out
-    assert "範囲の端" in out and "広げる" in out
+    assert "★" in out and "広げる" in out
 
     report_angles([0.0, 10.0, -20.0], 50.0)
     assert "範囲の端" not in capsys.readouterr().out
@@ -885,19 +885,31 @@ def test_same_place_but_different_tilt_is_not_fixed(capsys):
     assert "画素まで一致し続ける検出はない" in capsys.readouterr().out
 
 
-def test_score_report_flags_a_thin_margin(capsys):
-    """当たったものの最低スコアがしきい値のすぐ上なら、取りこぼしている。
+def test_score_report_flags_a_pileup_at_the_threshold(capsys):
+    """しきい値ぎわに溜まっているときだけ指摘する。
 
-    実測で、当たった記号のスコアが0.67〜0.88、しきい値0.65だった。
-    余裕が0.02しかなく、届かなかった記号が下に埋もれていた。
+    最低スコアを見てはいけない。検出が増えれば必ずしきい値に張り付くので、
+    常に警告が出てしまっていた。1個の外れ値ではなく分布を見る。
     """
     from scripts.extract_symbols import report_scores
-    report_scores([0.67, 0.72, 0.88], 0.65)
-    out = capsys.readouterr().out
-    assert "★" in out and "埋もれている" in out
+    report_scores([0.65, 0.66, 0.67, 0.66, 0.65, 0.90, 0.95], 0.65)
+    assert "★" in capsys.readouterr().out
 
-    report_scores([0.85, 0.92, 0.97], 0.65)
+    # 1個だけしきい値ちょうどでも、全体が上にあれば指摘しない
+    report_scores([0.65] + [0.80 + 0.01 * i for i in range(40)], 0.65)
     assert "★" not in capsys.readouterr().out
+
+
+def test_angle_report_ignores_a_lone_detection_at_the_edge(capsys):
+    """端の1個で範囲を広げる理由にはならない。検出が増えればほぼ必ず出る。"""
+    from scripts.extract_symbols import report_angles
+    report_angles([60.0] + [float(a) for a in range(-50, 55, 5)], 60)
+    out = capsys.readouterr().out
+    assert "★" not in out
+    assert "広げても増えない" in out
+
+    report_angles([60.0] * 8 + [0.0, 10.0, -5.0], 60)
+    assert "★" in capsys.readouterr().out
 
 
 # --- テンプレートの見切れ -----------------------------------------------
