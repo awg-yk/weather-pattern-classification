@@ -54,6 +54,7 @@ from src.chartsymbols import (
     crop_template,
     fit_glyph_box,
     glyph_candidates,
+    glyph_only_template,
     to_hsv,
     touches_border,
     match_templates,
@@ -402,13 +403,18 @@ def cmd_cut(args):
         if not (0 <= x0 < x1 <= rgb.shape[1] and 0 <= y0 < y1 <= rgb.shape[0]):
             raise SystemExit(
                 f"--box が画像の外です。画像は {rgb.shape[1]}x{rgb.shape[0]} 画素。")
-        if args.fit:
-            fitted = fit_glyph_box(DEFAULT_BANDS[args.band].mask(to_hsv(rgb)),
-                                   (x0, y0, x1, y1))
-            if fitted != (x0, y0, x1, y1):
-                print(f"枠を記号に合わせた: ({x0},{y0},{x1},{y1}) -> {fitted}")
-            x0, y0, x1, y1 = fitted
-        template = crop_template(rgb, (x0, y0, x1, y1))
+        mask = DEFAULT_BANDS[args.band].mask(to_hsv(rgb))
+        if args.clean:
+            # 記号の線だけを残す。枠の大きさを詰めるより、等圧線を消すほうが効く
+            template, fitted = glyph_only_template(mask, (x0, y0, x1, y1))
+            print(f"記号の線だけを残した: ({x0},{y0},{x1},{y1}) -> {fitted}")
+        else:
+            if args.fit:
+                fitted = fit_glyph_box(mask, (x0, y0, x1, y1))
+                if fitted != (x0, y0, x1, y1):
+                    print(f"枠を記号に合わせた: ({x0},{y0},{x1},{y1}) -> {fitted}")
+                x0, y0, x1, y1 = fitted
+            template = crop_template(rgb, (x0, y0, x1, y1))
     else:
         candidates = glyph_candidates(rgb, band=args.band, erode=args.erode,
                                       max_side=args.max_side)
@@ -694,6 +700,8 @@ def main():
     cut.add_argument("--pad", type=int, default=40,
                      help="--box の四方に足す探索の余裕(画素)。記号を探す範囲を"
                           "広げるだけで、テンプレートの大きさは --fit が決める")
+    cut.add_argument("--no-clean", dest="clean", action="store_false",
+                     help="等圧線を消さず、枠の中をそのままテンプレートにする")
     cut.add_argument("--no-fit", dest="fit", action="store_false",
                      help="枠を記号に合わせず、--box と --pad をそのまま使う")
     cut.add_argument("--band", default="isobar", choices=sorted(DEFAULT_BANDS))

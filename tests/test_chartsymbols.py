@@ -763,8 +763,8 @@ def test_cut_by_box_works_without_any_candidate(tmp_path):
     assert glyph_candidates(np.array(Image.open(chart)), max_side=150, erode=1) == []
 
     cmd_cut(argparse.Namespace(
-        image=chart, index=-1, box=[75, 145, 145, 255], name="L", pad=0, fit=False,
-        out=tmp_path, band="isobar", erode=0, max_side=64,
+        image=chart, index=-1, box=[75, 145, 145, 255], name="L", pad=0,
+        fit=False, clean=False, out=tmp_path, band="isobar", erode=0, max_side=64,
     ))
     saved = np.array(Image.open(tmp_path / "L.png").convert("L")) > 127
     assert saved.any() and saved.shape == (110, 70)
@@ -998,3 +998,57 @@ def test_a_lone_template_is_never_flagged(capsys):
     from scripts.extract_symbols import warn_uneven_sizes
     warn_uneven_sizes({"H": np.ones((100, 90), dtype=bool)})
     assert capsys.readouterr().out == ""
+
+
+# --- テンプレートから等圧線を消す ---------------------------------------
+
+def glyphs_with_their_own_isobars():
+    """同じ記号3個に、場所ごとに違う等圧線が掛かる図。実物に近い形。"""
+    rng = np.random.default_rng(3)
+    img = np.full((500, 900, 3), 255, dtype=np.uint8)
+    spots = [(80, 150), (340, 150), (620, 150)]
+    for x, y in spots:
+        cv2.rectangle(img, (x, y), (x + 90, y + 140), BLACK, 7)
+    for x, y in spots:
+        for _ in range(3):
+            slope = int(rng.integers(-60, 60))
+            off = int(rng.integers(-40, 180))
+            cv2.line(img, (x - 60, y + off), (x + 160, y + off + slope),
+                     BLACK, 2, lineType=cv2.LINE_8)
+    return img
+
+
+def test_removing_isobars_helps_matching_the_other_instances():
+    """テンプレートの等圧線を消すと、他の個体への当たりが上がる。
+
+    枠の大きさをいくら調整しても、記号に掛かる等圧線はテンプレートに入る。
+    等圧線の模様は場所ごとに違うので、そのぶんスコアが下がる。実測でも枠を
+    広げるほど当たりが悪くなった(5.3個 -> 3.4個 -> 2.6個/枚)。
+    """
+    from src.chartsymbols import DEFAULT_BANDS, glyph_only_template, to_hsv
+    img = glyphs_with_their_own_isobars()
+    mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
+    plain = crop_template(img, (70, 140, 180, 300))
+    cleaned, _ = glyph_only_template(mask, (70, 140, 180, 300))
+
+    plain_hits = match_templates(img, {"L": plain}, threshold=0.5, angles=(0,))
+    clean_hits = match_templates(img, {"L": cleaned}, threshold=0.5, angles=(0,))
+    assert len(plain_hits) == len(clean_hits) == 3
+    # 自分自身は1.00から落ちるが、他の個体への当たりは上がる
+    assert min(h.score for h in clean_hits) > min(h.score for h in plain_hits)
+
+
+def test_cleaned_template_holds_fewer_pixels_than_the_raw_crop():
+    from src.chartsymbols import DEFAULT_BANDS, glyph_only_template, to_hsv
+    img = glyphs_with_their_own_isobars()
+    mask = DEFAULT_BANDS["isobar"].mask(to_hsv(img))
+    plain = crop_template(img, (70, 140, 180, 300))
+    cleaned, _ = glyph_only_template(mask, (70, 140, 180, 300))
+    assert 0 < cleaned.sum() < plain.sum()
+
+
+def test_cleaning_falls_back_when_there_is_no_thick_ink():
+    from src.chartsymbols import DEFAULT_BANDS, glyph_only_template, to_hsv
+    mask = DEFAULT_BANDS["isobar"].mask(to_hsv(blank()))
+    template, box = glyph_only_template(mask, (10, 10, 60, 60))
+    assert box == (10, 10, 60, 60) and not template.any()

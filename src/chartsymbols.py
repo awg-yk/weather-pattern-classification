@@ -696,6 +696,50 @@ def fit_glyph_box(mask: np.ndarray, box: tuple, erode: int = 2,
             min(mask.shape[0], fitted[3] + grow))
 
 
+def glyph_only_template(mask: np.ndarray, box: tuple, erode: int = 2,
+                       min_pixels: int = 40) -> tuple:
+    """記号の線だけを残したテンプレートと、その枠を返す。
+
+    枠の大きさをいくら調整しても、記号の周りや上を通る等圧線がテンプレートに
+    入る。等圧線の模様は場所ごとに違うので、そのぶん一致スコアが下がる。
+    実測では枠を広げるほど当たりが悪くなった。
+
+        元の切り出し(95x117)    1枚あたり5.3個
+        余白35画素(165x187)     1枚あたり3.4個
+        枠を自動で合わせた(175x197) 1枚あたり2.6個
+
+    枠を小さくするのではなく、**等圧線そのものを消す**。細らせて残った太い
+    塊(記号の線)だけを採り、太らせて元の太さに戻す。細い等圧線は細らせた
+    時点で消えているので戻ってこない。
+    """
+    x0, y0, x1, y1 = box
+    kernel = np.ones((2 * erode + 1, 2 * erode + 1), np.uint8)
+    thick = cv2.erode(mask.astype(np.uint8), kernel).astype(bool)
+
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(
+        thick.astype(np.uint8), connectivity=8)
+    keep = np.zeros(count, dtype=bool)
+    for i in range(1, count):
+        bx = int(stats[i, cv2.CC_STAT_LEFT])
+        by = int(stats[i, cv2.CC_STAT_TOP])
+        bw = int(stats[i, cv2.CC_STAT_WIDTH])
+        bh = int(stats[i, cv2.CC_STAT_HEIGHT])
+        if stats[i, cv2.CC_STAT_AREA] < min_pixels:
+            continue
+        if bx < x1 and bx + bw > x0 and by < y1 and by + bh > y0:
+            keep[i] = True
+    if not keep.any():
+        return mask[y0:y1, x0:x1], box
+
+    glyph = cv2.dilate(keep[labels].astype(np.uint8), kernel).astype(bool)
+    glyph &= mask                      # 太らせすぎた分を元のインクで抑える
+    ys, xs = np.nonzero(glyph)
+    fitted = (max(0, int(xs.min()) - FIT_MARGIN), max(0, int(ys.min()) - FIT_MARGIN),
+              min(mask.shape[1], int(xs.max()) + 1 + FIT_MARGIN),
+              min(mask.shape[0], int(ys.max()) + 1 + FIT_MARGIN))
+    return glyph[fitted[1]:fitted[3], fitted[0]:fitted[2]], fitted
+
+
 def touches_border(template: np.ndarray, erode: int = 2) -> float:
     """テンプレートの縁に太い線が掛かっている割合を返す。見切れの検出。
 
