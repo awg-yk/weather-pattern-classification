@@ -157,6 +157,33 @@ def evaluate_fold(y_true: np.ndarray, preds: np.ndarray, test_year) -> dict:
     }
 
 
+def bootstrap_spread(X, y, train, test, thresholds, kind: str, seed: int,
+                     repeats: int) -> dict:
+    """学習データを重複ありで取り直し、成績がどれだけ動くかを返す。
+
+    **特徴量を1つ2つ足したときの差が、この幅より小さいなら読めない。**
+
+    seed を変えても意味が無いことに注意。HistGradientBoosting は既定で
+    部分抽出をしないので、同じデータからは必ず同じ木ができる(確かめ済み:
+    seed 1/2/3/42 で確率が完全に一致した)。動かすべきは乱数ではなく
+    **学習データそのもの**である。
+    """
+    rng = np.random.default_rng(seed)
+    scores = []
+    for _ in range(repeats):
+        picked = rng.choice(train, size=len(train), replace=True)
+        probs = fit_predict(X[picked], y[picked], X[test], kind, seed)
+        preds = (probs > thresholds).astype(int)
+        fold = evaluate_fold(y[test], preds, None)
+        scores.append(fold["macro_f1_evaluable"])
+    arr = np.array(scores)
+    return {
+        "repeats": repeats,
+        "min": float(arr.min()), "max": float(arr.max()),
+        "mean": float(arr.mean()), "std": float(arr.std(ddof=1)),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--features", required=True, help="scripts/build_features.py の出力")
@@ -173,7 +200,13 @@ def main():
                              "(実測では1〜4月と11〜12月しか入らなかった)。"
                              "spreadは通年になるので、梅雨や台風のような季節性の"
                              "強いラベルでもしきい値が偏らない")
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=42,
+                        help="hgb では効かない(既定で部分抽出をしないため決定的)。"
+                            "ばらつきを測るなら --bootstrap を使うこと")
+    parser.add_argument("--bootstrap", type=int, default=0,
+                        help="学習データを重複ありで取り直して、この回数だけ"
+                             "余分に当てはめ、成績の幅を出す。特徴量を1つ2つ"
+                             "足したときの差が、この幅より小さいなら読めない")
     args = parser.parse_args()
 
     merged, X, y, feature_columns = load_dataset(Path(args.features), Path(args.labels))
@@ -205,6 +238,14 @@ def main():
         print(f"  macro F1(評価できたラベルのみ) {fold['macro_f1_evaluable']:.3f}"
               f"  (自明な予測 {fold['trivial_macro_f1']:.3f}、"
               f"上積み {fold['macro_f1_over_trivial']:+.3f})")
+
+        if args.bootstrap:
+            spread = bootstrap_spread(
+                X, y, train, test, thresholds, args.model, args.seed, args.bootstrap)
+            fold["bootstrap"] = spread
+            print(f"  学習データを取り直した{args.bootstrap}回の幅: "
+                  f"{spread['min']:.3f}〜{spread['max']:.3f} "
+                  f"(標準偏差 {spread['std']:.3f})")
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)

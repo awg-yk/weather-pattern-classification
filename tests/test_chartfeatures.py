@@ -19,6 +19,7 @@ from src.chartfeatures import (
     to_row,
 )
 from src.chartsymbols import Segment
+from src.labels import LABELS
 from src.regions import load_regions
 
 REGIONS = load_regions()
@@ -383,3 +384,45 @@ def test_west_high_east_low_is_negative_when_the_high_is_west():
     # 片方が無ければ配置は決まらない
     lonely = build_features(ChartDetections(highs=[(0.2, 0.5)]), REGIONS)
     assert math.isnan(lonely["west_high_east_low"])
+
+
+# --- ばらつきの測り方 ----------------------------------------------------
+
+def test_hist_gradient_boosting_ignores_the_seed():
+    """seed を変えても結果は変わらない。ばらつきは seed では測れない。
+
+    HistGradientBoosting は既定で部分抽出をしないので、同じデータからは
+    必ず同じ木ができる。binningの部分抽出はn>10000のときだけ、early stopping
+    も n<10000 では既定で無効。**seedを3つ回して幅を見るのは無意味である。**
+    """
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(400, 8))
+    y = (X[:, 0] + rng.normal(scale=0.5, size=400) > 0).astype(int)
+    X_test = rng.normal(size=(100, 8))
+
+    probs = []
+    for seed in (1, 2, 3):
+        model = HistGradientBoostingClassifier(max_iter=50, max_depth=3,
+                                               random_state=seed)
+        model.fit(X, y)
+        probs.append(model.predict_proba(X_test)[:, 1])
+    assert np.array_equal(probs[0], probs[1])
+    assert np.array_equal(probs[0], probs[2])
+
+
+def test_bootstrap_moves_the_training_data_not_the_seed():
+    """ばらつきは学習データを取り直して測る。幅が返ること。"""
+    from scripts.cv_features import bootstrap_spread
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(300, 6))
+    y = np.zeros((300, len(LABELS)), dtype=int)
+    y[:, 0] = (X[:, 0] > 0).astype(int)
+    y[:, 1] = (X[:, 1] > 0).astype(int)
+    train, test = list(range(200)), list(range(200, 300))
+    thresholds = np.full(len(LABELS), 0.5)
+
+    spread = bootstrap_spread(X, y, train, test, thresholds, "hgb", 42, repeats=4)
+    assert spread["repeats"] == 4
+    assert spread["min"] <= spread["mean"] <= spread["max"]
+    assert spread["std"] >= 0.0
