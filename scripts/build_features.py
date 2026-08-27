@@ -28,7 +28,7 @@ r"""Phase 3: 天気図から検出を行い、分類用の特徴量CSVを作る�
 
 二つの検出は互いを裏書きする
 ----------------------------
-文字は `--letter-threshold`(既定0.50)まで緩めて拾い、**しきい値を割った
+文字は `--letter-threshold`(既定0.42)まで緩めて拾い、**しきい値を割った
 文字は印と組になったものだけを採る**。実物の重ね描きで、998hPa と 996hPa の
 低気圧の L が等圧線に横切られて 0.65 を割っていた。×は拾えていたので、
 そこに文字があるという裏書きになる。
@@ -100,6 +100,19 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
 # 記号として扱う名前。これ以外が --templates に入っていると黙って無視される
 LETTER_SYMBOLS = ("H", "L")
 
+# 印と組になった文字だけに使う、緩めのしきい値。**掃引して決めた値**である。
+# 20枚での結果:
+#
+#     しきい値   拾えた L   組になった低気圧   余った印
+#     0.50       3.90       2.75              2.50
+#     0.42       4.20       3.00              2.25
+#     0.35       6.00       3.00              2.25
+#
+# 0.35 は文字を1.8枚多く拾うが、**組になった数はまったく増えない**。
+# 増えた分はすべて印の裏書きが無い偽の文字で、捨てられている。0.42 が
+# 本物を拾いきり、偽を拾い始める直前の点である。
+LETTER_THRESHOLD = 0.42
+
 _WORKER = {}
 
 
@@ -159,7 +172,7 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
                   threshold: float, angle_range: float, angle_step: float,
                   mark_scale: float = 1.0,
                   mark_radius: float = MARK_LETTER_RADIUS,
-                  letter_threshold: float = 0.50,
+                  letter_threshold: float = LETTER_THRESHOLD,
                   overlay_dir=None) -> tuple:
     """1枚から検出結果を取り出す。位置はすべて相対座標(0〜1)。
 
@@ -362,7 +375,7 @@ def main():
                         help="印と H/L の文字を組にする距離(相対座標)。"
                              "処理のあとに実測の分布が出るので、それを見て決める")
     parser.add_argument("--threshold", type=float, default=0.65)
-    parser.add_argument("--letter-threshold", type=float, default=0.50,
+    parser.add_argument("--letter-threshold", type=float, default=LETTER_THRESHOLD,
                         help="印と組になった文字だけに使う、緩めのしきい値。"
                              "等圧線に横切られた L はここまで下げないと拾えない")
     parser.add_argument("--angle-range", type=float, default=60.0)
