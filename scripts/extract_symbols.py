@@ -307,9 +307,10 @@ def report_threshold_sweep(patches: list, current: float) -> None:
 
     if best:
         print(f"\n{COVERAGE:.0%}を一番少ない山で覆えるのは しきい値 {best[0]:.1f} "
-              f"({best[1]}山)。記号は{best[1]}種類と見てよい。")
-        if abs(best[0] - current) > 1e-9:
-            print(f"  --threshold {best[0]:.1f} でやり直すと、名前を付けるPNGが{best[1]}枚に絞れる。")
+              f"({best[1]}山)。")
+        print("  ただしこれは**字形の数**であって記号の数ではない。候補には気圧の数値の"
+              "数字(0〜9で10種)・×印・等圧線の断片が混ざっている。")
+        print("  H と L はそのうちの2つなので、一覧(clusters.png)を見て選ぶ。")
 
 
 def cmd_cut(args):
