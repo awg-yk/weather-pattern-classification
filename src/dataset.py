@@ -11,31 +11,11 @@ from src.labels import LABEL_TO_INDEX, LABELS, parse_labels  # noqa: F401  (従�
 # 観測日時の解釈は src/split.py に移した。分割がそれを要求する当人であり、
 # torch を必要としないので木のモデルからも同じものを使える。日付の解釈が
 # ずれると分割ごとずれるので、実装は1つだけにする。
-from src.split import parse_datetime  # noqa: F401  (従来の import 経路を保つ)
-
-# ファイル名に含まれるYYYYMMDDHH。"Js_2001070300_page001.jpg" にも
-# "Js_2025010100.png" にも対応する。
-
-
-def index_images_by_stamp(images_dir: Path) -> dict:
-    """画像ディレクトリを、ファイル名中のYYYYMMDDHH 10桁で引けるようにする。
-
-    labels.csvのfilenameと実ファイル名は、同じ観測時刻を指していても表記が揃わない
-    -- 気象庁から取ったものは Js_2025050100.png、国会図書館から取ったものは
-    JS_2025050100_page001.jpg のように、接頭辞の大小・接尾辞・拡張子が違う。
-    厳密一致で照合すると、画像は手元にあるのに「見つからない」と言って止まる。
-
-    同じ時刻に複数の候補があれば、名前順で最初のものを使う(同じ天気図の別変換版で
-    あることを想定している)。
-    """
-    index = {}
-    for path in sorted(images_dir.rglob("*")):
-        if not path.is_file():
-            continue
-        match = _DATE_IN_FILENAME.search(path.name)
-        if match:
-            index.setdefault(match.group(0), path)
-    return index
+from src.split import (  # noqa: F401  (従来の import 経路を保つ)
+    DATE_IN_FILENAME,
+    index_images_by_stamp,
+    parse_datetime,
+)
 
 
 class WeatherMapDataset(Dataset):

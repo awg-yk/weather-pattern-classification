@@ -19,3 +19,28 @@ python -m pytest tests -q
 | `test_chartfeatures.py` | 高気圧が無い日の位置が0で埋まらないこと(NaNのまま渡すこと)、細長くない塊を前線の本数に数えないこと、列の順が宣言と一致すること、しきい値の最適化がtorch無しで使えること |
 | `test_chartsymbols.py` | 天気図の色マスクが前線と海岸線を取り違えないこと、等圧線を記号候補に混ぜないこと、入れ子になった記号の誤検出を抑えること |
 | `test_calibration.py` | 確信度の校正がpos_weightのかさ上げを戻せること、ラベル内の順位を変えないこと(＝F1とAPが変わらない根拠)、古い校正ファイルの取り違えを検出すること |
+
+## 移した関数は、移した先でも試すこと(2026-08-28)
+
+`_DATE_IN_FILENAME` を `src/dataset.py` から `src/split.py` へ移したとき、
+**dataset.py 側で使っている箇所の再輸出を落とした**。`index_images_by_stamp`
+が `NameError` になり、`WeatherMapDataset` が丸ごと動かなくなった。
+CNNの学習・推論・Grad-CAM・較正・混合が全部止まる状態が、丸1日気づかれずに
+残った。
+
+気づけなかった理由は2つある。
+
+1. `tests/test_dataset.py` は torch を読むので、**torch の無い環境では
+   そもそも収集されず、赤にならない**。「テストが通った」は
+   「テストが走った」ではない
+2. 移したあとに触っていたのが木のモデル側だけで、CNN側を一度も動かさなかった
+
+対策として入れたもの:
+
+* `index_images_by_stamp` を `src/split.py` に移した。torch を読まないので、
+  torch の無い環境でも試験が走る(`tests/test_split.py`)
+* `src/dataset.py` が `src/split.py` から何を再輸出しているかを、
+  ソースを構文解析して確かめるテストを置いた。これは torch を要求しない
+* リファクタのあとは `python -m pyflakes src/ scripts/ tests/ | grep "undefined name"`
+  を通すこと。この不具合は1行で検出できた
+

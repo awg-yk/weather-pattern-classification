@@ -6,10 +6,17 @@
 分割については「重ならないこと」を機械的に確かめておく。
 """
 
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
-from src.split import make_splits, min_days_to_other_split
+from src.split import (
+    index_images_by_stamp,
+    make_splits,
+    min_days_to_other_split,
+    parse_datetime,
+)
 
 YEARS = (2023, 2024, 2025)
 
@@ -126,7 +133,7 @@ def test_trivial_macro_f1_matches_the_all_positive_baseline():
     """
     import numpy as np
 
-    from src.evaluate import trivial_macro_f1
+    from src.metrics import trivial_macro_f1
 
     labels = np.zeros((1000, 2))
     labels[:420, 0] = 1  # 出現率0.42 → 2p/(1+p) = 0.592
@@ -141,7 +148,7 @@ def test_trivial_macro_f1_skips_labels_that_never_occur():
     """1件も出現しないラベルは基準の平均から外す(F1を測れないため)。"""
     import numpy as np
 
-    from src.evaluate import trivial_macro_f1
+    from src.metrics import trivial_macro_f1
 
     labels = np.zeros((100, 2))
     labels[:20, 0] = 1
@@ -212,7 +219,7 @@ def test_blend_weight_is_chosen_per_label():
     """
     import numpy as np
 
-    from scripts.ensemble_chart_grid import per_label_weights
+    from src.blend import per_label_weights
 
     targets = np.zeros((200, 2))
     targets[:80, 0] = 1
@@ -235,7 +242,7 @@ def test_blend_weight_stays_neutral_for_labels_with_no_positives():
     """検証データに1件も出ないラベルは、選びようがないので混ぜない。"""
     import numpy as np
 
-    from scripts.ensemble_chart_grid import per_label_weights
+    from src.blend import per_label_weights
 
     targets = np.zeros((50, 1))
     weights, _ = per_label_weights(
@@ -621,3 +628,53 @@ def test_besttrack_region_decides_what_counts(tmp_path):
     })
     inside = stamps_with_typhoon(track, (20.0, 46.0, 123.0, 154.0))
     assert inside == {pd.Timestamp("2024-09-01")}
+
+
+# --- 画像ファイルの索引 --------------------------------------------------
+
+def test_images_are_found_by_the_timestamp_in_the_name(tmp_path):
+    """表記が違っても、同じ観測時刻の画像を引けること。
+
+    labels.csv の filename と実ファイル名は揃わない。気象庁は
+    Js_2025050100.png、国会図書館は JS_2025050100_page001.jpg のように
+    接頭辞の大小・接尾辞・拡張子が違う。
+    """
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "Js_2025050100.png").write_bytes(b"x")
+    (tmp_path / "sub" / "JS_2024070312_page001.jpg").write_bytes(b"x")
+    (tmp_path / "readme.txt").write_bytes(b"x")
+
+    index = index_images_by_stamp(tmp_path)
+    assert set(index) == {"2025050100", "2024070312"}
+    assert index["2024070312"].name == "JS_2024070312_page001.jpg"
+
+
+def test_indexing_an_empty_directory_is_not_an_error(tmp_path):
+    assert index_images_by_stamp(tmp_path) == {}
+
+
+def test_the_same_timestamp_twice_keeps_the_first_by_name(tmp_path):
+    """同じ時刻に複数の候補があれば名前順で最初のものを使う(別変換版の想定)。"""
+    (tmp_path / "b_2025050100.png").write_bytes(b"x")
+    (tmp_path / "a_2025050100.jpg").write_bytes(b"x")
+    assert index_images_by_stamp(tmp_path)["2025050100"].name == "a_2025050100.jpg"
+
+
+def test_dataset_still_exposes_the_moved_helpers():
+    """`src/dataset.py` からの従来の import 経路が生きていること。
+
+    **ここが切れていても、import した側は NameError になるまで気づけない。**
+    実際 `_DATE_IN_FILENAME` を移したとき再輸出を落とし、
+    WeatherMapDataset が丸ごと動かなくなっていた(torch が要るので、
+    torch の無い環境ではテストも走らず気づけなかった)。
+    """
+    import ast
+
+    source = Path("src/dataset.py").read_text(encoding="utf-8")
+    imported = {
+        alias.name
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.ImportFrom) and node.module == "src.split"
+        for alias in node.names
+    }
+    assert {"index_images_by_stamp", "parse_datetime", "DATE_IN_FILENAME"} <= imported

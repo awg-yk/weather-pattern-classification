@@ -13,6 +13,7 @@
 """
 
 import re
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -26,7 +27,9 @@ VAL_MODES = ("spread", "tail")
 
 
 
-_DATE_IN_FILENAME = re.compile(r"(\d{10})")
+# ファイル名に含まれるYYYYMMDDHH。"Js_2001070300_page001.jpg" にも
+# "Js_2025010100.png" にも対応する。**複数のモジュールが使うので公開名にする。**
+DATE_IN_FILENAME = re.compile(r"(\d{10})")
 
 
 def parse_datetime(filename: str, date_field=None) -> pd.Timestamp:
@@ -36,9 +39,34 @@ def parse_datetime(filename: str, date_field=None) -> pd.Timestamp:
     日付を抜き出すロジックを修正する前にラベル付けした行で "page001" のような
     誤った値が入っていることがあるため。ファイル名は常に正しい。
     """
-    match = _DATE_IN_FILENAME.search(str(filename))
+    match = DATE_IN_FILENAME.search(str(filename))
     raw = match.group(1) if match else str(date_field)
     return pd.to_datetime(raw, format="%Y%m%d%H", errors="coerce")
+
+
+def index_images_by_stamp(images_dir) -> dict:
+    """画像ディレクトリを、ファイル名中のYYYYMMDDHH 10桁で引けるようにする。
+
+    labels.csvのfilenameと実ファイル名は、同じ観測時刻を指していても表記が揃わない
+    -- 気象庁から取ったものは Js_2025050100.png、国会図書館から取ったものは
+    JS_2025050100_page001.jpg のように、接頭辞の大小・接尾辞・拡張子が違う。
+    厳密一致で照合すると、画像は手元にあるのに「見つからない」と言って止まる。
+
+    同じ時刻に複数の候補があれば、名前順で最初のものを使う(同じ天気図の別変換版で
+    あることを想定している)。
+
+    **`src/dataset.py` から移した。**日付の解釈と同じ理由で、torch を読まない
+    ここに置く。dataset.py は torch を読み込むので、この関数だけを試したいとき
+    にも torch が要る状態になっていた。
+    """
+    index = {}
+    for path in sorted(Path(images_dir).rglob("*")):
+        if not path.is_file():
+            continue
+        match = DATE_IN_FILENAME.search(path.name)
+        if match:
+            index.setdefault(match.group(0), path)
+    return index
 
 
 def add_parsed_datetime(df: pd.DataFrame) -> pd.DataFrame:
