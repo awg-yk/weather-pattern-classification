@@ -481,6 +481,41 @@ python -m scripts.compare_runs runs\cv_baseline runs\cv_features_bs runs\cv_mark
 こと**を確かめること。下見の20枚では検出数しか見ておらず、位置が捨てられて
 いることに気づけなかった。
 
+### 次の一手: 混ぜる(`scripts/ensemble_chart_features.py`)
+
+特徴量方式が単独でCNNに勝てないことは確定したが、**誤り方が違う**なら
+混ぜて上積みが取れる。前例がある(`docs/2026-08-21-chart-vs-era5-grid.md`):
+
+天気図 + ERA5格子では全体 +0.010、**いちばん伸びたのは移動性高気圧
+0.726 -> 0.748(+0.023)**だった。伸びたのは「両者とも中程度で、違う誤りを
+しているラベル」で、得意分野が逆のラベルではなかった。
+
+移動性高気圧はここでも条件が揃っている:
+
+| | CNN | 特徴量 | 差 |
+|---|---|---|---|
+| 移動性高気圧 | 0.726 | 0.657〜0.705 | -0.02〜-0.07 |
+
+**この近さが要点である。**特徴量側は `n_high` と `high_in_migratory_high`
+を明示的に持っているので、高気圧が1つも無い天気図で移動性高気圧を出す
+誤りは起こしにくい。CNNは H を数えていない(Grad-CAMで確認済み)。
+
+再学習は不要。CNNの重みはfoldごとに保存済み、木は数秒で当てはめ直せる。
+重みと閾値は検証データでラベルごとに決める(**一律の重みにすると得意分野が
+逆のラベルどうしが妥協させられ、実測で天気図単独を下回った**)。
+
+```powershell
+python -m scripts.ensemble_chart_features --data-dir $processed_dir `
+    --labels data\labels_v2.csv --features data\features.csv `
+    --chart-weights runs\cv_baseline --years 2023 2024 2025 --out runs\cv_blend
+python -m scripts.compare_runs runs\cv_baseline runs\cv_blend
+```
+
+**判断**: 全体で +0.013(foldごとのばらつき)を超え、3foldとも同符号なら
+効いている。ラベル別では移動性高気圧とオホーツク海高気圧を見る。
+「混ぜた割合」が0のラベルは、検証データが「混ぜないほうがよい」と判断した
+ということで、そこは天気図のみと同じ結果になる。
+
 ### 半径は分布から決まった
 
 印から一番近い文字までの距離(20枚):

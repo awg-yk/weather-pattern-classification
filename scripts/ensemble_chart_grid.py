@@ -29,6 +29,7 @@ from torch.utils.data import DataLoader, Subset
 
 from src.dataset import WeatherMapDataset
 from src.era5_grid import ERA5GridDataset, compute_grid_stats
+from src.blend import WEIGHTS, macro_f1, per_label_weights
 from src.evaluate import find_best_thresholds, trivial_macro_f1
 from src.labels import LABEL_JA, LABELS
 from src.model import load_model
@@ -66,39 +67,6 @@ def require_aligned(chart_df, grid_df) -> None:
 
 
 
-def per_label_weights(val_chart, val_grid, val_y, candidates):
-    """ラベルごとに、検証データで最も良い混合の重みと閾値を選ぶ。
-
-    重みを全ラベル共通の1つの値にすると、得意分野が逆のラベルどうしが妥協させ
-    られる。実測では、天気図が強い台風(0.764対0.492)と格子が強いオホーツク海
-    高気圧(0.131対0.345)が同じw=0.35前後を共有し、台風は0.711に落ち、オホーツクは
-    0.200に落ちた -- 全体でも天気図単独(0.619)を下回る0.607になった。
-
-    閾値は既にラベルごとに決めている。重みも同じ粒度で決めれば、そのラベルで
-    弱いほうのモデルは検証データを見た時点で自然に外れる。
-
-    陽性が1件も無いラベルは選びようがないので、混ぜない(天気図のみ)側に倒す。
-    """
-    weights = np.zeros(val_y.shape[1])
-    thresholds = np.full(val_y.shape[1], 0.5)
-    for i in range(val_y.shape[1]):
-        if val_y[:, i].sum() == 0:
-            continue
-        best = None
-        for w in candidates:
-            blended = (1 - w) * val_chart[:, i] + w * val_grid[:, i]
-            for threshold in np.round(np.arange(0.05, 1.0, 0.05), 2):
-                score = f1_score(val_y[:, i], (blended > threshold).astype(float), zero_division=0)
-                if best is None or score > best[0]:
-                    best = (score, w, threshold)
-        _, weights[i], thresholds[i] = best
-    return weights, thresholds
-
-
-def macro_f1(probs, targets, thresholds) -> float:
-    return f1_score(targets, (probs > thresholds).astype(float), average="macro", zero_division=0)
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", required=True, help="天気図画像のディレクトリ")
@@ -116,7 +84,7 @@ def main():
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    weights = np.round(np.arange(0.0, 1.01, 0.05), 2)
+    weights = WEIGHTS
     per_fold = []
 
     for test_year in args.years:

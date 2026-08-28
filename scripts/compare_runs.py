@@ -56,6 +56,13 @@ def describe(summary: dict) -> str:
             parts.append(f"{len(columns)}個")
         return " / ".join(parts)
 
+    if str(summary.get("method", "")).startswith("blend"):
+        return " / ".join([
+            "天気図CNN + 検出した特徴量の混合",
+            str(config.get("model", "?")),
+            f"重みは検証データでラベルごとに選択({config.get('val_mode', '?')})",
+        ])
+
     parts = [config.get("input_mode", "chart")]
     parts.append("事前学習なし" if config.get("no_pretrained") else "事前学習あり")
     if config.get("coordconv"):

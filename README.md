@@ -115,6 +115,7 @@ scripts/
   cross_validate.py   # leave-one-year-out交差検証。報告用の数値はこれ
   compare_runs.py     # 実行どうしの比較。ラベルを絞って平均を取り直せる
   ensemble_chart_grid.py  # 天気図モデルと格子モデルの確率を混ぜる
+  ensemble_chart_features.py # 天気図モデルと検出した特徴量の確率を混ぜる
   collect_jma.py      # 気象庁天気図画像の収集スクリプト
   download_era5.py    # ERA5データ取得スクリプト（CDS API）
   label_tool.py       # ラベル付け・見直し(盲検レビュー)
