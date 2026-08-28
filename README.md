@@ -153,6 +153,7 @@ docs/
   2026-08-26-detection-plan.md      # 物体検出を経由する方式の計画と引き継ぎ
   2026-08-26-detection-prescreen.md # 上の計画の下見。色とテンプレートで取れるか測った
   2026-08-27-features-vs-cnn.md   # 検出した特徴量での分類を既存CNNと比べた結果
+                                  # (macro F1 0.408 対 0.641。オホーツク海高気圧だけ勝つ)
 runs/             # 交差検証の出力。summary.jsonだけ追跡する
                   # (2026-08-26に過去分を削除。docs/2026-08-26-stale-run-comparisons.md)
 webapp/
