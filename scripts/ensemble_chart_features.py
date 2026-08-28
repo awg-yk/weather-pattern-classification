@@ -43,10 +43,16 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import classification_report, f1_score
+from sklearn.metrics import classification_report
 from torch.utils.data import DataLoader, Subset
 
-from src.blend import WEIGHTS, align_by_filename, blend, macro_f1, per_label_weights
+from src.blend import (
+    WEIGHTS,
+    align_by_filename,
+    blend,
+    inherit_split_settings,
+    per_label_weights,
+)
 from src.dataset import WeatherMapDataset
 from src.labels import LABEL_JA, LABELS
 from src.metrics import find_best_thresholds, trivial_macro_f1
@@ -55,7 +61,6 @@ from src.split import make_splits
 from src.train import get_transforms
 
 from scripts.cv_features import KEY_COLUMNS, fit_predict
-
 
 def chart_probabilities(model, dataset, rows, device, batch_size):
     """指定した行に対するCNNの予測確率と正解ラベルを返す。"""
@@ -118,13 +123,15 @@ def main():
                         help="model_test<年>.pt が入ったディレクトリ(runs/cv_baseline など)")
     parser.add_argument("--years", type=int, nargs="+", required=True)
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--val-ratio", type=float, default=0.2)
-    parser.add_argument("--gap-days", type=int, default=3)
-    parser.add_argument("--val-mode", default="tail", choices=["spread", "tail"])
+    # 既定は None。重みの summary.json から引き継ぐため(settings_from_weights)
+    parser.add_argument("--val-ratio", type=float, default=None)
+    parser.add_argument("--gap-days", type=int, default=None)
+    parser.add_argument("--val-mode", default=None, choices=["spread", "tail"])
     parser.add_argument("--model", default="hgb", choices=("hgb", "xgboost"))
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--out", required=True, help="summary.json を書き出すディレクトリ")
     args = parser.parse_args()
+    inherit_split_settings(Path(args.chart_weights), args)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     features_df = pd.read_csv(args.features)
@@ -178,12 +185,16 @@ def main():
 
         chart_th = find_best_thresholds(val_chart, val_y)
         feat_th = find_best_thresholds(val_feat, val_y)
-        scores = {
-            "chart": macro_f1(test_chart, test_y, chart_th),
-            "features": macro_f1(test_feat, test_y, feat_th),
-            "blend": macro_f1(test_blend, test_y, label_th),
+        # **3つとも同じ定義で測る。**混合だけ「評価できたラベルのみ」、単独は
+        # 「全ラベル」にすると、テストに1件も出ないラベルがあったときに混合だけ
+        # 得をする。cross_validate.py が報告しているのは評価できたラベルのみ
+        reports = {
+            "chart": fold_report(test_y, (test_chart > chart_th).astype(int), test_year),
+            "features": fold_report(test_y, (test_feat > feat_th).astype(int), test_year),
+            "blend": fold_report(test_y, (test_blend > label_th).astype(int), test_year),
         }
-        trivial, _ = trivial_macro_f1(test_y)
+        scores = {k: v["macro_f1_evaluable"] for k, v in reports.items()}
+        trivial = reports["blend"]["trivial_macro_f1"]
         print(f"  macro F1 -- 天気図 {scores['chart']:.3f} / "
               f"特徴量 {scores['features']:.3f} / "
               f"混合 {scores['blend']:.3f}   (自明な予測 {trivial:.3f})")
@@ -193,15 +204,13 @@ def main():
         )
         print(f"  混ぜた割合(0=天気図のみ / 1=特徴量のみ): {chosen}")
 
-        result = fold_report(test_y, (test_blend > label_th).astype(int), test_year)
+        result = reports["blend"]
         result["label_weights"] = {label: float(label_w[i])
                                    for i, label in enumerate(LABELS)}
         result["macro_f1_chart_only"] = scores["chart"]
         result["macro_f1_features_only"] = scores["features"]
         result["per_label_chart_only"] = {
-            label: float(f1_score(test_y[:, i], (test_chart[:, i] > chart_th[i]).astype(int),
-                                  zero_division=0))
-            for i, label in enumerate(LABELS)
+            label: reports["chart"]["per_label"][label]["f1"] for label in LABELS
         }
         folds.append(result)
 

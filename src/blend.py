@@ -11,12 +11,21 @@
 (`src/metrics.py` を `src/evaluate.py` から切り出したのと同じ事情)。
 """
 
+import json
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from sklearn.metrics import f1_score
 
+from src.calibration import file_fingerprint
+
 THRESHOLDS = np.round(np.arange(0.05, 1.0, 0.05), 2)
 WEIGHTS = np.round(np.arange(0.0, 1.01, 0.05), 2)
+
+# 重みの summary.json から引き継げなかったときに使う値。
+# scripts/cross_validate.py の既定と揃えてある。
+_DEFAULTS = {"val_mode": "tail", "seed": 42, "gap_days": 3, "val_ratio": 0.2}
 
 
 def align_by_filename(base_df: pd.DataFrame, other: pd.DataFrame,
@@ -87,3 +96,57 @@ def blend(a: np.ndarray, b: np.ndarray, weights) -> np.ndarray:
 def macro_f1(probs: np.ndarray, targets: np.ndarray, thresholds) -> float:
     return f1_score(targets, (probs > thresholds).astype(float),
                     average="macro", zero_division=0)
+
+
+def inherit_split_settings(weights_dir, args) -> None:
+    """重みを作ったときの分割設定を読み、指定されなかった項目を埋める。
+
+    **分割の条件が違うと、同じ重みでも閾値が別の検証データで決まる。**
+    天気図単独の成績が変わるので、「混ぜて上積みが出た」の基準そのものが
+    ずれる。実測で、val_mode を取り違えたまま回したとき天気図単独が
+    0.609 になり、`runs/cv_baseline` の 0.641 と 0.032 も違った。
+    その状態の「混合 0.641」は、低いほうの基準から測った数字だった。
+
+    `docs/2026-08-26-stale-run-comparisons.md` の「別の条件で測った結果を
+    並べてしまう」と同じ落とし穴なので、黙って進まないようにする。
+
+    ラベルファイルが変わっている場合も止める。パスが同じでも中身が変わる
+    ことがあり、実際に台風ラベルを付け直したあと、付け直す前の結果と並べて
+    「改善した」と読んでしまったことがある。
+    """
+    summary_path = Path(weights_dir) / "summary.json"
+    if not summary_path.exists():
+        print(f"注意: {summary_path} がありません。分割設定を引き継げないので、"
+              "指定した値(または既定値)で進みます。")
+        print("      天気図単独の成績が元の実行と食い違う場合は、まずここを疑うこと。")
+        _fill_defaults(args)
+        return
+
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    config = summary.get("config") or {}
+
+    fingerprint = summary.get("labels_fingerprint")
+    if fingerprint and fingerprint != file_fingerprint(args.labels):
+        raise SystemExit(
+            f"ラベルファイルが、重みを作ったときと違います。\n"
+            f"  重み側  : {summary.get('labels_path')} ({fingerprint})\n"
+            f"  いま    : {args.labels} ({file_fingerprint(args.labels)})\n"
+            "別のラベルで測った結果を混ぜることになります。"
+        )
+
+    inherited = []
+    for name in ("val_mode", "seed", "gap_days", "val_ratio"):
+        if getattr(args, name) is not None:
+            continue
+        if name in config and config[name] is not None:
+            setattr(args, name, type(_DEFAULTS[name])(config[name]))
+            inherited.append(f"{name}={getattr(args, name)}")
+    _fill_defaults(args)
+    if inherited:
+        print(f"分割設定を {summary_path} から引き継ぎました: {', '.join(inherited)}")
+
+
+def _fill_defaults(args) -> None:
+    for name, value in _DEFAULTS.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)

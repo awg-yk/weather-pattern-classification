@@ -117,3 +117,85 @@ def test_blend_accepts_a_scalar_and_a_vector():
     b = np.array([[0.0, 1.0]])
     assert blend(a, b, 0.5).ravel().tolist() == [0.4, 0.6]
     assert blend(a, b, np.array([0.0, 1.0])).ravel().tolist() == [0.8, 1.0]
+
+
+# --- 重みを作ったときの分割設定を引き継ぐ --------------------------------
+
+def _args(**kw):
+    import argparse
+    base = {"val_mode": None, "seed": None, "gap_days": None, "val_ratio": None,
+            "labels": None}
+    base.update(kw)
+    return argparse.Namespace(**base)
+
+
+def _weights_dir(tmp_path, labels_path, **config):
+    import json
+
+    from src.calibration import file_fingerprint
+    summary = {
+        "config": {"val_mode": "spread", "seed": 7, "gap_days": 5,
+                   "val_ratio": 0.25, **config},
+        "labels_fingerprint": file_fingerprint(labels_path),
+        "labels_path": str(labels_path),
+    }
+    (tmp_path / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    return tmp_path
+
+
+def _labels_file(tmp_path, text="filename,label\na.png,typhoon\n"):
+    path = tmp_path / "labels.csv"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_split_settings_are_inherited_from_the_weights(tmp_path):
+    """重みを作ったときの分割設定を引き継ぐこと。
+
+    **設定が違うと、同じ重みでも閾値が別の検証データで決まる。**天気図単独の
+    成績が変わるので、「混ぜて上積みが出た」の基準そのものがずれる。実測で
+    val_mode を取り違えたまま回したとき、天気図単独が 0.641 ではなく 0.609
+    になり、そこから測った上積みを報告しかけた。
+    """
+    from src.blend import inherit_split_settings
+
+    labels = _labels_file(tmp_path)
+    args = _args(labels=str(labels))
+    inherit_split_settings(_weights_dir(tmp_path, labels), args)
+    assert (args.val_mode, args.seed, args.gap_days, args.val_ratio) == ("spread", 7, 5, 0.25)
+
+
+def test_an_explicit_setting_wins_over_the_inherited_one(tmp_path):
+    """明示的に指定した値は上書きされないこと。"""
+    from src.blend import inherit_split_settings
+
+    labels = _labels_file(tmp_path)
+    args = _args(labels=str(labels), val_mode="tail")
+    inherit_split_settings(_weights_dir(tmp_path, labels), args)
+    assert args.val_mode == "tail"
+    assert args.seed == 7          # 指定しなかったほうは引き継ぐ
+
+
+def test_a_changed_label_file_is_refused(tmp_path):
+    """ラベルの中身が変わっていたら止めること。
+
+    パスが同じでも中身は変わる。実際に台風ラベルを付け直したあと、付け直す
+    前の結果と並べて「改善した」と読んでしまったことがある。
+    """
+    from src.blend import inherit_split_settings
+
+    labels = _labels_file(tmp_path)
+    weights = _weights_dir(tmp_path, labels)
+    labels.write_text("filename,label\na.png,typhoon\nb.png,typhoon\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        inherit_split_settings(weights, _args(labels=str(labels)))
+
+
+def test_missing_summary_falls_back_to_defaults(tmp_path, capsys):
+    """summary.json が無くても止まらず、既定値で進むこと(ただし知らせる)。"""
+    from src.blend import inherit_split_settings
+
+    args = _args(labels=str(_labels_file(tmp_path)))
+    inherit_split_settings(tmp_path / "empty", args)
+    assert (args.val_mode, args.seed, args.gap_days, args.val_ratio) == ("tail", 42, 3, 0.2)
+    assert "引き継げない" in capsys.readouterr().out
