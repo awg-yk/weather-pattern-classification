@@ -177,7 +177,7 @@ def main():
         loader = DataLoader(Subset(dataset, rows), batch_size=args.batch_size)
         probs_list, labels_list = [], []
         with torch.no_grad():
-            for images, features, labels in loader:
+            for images, features, labels, _aux in loader:
                 images = images.to(device)
                 outputs = (
                     model(images, features.to(device)) if features.numel() else model(images)

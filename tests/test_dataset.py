@@ -61,7 +61,7 @@ def test_features_are_matched_by_filename_not_by_row_order(workspace):
     for i in range(len(dataset)):
         name = dataset.df["filename"].iloc[i]
         expected = len(workspace["names"]) - 1 - workspace["names"].index(name)
-        _, features, _ = dataset[i]
+        _, features, _, _ = dataset[i]
         assert features.item() == pytest.approx(expected)
 
 
@@ -69,7 +69,7 @@ def test_targets_match_the_label_column(workspace):
     dataset = WeatherMapDataset(workspace["images"], workspace["labels"])
     for i in range(len(dataset)):
         expected = parse_labels(dataset.df["label"].iloc[i])
-        _, _, target = dataset[i]
+        _, _, target, _ = dataset[i]
         got = [LABELS[j] for j, on in enumerate(target.tolist()) if on]
         assert sorted(got) == sorted(expected)
 

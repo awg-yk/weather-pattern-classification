@@ -324,6 +324,8 @@ python -m src.train --data-dir <画像のディレクトリ> --labels data/label
 | `--input-mode` | `chart` | `chart`=天気図の画像。`era5-grid`=ERA5の海面更正気圧・850hPa気温の格子をそのまま入力する |
 | `--arch` | `efficientnet_b0` | `small_cnn`は浅い自作ネット。**ERA5格子ではこちらを使う**(EfficientNetは同じパラメータ数でも自明な予測を下回る。`src/model.py`の`SmallCNN`を参照) |
 | `--coordconv` | なし | 入力に座標チャンネルを足す。位置で決まる気圧配置(オホーツク海高気圧など)の判別を助ける |
+| `--aux-features` | なし | 検出から作った数値(`scripts/build_features.py` の出力)も答えさせる。位置を**入力**として渡す `--coordconv` が効かなかったのを受けての手 |
+| `--aux-weight` | 0 | 上の損失にかける重み。振って決める。大きすぎると本来の10ラベルが犠牲になる |
 | `--grid-size` | 128 | `--input-mode era5-grid`のときの格子の一辺。ERA5の元データは181×221点なので、128は粗い |
 | `--cnn-widths` | 128 256 512 512 | `--arch small_cnn`の各段の幅。実測で最良かつfold間のばらつきも最小だった値 |
 | `--image-size` | 224 | 天気図の入力解像度。VRAMを解像度の2乗で消費するので`--batch-size`を併せて下げること |

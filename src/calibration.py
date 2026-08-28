@@ -547,7 +547,7 @@ def collect_logits(model, dataset, rows, device, batch_size: int = 16):
     logits_list, labels_list = [], []
     model.eval()
     with torch.no_grad():
-        for images, features, labels in loader:
+        for images, features, labels, _aux in loader:
             images = images.to(device)
             outputs = model(images, features.to(device)) if features.numel() else model(images)
             logits_list.append(outputs.cpu().numpy())

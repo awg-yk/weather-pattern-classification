@@ -60,7 +60,7 @@ def test_grid_has_two_channels_and_the_requested_size(workspace):
     ds = ERA5GridDataset(workspace["labels_csv"], workspace["era5_dir"], grid_size=20)
     mean, std = compute_grid_stats(ds, list(range(len(ds))))
     ds.set_stats(mean, std)
-    grid, features, target = ds[0]
+    grid, features, target, aux = ds[0]
     assert grid.shape == (NUM_CHANNELS, 20, 20)
     assert features.numel() == 0, "26特徴量のFeatureFusion経路とは無関係のはず"
     assert target.shape == (10,)

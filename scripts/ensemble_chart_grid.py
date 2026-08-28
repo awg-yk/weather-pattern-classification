@@ -43,7 +43,7 @@ def probabilities(model, dataset, rows, device, batch_size):
     loader = DataLoader(Subset(dataset, rows), batch_size=batch_size)
     probs, targets = [], []
     with torch.no_grad():
-        for inputs, _unused, labels in loader:
+        for inputs, _unused, labels, _aux in loader:
             probs.append(torch.sigmoid(model(inputs.to(device))).cpu().numpy())
             targets.append(labels.numpy())
     return np.concatenate(probs), np.concatenate(targets)

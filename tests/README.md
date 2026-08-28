@@ -44,3 +44,19 @@ CNNの学習・推論・Grad-CAM・較正・混合が全部止まる状態が、
 * リファクタのあとは `python -m pyflakes src/ scripts/ tests/ | grep "undefined name"`
   を通すこと。この不具合は1行で検出できた
 
+## この環境で torch を入れて全部走らせる(2026-08-28)
+
+`tests/test_dataset.py` や `tests/test_model.py` は torch を読むので、
+torch の無い環境では**収集すらされず、赤にならない**。上の
+`_DATE_IN_FILENAME` の件は、それで1日気づかれなかった。
+
+必要なものを入れれば全部走る:
+
+```bash
+pip install torch torchvision tqdm matplotlib
+pip install --ignore-installed packaging xarray   # packaging はOS側と衝突する
+python -m pytest tests/ -q                        # 307件
+```
+
+**「テストが通った」と報告する前に、何件走ったかを見ること。**件数が急に
+減っていたら、収集できていないファイルがある。

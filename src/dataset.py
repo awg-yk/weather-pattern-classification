@@ -1,7 +1,9 @@
 import re
+import warnings
 from collections import Counter
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 from PIL import Image
@@ -26,7 +28,7 @@ class WeatherMapDataset(Dataset):
     """
 
     def __init__(self, images_dir: str, labels_csv: str, transform=None, years=None,
-                 features_csv=None):
+                 features_csv=None, aux_csv=None, aux_columns=None):
         """years に年のリストを渡すと、その年の画像だけを対象にする。
 
         「2023〜2025年の3年分」のように対象期間を区切って実験するときに使う。
@@ -35,6 +37,14 @@ class WeatherMapDataset(Dataset):
 
         features_csv に scripts/era5_features.py の出力を渡すと、画像に加えて
         ERA5の数値特徴も返すようになる。特徴量が無い行は学習に使えないため除外する。
+
+        aux_csv に scripts/build_features.py の出力を渡すと、**学習の答えとして
+        使う数値**(補助の答え)も返すようになる。features_csv とは向きが逆で、
+        こちらは入力ではなく出力側である(`src/model.py` の AuxiliaryTargets)。
+
+        補助の答えが無い行は**除外しない**。NaN のまま返し、損失の側で飛ばす
+        (`src/train.py` の masked_mse)。10ラベルの学習は続けられるので、
+        検出できなかった日を捨てる理由がない。
         """
         self.images_dir = Path(images_dir)
         self.transform = transform
@@ -118,7 +128,48 @@ class WeatherMapDataset(Dataset):
                 df[self.feature_cols].to_numpy(dtype="float32"), dtype=torch.float32
             )
 
+        # 補助の答え。**行は減らさない。**画像を1枚も捨てずに済むよう、
+        # 見つからない行は NaN にして損失の側で飛ばす
+        self.aux_cols = []
+        self.aux = None
+        self.aux_mean = None
+        self.aux_std = None
+        if aux_csv:
+            table = pd.read_csv(aux_csv)
+            if "filename" not in table.columns:
+                raise ValueError(f"{aux_csv} に filename 列がありません。")
+            self.aux_cols = list(aux_columns) if aux_columns else [
+                c for c in table.columns if c not in ("filename", "date", "datetime")
+            ]
+            missing = [c for c in self.aux_cols if c not in table.columns]
+            if missing:
+                raise ValueError(f"{aux_csv} に無い列が指定されました: {missing}")
+            # filename で突き合わせる。行番号で並べると、ずれても学習は最後まで
+            # 走り、別の日の位置を答えとして教えることになる
+            values = (table.set_index("filename")
+                      .reindex(df["filename"].values)[self.aux_cols]
+                      .to_numpy(dtype="float32"))
+            found = int((~np.isnan(values).all(axis=1)).sum())
+            print(f"補助の答え({len(self.aux_cols)}個)を結合: {len(df)}件中{found}件に値あり")
+            if found == 0:
+                raise ValueError(
+                    "補助の答えが1件も突き合いませんでした。filename を確認すること。\n"
+                    f"  labels.csvのfilename例: {labels_head!r}\n"
+                    f"  補助CSVのfilename例   : {table['filename'].iloc[0]!r}"
+                )
+            self.aux = torch.tensor(values, dtype=torch.float32)
+
         self.df = df
+
+    def set_aux_stats(self, mean, std) -> None:
+        """補助の答えを標準化するための平均と標準偏差を渡す。
+
+        **学習データの行だけから求めること**(`compute_aux_stats`)。全行から
+        求めると検証・テストの分布が学習に漏れる。`src/era5_grid.py` の
+        set_stats と同じ約束である。
+        """
+        self.aux_mean = torch.as_tensor(mean, dtype=torch.float32)
+        self.aux_std = torch.as_tensor(std, dtype=torch.float32).clamp(min=1e-6)
 
     def __len__(self) -> int:
         return len(self.df)
@@ -137,4 +188,30 @@ class WeatherMapDataset(Dataset):
         # ERA5を使わない場合も要素数0のテンソルを返し、返り値の形を常に揃える。
         # 学習・評価のループが分岐を持たずに済む。
         features = self.features[idx] if self.features is not None else torch.empty(0)
-        return image, features, target
+        if self.aux is None:
+            aux = torch.empty(0)
+        else:
+            aux = self.aux[idx]
+            if self.aux_mean is not None:
+                aux = (aux - self.aux_mean) / self.aux_std
+        return image, features, target, aux
+
+
+def compute_aux_stats(dataset, indices) -> tuple:
+    """指定した行だけから、補助の答えの平均・標準偏差を求める。
+
+    **学習データの行だけを渡すこと。**全行から求めると、検証・テストの分布が
+    学習に漏れる。`src/era5_grid.py` の compute_grid_stats と同じ約束。
+
+    値の無い行(NaN)は飛ばして数える。1つも値の無い列は標準偏差0になるので、
+    set_aux_stats 側で下限を入れてある。
+    """
+    values = dataset.aux[list(indices)].numpy()
+    # 全部が欠測の列では nanmean が警告を出す。返り値は下で 0/1 に均すので黙らせる
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        mean = np.nanmean(values, axis=0)
+        std = np.nanstd(values, axis=0)
+    # 1件も値が無い列は NaN になる。0と1にしておけば、その列は常に NaN のまま
+    # 損失から飛ばされる
+    return np.nan_to_num(mean, nan=0.0), np.nan_to_num(std, nan=1.0)

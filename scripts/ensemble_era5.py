@@ -44,7 +44,7 @@ def cnn_probabilities(model, dataset, rows, device, batch_size):
     loader = DataLoader(Subset(dataset, rows), batch_size=batch_size)
     probs, targets = [], []
     with torch.no_grad():
-        for images, _features, labels in loader:
+        for images, _features, labels, _aux in loader:
             probs.append(torch.sigmoid(model(images.to(device))).cpu().numpy())
             targets.append(labels.numpy())
     return np.concatenate(probs), np.concatenate(targets)

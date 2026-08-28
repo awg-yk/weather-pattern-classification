@@ -58,6 +58,11 @@ def main():
         help="ImageNetの事前学習重みを使わない(ERA5格子と条件を揃えるとき)",
     )
     parser.add_argument("--era5-features", default=None)
+    parser.add_argument("--aux-features", default=None,
+                        help="scripts/build_features.py の出力。10ラベルに加えて"
+                             "この数値も答えさせる(src/model.py の AuxiliaryTargets)")
+    parser.add_argument("--aux-weight", default="0.3",
+                        help="補助の答えの損失にかける重み。振って決めること")
     parser.add_argument("--val-ratio", type=float, default=0.2)
     parser.add_argument("--gap-days", type=int, default=3)
     parser.add_argument("--val-mode", default="tail", choices=["spread", "tail"])
@@ -94,6 +99,9 @@ def main():
         common += ["--data-dir", args.data_dir]
     if args.era5_features:
         common += ["--era5-features", args.era5_features]
+    if args.aux_features:
+        common += ["--aux-features", args.aux_features,
+                   "--aux-weight", args.aux_weight]
 
     results = []
     for test_year in args.years:

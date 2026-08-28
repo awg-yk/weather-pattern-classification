@@ -189,6 +189,47 @@ def _adapt_first_conv(model: nn.Module, in_channels: int, pretrained: bool) -> N
     model.features[0][0] = replacement
 
 
+class AuxiliaryTargets(nn.Module):
+    """本来の10ラベルに加えて、検出から作った数値も答えさせるラッパー。
+
+    なぜ入力ではなく出力なのか
+    --------------------------
+    位置を**入力**として渡す方法(CoordConv)は既に試して効かなかった
+    (`docs/2026-08-25-attention-regions.md`)。全体は 0.641 -> 0.638 で変わらず、
+    オホーツク海高気圧はむしろ 0.33 -> 0.27 に下がった。Grad-CAMで見ると、
+    そのラベルを正解している58枚でもオホーツク海を見ている割合は8.6%しか
+    なく、座標を与えても見る場所は変わらなかった。
+
+    **入力は無視できるが、答えさせられる項目は無視できない。**
+    「高気圧の中心はどこか」を出力させれば、そこを見ないと損失が下がらない。
+    これがこのラッパーの狙いである。
+
+    仕組み
+    ------
+    中のネットの出力を `num_classes + num_aux` 本にし、前半を10ラベル、
+    後半を補助の答えとして切り分ける。両者は最後の全結合の手前まで同じ
+    特徴を共有するので、補助を当てるために作られた表現が10ラベル側にも効く。
+
+    **`forward` は10ラベルぶんしか返さない。**推論・評価・Grad-CAM・混合など
+    既存の経路は `model(x)` をそのまま使えて、補助の列が紛れ込まない。
+    学習だけが `forward_with_aux` を呼ぶ。
+    """
+
+    def __init__(self, net: nn.Module, num_classes: int, num_aux: int):
+        super().__init__()
+        self.net = net
+        self.num_classes = num_classes
+        self.num_aux = num_aux
+
+    def forward(self, x, features=None):
+        return self.forward_with_aux(x, features)[0]
+
+    def forward_with_aux(self, x, features=None):
+        out = self.net(x, features) if features is not None else self.net(x)
+        return out[:, :self.num_classes], out[:, self.num_classes:]
+
+
+
 def build_model(
     num_classes: int = len(LABELS),
     pretrained: bool = True,
@@ -196,6 +237,7 @@ def build_model(
     dropout: float = 0.3,
     coordconv: bool = False,
     num_features: int = 0,
+    num_aux: int = 0,
     in_channels: int = 3,
     arch: str = "efficientnet_b0",
     cnn_widths=(128, 256, 512, 512),
@@ -207,6 +249,9 @@ def build_model(
 
     coordconv=True にすると入力に座標チャンネルを足す(CoordConvを参照)。
     num_features>0 にするとERA5の数値特徴を併用する(FeatureFusionを参照)。
+    num_aux>0 にすると、10ラベルに加えて検出から作った数値も答えさせる
+    (AuxiliaryTargetsを参照)。**出力の本数が増えるのは中のネットだけで、
+    model(x) は10ラベルぶんしか返さない。**
 
     arch="small_cnn" にすると、EfficientNetの代わりに小さな畳み込みネットを使う
     (SmallCNNを参照)。ERA5格子のようにデータ量が少なく事前学習も効かない入力向け。
@@ -218,9 +263,12 @@ def build_model(
     最初の畳み込み1層だけなので、その層だけ作り直し、残りは事前学習重みを
     引き継ぐ(_adapt_first_conv を参照)。
     """
+    # 補助の答えを出す構成では、中のネットの出力を10ラベル+補助の本数にする
+    outputs = num_classes + num_aux
+
     if arch == "small_cnn":
         # 事前学習重みは存在しないので、pretrainedは無視する
-        model = SmallCNN(num_classes, in_channels=in_channels, dropout=dropout,
+        model = SmallCNN(outputs, in_channels=in_channels, dropout=dropout,
                          widths=tuple(cnn_widths))
         if freeze_backbone:
             for param in model.features.parameters():
@@ -228,7 +276,9 @@ def build_model(
         if coordconv:
             model = CoordConv(model)
         if num_features:
-            model = FeatureFusion(model, num_features, num_classes, dropout=dropout)
+            model = FeatureFusion(model, num_features, outputs, dropout=dropout)
+        if num_aux:
+            model = AuxiliaryTargets(model, num_classes, num_aux)
         return model
 
     weights = EfficientNet_B0_Weights.DEFAULT if pretrained else None
@@ -244,18 +294,20 @@ def build_model(
     in_features = model.classifier[1].in_features
     model.classifier = nn.Sequential(
         nn.Dropout(p=dropout),
-        nn.Linear(in_features, num_classes),
+        nn.Linear(in_features, outputs),
     )
     if coordconv:
         model = CoordConv(model)
     if num_features:
-        model = FeatureFusion(model, num_features, num_classes, dropout=dropout)
+        model = FeatureFusion(model, num_features, outputs, dropout=dropout)
+    if num_aux:
+        model = AuxiliaryTargets(model, num_classes, num_aux)
     return model
 
 
 def backbone(model: nn.Module):
     """CoordConv・FeatureFusionで包まれていても中のEfficientNetを返す。Grad-CAM用。"""
-    while isinstance(model, (CoordConv, FeatureFusion)):
+    while isinstance(model, (CoordConv, FeatureFusion, AuxiliaryTargets)):
         model = model.net
     return model
 
@@ -290,7 +342,11 @@ def save_checkpoint(path, model: nn.Module, image_size: int, pos_weight=None) ->
             "labels": list(LABELS),
             "pos_weight": None if pos_weight is None else [float(w) for w in pos_weight],
             "coordconv": _has(model, CoordConv),
-            "num_features": model.num_features if isinstance(model, FeatureFusion) else 0,
+            "num_features": _find(model, FeatureFusion).num_features
+            if _has(model, FeatureFusion) else 0,
+            # 補助の本数。記録しないと出力の形が変わって読み戻せない
+            "num_aux": _find(model, AuxiliaryTargets).num_aux
+            if _has(model, AuxiliaryTargets) else 0,
             "in_channels": _base_in_channels(model),
             "arch": "small_cnn" if isinstance(backbone(model), SmallCNN) else "efficientnet_b0",
             # 幅が違えば別の形なので、記録しないと読み戻せない
@@ -316,6 +372,7 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
         labels = obj.get("labels", list(LABELS))
         coordconv = obj.get("coordconv", False)
         num_features = obj.get("num_features", 0)
+        num_aux = obj.get("num_aux", 0)
         in_channels = obj.get("in_channels", 3)
         # pos_weightを記録する前に作られた重みでは None になる。その場合は
         # 解析的な補正ができないので、校正は検証データへの当てはめだけで行う。
@@ -326,6 +383,7 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
         labels = list(LABELS)
         coordconv = False
         num_features = 0
+        num_aux = 0
         in_channels = 3
         pos_weight = None
 
@@ -337,18 +395,26 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
             "ラベルを変更した場合は再学習が必要です。"
         )
 
-    model_features = model.num_features if isinstance(model, FeatureFusion) else 0
+    # **isinstance ではなく _find を使う。**ラッパーは入れ子になるので、
+    # AuxiliaryTargets が FeatureFusion を包んでいると isinstance は False を返し、
+    # 一致しているのに「一致しません」と言って止まる
+    fusion = _find(model, FeatureFusion)
+    model_features = fusion.num_features if fusion else 0
+    aux = _find(model, AuxiliaryTargets)
+    model_aux = aux.num_aux if aux else 0
     model_in_channels = _base_in_channels(model)
     if (
         coordconv != _has(model, CoordConv)
         or num_features != model_features
+        or num_aux != model_aux
         or in_channels != model_in_channels
     ):
         raise ValueError(
             "重みの構成と渡されたモデルが一致しません。\n"
-            f"  重み側  : coordconv={coordconv}, num_features={num_features}, in_channels={in_channels}\n"
+            f"  重み側  : coordconv={coordconv}, num_features={num_features}, "
+            f"num_aux={num_aux}, in_channels={in_channels}\n"
             f"  モデル側: coordconv={_has(model, CoordConv)}, num_features={model_features}, "
-            f"in_channels={model_in_channels}\n"
+            f"num_aux={model_aux}, in_channels={model_in_channels}\n"
             "build_modelではなくload_modelを使うと、重みに合わせて自動で組み立てます。"
         )
 
@@ -358,18 +424,32 @@ def load_checkpoint(path, model: nn.Module, map_location=None) -> dict:
         "labels": labels,
         "coordconv": coordconv,
         "num_features": num_features,
+        "num_aux": num_aux,
         "in_channels": in_channels,
         "pos_weight": pos_weight,
     }
 
 
+_WRAPPERS = (CoordConv, FeatureFusion, AuxiliaryTargets)
+
+
+def _find(model: nn.Module, kind):
+    """包まれた層の中から、その種類のものを1つ返す。見つからなければ None。
+
+    **ラッパーは入れ子になる**(AuxiliaryTargets が FeatureFusion を包み、
+    その中に CoordConv がある、など)。isinstance(model, kind) だけで判定すると
+    いちばん外側しか見ないので、内側の設定を保存し損ねて読み戻せなくなる。
+    """
+    while isinstance(model, _WRAPPERS):
+        if isinstance(model, kind):
+            return model
+        model = model.net
+    return None
+
+
 def _has(model: nn.Module, kind) -> bool:
     """CoordConvがFeatureFusionの内側にあっても見つけられるようにする。"""
-    while isinstance(model, (CoordConv, FeatureFusion)):
-        if isinstance(model, kind):
-            return True
-        model = model.net
-    return False
+    return _find(model, kind) is not None
 
 
 def load_model(path, map_location=None):
@@ -385,6 +465,7 @@ def load_model(path, map_location=None):
         pretrained=False,
         coordconv=meta_obj.get("coordconv", False),
         num_features=meta_obj.get("num_features", 0),
+        num_aux=meta_obj.get("num_aux", 0),
         in_channels=meta_obj.get("in_channels", 3),
         arch=meta_obj.get("arch", "efficientnet_b0"),
         cnn_widths=meta_obj.get("cnn_widths") or (128, 256, 512, 512),

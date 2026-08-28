@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader, Subset
 from torchvision import transforms
 from tqdm import tqdm
 
-from src.dataset import WeatherMapDataset
+from src.dataset import WeatherMapDataset, compute_aux_stats
 from src.era5_grid import ERA5GridDataset, compute_grid_stats
 from src.labels import LABELS
 from src import calibration as calib
@@ -90,7 +90,24 @@ def _chance_ap(targets) -> float:
     return float(prevalence[present].mean()) if present.any() else float("nan")
 
 
-def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshold: float = 0.5):
+def masked_mse(pred, target):
+    """値のある要素だけで二乗誤差を取る。
+
+    補助の答えには欠測がある(高気圧が1つも無い日に「高気圧の位置」は無い、
+    検出が失敗した日もある)。0で埋めると「図の左上に高気圧がある」と教える
+    ことになるので、NaN のまま渡して、ここで飛ばす。
+
+    1件も値が無ければ0を返す。**0を返すのは「損失なし」であって「完璧」では
+    ない。**その分は勾配に寄与しないだけで、10ラベル側の学習は続く。
+    """
+    valid = ~torch.isnan(target)
+    if not valid.any():
+        return pred.sum() * 0.0        # 勾配のつながりを保ったままのゼロ
+    return ((pred[valid] - target[valid]) ** 2).mean()
+
+
+def run_epoch(model, loader, criterion, optimizer, device, train: bool,
+              threshold: float = 0.5, aux_weight: float = 0.0):
     """マルチラベル学習: labelsは各クラス0/1のmulti-hotベクトル、BCEで学習する。
 
     (損失, 完全一致率, macro F1, macro AP)を返す。
@@ -103,21 +120,32 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshol
 
     そこでmacro AP(ラベルごとのaverage precisionの平均)も返す。閾値を決めずに
     順位付けの良さだけを測るため、閾値最適化後の性能と素直に対応する。
+
+    aux_weight>0 のときは、検出から作った数値も答えさせる
+    (`src/model.py` の AuxiliaryTargets)。**モデル選択に使う指標は10ラベル側
+    のまま**にしてある。補助を当てるのは目的ではなく、そこを見させるための
+    手段なので、補助まで含めた損失で選ぶと目的からずれる。
     """
     model.train() if train else model.eval()
     total_loss, exact_match, total = 0.0, 0, 0
     all_preds, all_probs, all_targets = [], [], []
 
     with torch.set_grad_enabled(train):
-        for images, features, labels in tqdm(loader, leave=False):
+        for images, features, labels, aux in tqdm(loader, leave=False):
             images, labels = images.to(device), labels.to(device)
             # 要素数0なら「ERA5を使わない構成」なので、そのままNoneとして渡す
             features = features.to(device) if features.numel() else None
 
             if train:
                 optimizer.zero_grad()
-            outputs = model(images, features) if features is not None else model(images)
-            loss = criterion(outputs, labels)
+            if aux_weight:
+                outputs, aux_pred = model.forward_with_aux(images, features)
+                label_loss = criterion(outputs, labels)
+                loss = label_loss + aux_weight * masked_mse(aux_pred, aux.to(device))
+            else:
+                outputs = model(images, features) if features is not None else model(images)
+                label_loss = criterion(outputs, labels)
+                loss = label_loss
             if train:
                 loss.backward()
                 optimizer.step()
@@ -125,7 +153,9 @@ def run_epoch(model, loader, criterion, optimizer, device, train: bool, threshol
             probs = torch.sigmoid(outputs)
             preds = (probs > threshold).float()
             exact_match += (preds == labels).all(dim=1).sum().item()
-            total_loss += loss.item() * images.size(0)
+            # **記録するのは10ラベル側の損失だけ。**補助を混ぜると、
+            # aux_weight を変えた実行どうしで val_loss を比べられなくなる
+            total_loss += label_loss.item() * images.size(0)
             total += images.size(0)
             all_preds.append(preds.detach().cpu())
             all_probs.append(probs.detach().cpu())
@@ -204,6 +234,12 @@ def main():
         help="特徴抽出部を凍結し分類ヘッドのみ学習する(データが少ない場合の過学習対策)",
     )
     parser.add_argument("--patience", type=int, default=8, help="val_lossがこの回数改善しなければ早期終了")
+    parser.add_argument("--aux-features", default=None,
+                        help="scripts/build_features.py の出力。10ラベルに加えて"
+                             "この数値も答えさせる(src/model.py の AuxiliaryTargets)")
+    parser.add_argument("--aux-weight", type=float, default=0.0,
+                        help="補助の答えの損失にかける重み。0で使わない。"
+                             "**振って決めること** -- 大きすぎると本来の10ラベルが犠牲になる")
     parser.add_argument(
         "--pos-weight-cap",
         type=float,
@@ -302,6 +338,18 @@ def main():
 
     if args.input_mode == "chart" and not args.data_dir:
         raise SystemExit("chartモードでは --data-dir が必要です")
+    if args.aux_weight and not args.aux_features:
+        raise SystemExit(
+            "--aux-weight を指定するなら --aux-features も必要です"
+            "(答えさせる数値が無いと重みだけあっても何も起きません)"
+        )
+    if args.aux_features and not args.aux_weight:
+        raise SystemExit(
+            "--aux-features を指定するなら --aux-weight に0より大きい値が必要です"
+            "(0だと補助の答えは読み込むだけで学習に効きません)"
+        )
+    if args.aux_features and args.input_mode != "chart":
+        raise SystemExit("--aux-features は天気図画像(--input-mode chart)専用です")
     if args.input_mode == "era5-grid" and args.era5_features:
         raise SystemExit(
             "--input-mode era5-grid と --era5-features は併用できません"
@@ -333,6 +381,7 @@ def main():
             transform=get_transforms(train=True, image_size=args.image_size),
             years=args.years,
             features_csv=args.era5_features,
+            aux_csv=args.aux_features,
         )
         eval_base = WeatherMapDataset(
             args.data_dir,
@@ -340,6 +389,7 @@ def main():
             transform=get_transforms(train=False, image_size=args.image_size),
             years=args.years,
             features_csv=args.era5_features,
+            aux_csv=args.aux_features,
         )
 
     splits = make_splits(
@@ -352,6 +402,20 @@ def main():
         gap_days=args.gap_days,
         val_mode=args.val_mode,
     )
+    if args.aux_weight and not getattr(train_base, "aux_cols", []):
+        raise SystemExit(
+            f"{args.aux_features} に使える列がありません(filename と date 以外)。"
+            "補助の答えが0本では、重みを指定しても学習に効きません。"
+        )
+    if args.aux_weight and args.input_mode == "chart":
+        # 標準化の統計は**学習データの行だけ**から求める。全行から求めると
+        # 検証・テストの分布が学習に漏れる(src/era5_grid.py と同じ約束)
+        mean, std = compute_aux_stats(train_base, splits["train"])
+        train_base.set_aux_stats(mean, std)
+        eval_base.set_aux_stats(mean, std)
+        print(f"補助の答え{len(train_base.aux_cols)}個を、"
+              f"重み{args.aux_weight}で学習に加えます")
+
     train_ds = Subset(train_base, splits["train"])
     val_ds = Subset(eval_base, splits["val"])
     # テストセットはここでは一切触らない。src/evaluate.py --split test で
@@ -381,6 +445,7 @@ def main():
         dropout=args.dropout,
         coordconv=args.coordconv,
         num_features=len(train_base.feature_cols),
+        num_aux=len(getattr(train_base, "aux_cols", [])) if args.aux_weight else 0,
         in_channels=2 if args.input_mode == "era5-grid" else 3,
         arch=args.arch,
         cnn_widths=args.cnn_widths,
@@ -436,7 +501,8 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         train_loss, train_acc, train_f1, train_ap, _ = run_epoch(
-            model, train_loader, criterion, optimizer, device, train=True
+            model, train_loader, criterion, optimizer, device, train=True,
+            aux_weight=args.aux_weight,
         )
         val_loss, val_acc, val_f1, val_ap, val_chance_ap = run_epoch(
             model, val_loader, criterion, optimizer, device, train=False

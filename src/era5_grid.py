@@ -182,7 +182,9 @@ class ERA5GridDataset(Dataset):
         target = torch.zeros(len(LABELS), dtype=torch.float32)
         for label in self.df.at[idx, "parsed_labels"]:
             target[LABEL_TO_INDEX[label]] = 1.0
-        return grid, torch.empty(0), target
+        # 4つ組にそろえる。src/dataset.py と同じ形にしないと同じ学習ループを
+        # 通せない。補助の答えは格子側では使わないので空で返す
+        return grid, torch.empty(0), target, torch.empty(0)
 
 
 def compute_grid_stats(dataset: ERA5GridDataset, indices) -> tuple:
