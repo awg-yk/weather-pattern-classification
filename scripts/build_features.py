@@ -180,12 +180,16 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
                   mark_scale: float = 1.0,
                   mark_radius: float = MARK_LETTER_RADIUS,
                   letter_threshold: float = LETTER_THRESHOLD,
-                  overlay_dir=None) -> tuple:
+                  overlay_dir=None, want_masks: bool = False) -> tuple:
     """1枚から検出結果を取り出す。位置はすべて相対座標(0〜1)。
 
     文字と印で倍率を変えられる。**印は文字よりずっと小さい**(印は約31x31、
     H/L の文字は約95x117)ので、文字に効く 0.7 は印には粗すぎる
     (印は22x22になり、丸と×の細部が潰れる)。既定では印は原寸で当てる。
+
+    `want_masks=True` にすると、前線の画素マスクも返り値に含める
+    (`scripts/annotate_charts.py` が天気図に描き込むのに使う)。既定で外して
+    あるのは、並列処理で画像1枚ぶんの配列を親に送り返すのが無駄なため。
     """
     from scripts.extract_symbols import symbol_of
 
@@ -271,6 +275,9 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
     )
     report = {
         "marks": found_marks, "orphan_marks": orphans, "distances": distances,
+        # 描き込みに使う。**検出は1か所でしか行わない**ため、ここから渡す
+        "masks": ({**cleaned, "stationary_front": stationary} if want_masks else None),
+        "letters": letter_groups,
         # 文字が何枚見つかったかは、印が余る原因を切り分けるのに要る。
         # 印7.9に対して文字3.5なら、狭いのは半径ではなく文字の取りこぼしである
         "letters_H": len(letter_groups["H"]), "letters_L": len(letter_groups["L"]),

@@ -1,0 +1,224 @@
+r"""検出した高低気圧と前線を天気図に描き込み、注釈付きの画像を書き出す。
+
+    天気図 -> 検出(方法③のSTEP1・STEP2) -> 描き込み -> 注釈付き画像 -> CNN(方法①)
+
+狙いは2つある。
+
+1. **CNNに、検出した位置を目立つ形で渡す。**H/L の文字も前線も元の天気図に
+   既に描かれているので、これは情報の追加ではなく**強調**である。効くかどうかは
+   実測で確かめる必要がある(下記の但し書き)。
+2. **人が検出の当たり外れを目で確かめられる。**Grad-CAM は「モデルがどこを
+   見たか」しか示さないが、この画像は「検出が正しかったか」を示す。運用で
+   AIの判定を人が検証する場面ではこちらのほうが直接的である。
+
+学習側の変更は要らない。`--data-dir` をこの出力に向けるだけで
+`scripts/cross_validate.py` がそのまま動く。
+
+**期待しすぎないための但し書き**
+--------------------------------
+枠を描いても、CNNが位置を絶対座標で読めるようにはならない。畳み込みは
+平行移動に対して同等の応答を返すので、「枠がオホーツク海にある」ことは
+依然として読み取りにくい。**効くとすれば「見つけやすくなる」ほうであって、
+「どこにあるか分かる」ほうではない。**
+
+検出は完璧ではない(1枚あたり約2.25個の誤検出が残る)。補助の答えとして
+渡す場合は損失に混じるだけだが、**画像に描き込むと誤りが入力そのものに
+焼き付く。**モデルはそれを本物として扱う。
+
+使い方:
+    python -m scripts.annotate_charts --in-dir data\processed\jma `
+        --templates data\templates --out-dir data\annotated --workers 8
+"""
+
+import argparse
+import os
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+from time import time
+
+import cv2
+import numpy as np
+from PIL import Image
+
+from scripts.build_features import (
+    IMAGE_SUFFIXES,
+    LETTER_THRESHOLD,
+    analyse_chart,
+    load_templates_scaled,
+    warn_about_misplaced_marks,
+)
+from src.chartfeatures import MARK_LETTER_RADIUS
+
+# 描き込みの色(RGB)。**天気図に既にある色帯と重ならないものを選ぶ。**
+#
+# 天気図側は 等圧線=黒、温暖前線=赤(252,4,4)、寒冷前線=青(4,4,252)、
+# 閉塞前線=紫、海岸線と経緯線=赤茶(164,44,44)。`src/chartsymbols.DEFAULT_BANDS`
+# の色相帯で言うと、空いているのは**色相21〜99(橙〜黄〜緑〜シアン)だけ**である。
+#
+# 当初 紫(200,0,200) を低気圧の枠に使おうとしたが、閉塞前線の帯に入っていた。
+# 重なると、人が見て「元からある前線」か「描き込み」か区別できないうえ、
+# この画像に対して方法③の色マスクをもう一度かけられなくなる。
+# `tests/test_annotate.py` が全色を機械的に確かめている。
+HIGH_COLOR = (0, 150, 0)            # 高気圧の枠(緑・色相60)
+LOW_COLOR = (255, 130, 0)           # 低気圧の枠(橙・色相15)
+FRONT_COLORS = {
+    "warm_front": (240, 210, 0),        # 黄(色相26)
+    "cold_front": (0, 210, 220),        # シアン(色相91)
+    "occluded_front": (140, 220, 0),    # 黄緑(色相41)
+    "stationary_front": (0, 170, 150),  # 青緑(色相86)
+}
+
+# 枠の大きさ(相対座標)。H/L の文字は約95x117、天気図は約1450x1500 なので
+# 文字自体は 0.066 x 0.078 にあたる。**文字を囲めるよう、少し大きめに取る。**
+# 文字の内側に描くと、人が見たときに「何を検出したのか」が読み取りにくい
+BOX_W, BOX_H = 0.078, 0.092
+
+
+def draw_annotations(rgb: np.ndarray, report: dict, detections,
+                     boxes: bool = True, fronts: bool = True,
+                     thickness: int = 3) -> np.ndarray:
+    """検出を天気図に描き込んだ画像を返す。元の配列は変更しない。
+
+    **輪郭だけを描き、塗りつぶさない。**下の天気図が隠れると、CNNが読める
+    情報を減らすことになる。強調のつもりが情報の削除になっては本末転倒である。
+    """
+    out = rgb.copy()
+    height, width = out.shape[:2]
+
+    if fronts and report.get("masks"):
+        # **前線そのものは塗り替えず、周りに縁取りだけを描く。**
+        # 塗り替えると、天気図が元から持っている赤(温暖)・青(寒冷)の
+        # 区別が消える。強調のつもりが情報の削除になる。縁取りなら、
+        # 元の色を残したまま「ここを検出した」を示せる。
+        #
+        # 停滞前線は赤と青の交互という導出結果なので最後に描く(最も具体的)。
+        order = ["warm_front", "cold_front", "occluded_front", "stationary_front"]
+        found = {name: report["masks"].get(name) for name in order}
+        found = {k: v for k, v in found.items() if v is not None and v.any()}
+        # **全部の前線の元画素をまとめて守る。**自分のマスクだけ避けると、
+        # あとから描く縁取りが別の前線の元画素を塗ってしまう(実測で1割)
+        protected = np.zeros(out.shape[:2], dtype=bool)
+        for mask in found.values():
+            protected |= mask
+        for name, mask in found.items():
+            grown = cv2.dilate(mask.astype(np.uint8),
+                               np.ones((thickness * 2 + 1,) * 2, np.uint8)).astype(bool)
+            out[grown & ~protected] = FRONT_COLORS[name]
+
+    if boxes:
+        for points, color in ((detections.highs, HIGH_COLOR),
+                              (detections.lows, LOW_COLOR)):
+            for cx, cy in points:
+                x0 = int((cx - BOX_W / 2) * width)
+                y0 = int((cy - BOX_H / 2) * height)
+                x1 = int((cx + BOX_W / 2) * width)
+                y1 = int((cy + BOX_H / 2) * height)
+                cv2.rectangle(out, (x0, y0), (x1, y1), color, thickness)
+    return out
+
+
+_WORKER = {}
+
+
+def _init_worker(template_dir, mark_dir, scale, mark_scale, mark_radius,
+                 letter_threshold, options):
+    _WORKER["letters"] = load_templates_scaled(Path(template_dir), scale, quiet=True)
+    _WORKER["marks"] = (load_templates_scaled(Path(mark_dir), mark_scale, quiet=True)
+                        if mark_dir else {})
+    _WORKER.update(scale=scale, mark_scale=mark_scale, mark_radius=mark_radius,
+                   letter_threshold=letter_threshold, **options)
+
+
+def _run_one(job) -> tuple:
+    path, out_path, threshold, angle_range, angle_step = job
+    detections, report = analyse_chart(
+        Path(path), _WORKER["letters"], _WORKER["marks"], _WORKER["scale"],
+        threshold, angle_range, angle_step, _WORKER["mark_scale"],
+        _WORKER["mark_radius"], _WORKER["letter_threshold"],
+        overlay_dir=None, want_masks=True,
+    )
+    rgb = np.array(Image.open(path).convert("RGB"))
+    marked = draw_annotations(rgb, report, detections,
+                              boxes=_WORKER["boxes"], fronts=_WORKER["fronts"],
+                              thickness=_WORKER["thickness"])
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(marked).save(out_path)
+    return (Path(path).name, len(detections.highs), len(detections.lows))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--in-dir", required=True)
+    parser.add_argument("--out-dir", required=True,
+                        help="注釈付き画像の書き出し先。ファイル名は元のまま")
+    parser.add_argument("--templates", default="data/templates")
+    parser.add_argument("--marks", default=None)
+    parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--scale", type=float, default=0.7)
+    parser.add_argument("--mark-scale", type=float, default=1.0)
+    parser.add_argument("--mark-radius", type=float, default=MARK_LETTER_RADIUS)
+    parser.add_argument("--threshold", type=float, default=0.65)
+    parser.add_argument("--letter-threshold", type=float, default=LETTER_THRESHOLD)
+    parser.add_argument("--angle-range", type=float, default=60.0)
+    parser.add_argument("--angle-step", type=float, default=5.0)
+    parser.add_argument("--thickness", type=int, default=3,
+                        help="線の太さ。224x224に縮めても残る太さが要る")
+    parser.add_argument("--no-boxes", action="store_true", help="高低気圧の枠を描かない")
+    parser.add_argument("--no-fronts", action="store_true", help="前線を塗らない")
+    parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
+    args = parser.parse_args()
+
+    paths = sorted(p for p in Path(args.in_dir).iterdir()
+                   if p.suffix.lower() in IMAGE_SUFFIXES)
+    if args.limit:
+        paths = paths[:args.limit]
+    if not paths:
+        raise SystemExit(f"画像が見つかりません: {args.in_dir}")
+
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # 途中で止めても続きから。**サイズ0のファイルは書きかけとみなして作り直す**
+    todo = [p for p in paths
+            if not (out_dir / p.name).exists() or (out_dir / p.name).stat().st_size == 0]
+    if len(todo) < len(paths):
+        print(f"{len(paths) - len(todo)}件は書き出し済み。残り{len(todo)}件から再開する。")
+    if not todo:
+        print("すべて済んでいます。作り直すには --out-dir の中身を消してください。")
+        return
+
+    letters = load_templates_scaled(Path(args.templates), args.scale)
+    warn_about_misplaced_marks(letters)
+    print(f"文字 {len(letters)}枚、{len(todo)}枚を{args.workers}並列で処理する。")
+
+    jobs = [(str(p), str(out_dir / p.name), args.threshold,
+             args.angle_range, args.angle_step) for p in todo]
+    options = {"boxes": not args.no_boxes, "fronts": not args.no_fronts,
+               "thickness": args.thickness}
+
+    started, done, highs, lows = time(), 0, 0, 0
+    with ProcessPoolExecutor(
+        max_workers=args.workers, initializer=_init_worker,
+        initargs=(args.templates, args.marks, args.scale, args.mark_scale,
+                  args.mark_radius, args.letter_threshold, options),
+    ) as pool:
+        for _name, n_high, n_low in pool.map(_run_one, jobs, chunksize=4):
+            done += 1
+            highs += n_high
+            lows += n_low
+            if done % 20 == 0 or done == len(todo):
+                rate = (time() - started) / done
+                print(f"  {done}/{len(todo)}  {rate:.1f}秒/枚  "
+                      f"残り{rate * (len(todo) - done) / 60:.0f}分", flush=True)
+
+    print(f"\n書き出しました: {out_dir.resolve()}")
+    print(f"1枚あたり 高気圧の枠 {highs / max(1, done):.2f} / "
+          f"低気圧の枠 {lows / max(1, done):.2f}")
+    print("\n**まず数枚を目で見ること。**枠が本物の高低気圧に付いているか、")
+    print("前線の塗りが実際の前線と合っているかを確かめてから学習に回す。")
+    print("\n学習側の変更は要らない。--data-dir をこの出力に向けるだけ:")
+    print(f"  python -m scripts.cross_validate --data-dir {args.out_dir} "
+          "--labels data\\labels_v2.csv --years 2023 2024 2025 --out-dir runs\\cv_annot")
+
+
+if __name__ == "__main__":
+    main()
