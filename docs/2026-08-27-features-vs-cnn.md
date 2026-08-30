@@ -530,9 +530,26 @@ H/L の文字も前線も元の天気図に既に描かれている。これは�
   全色を機械的に確かめている
 * 枠は輪郭だけ。塗りつぶすと下の天気図が消える
 
+
+#### 最初の実行で検出が漏れた(2026-08-30)
+
+実物で1枚あたり3個しか枠が付かなかった。下見(高2.65 / 低3.40)より明らかに
+少ない。原因は2つあり、どちらも描き込み側の問題だった。
+
+1. **`--marks` を渡していなかった。**`analyse_chart` の弱いしきい値は
+   **印がある場合にだけ効く**設計(`weak = letter_threshold if marks else
+   threshold`)なので、印なしでは等圧線に横切られた H/L が全部落ちる。
+   998hPa・996hPa の低気圧がまさにこれだった。**必ず `--marks` を渡すこと。**
+2. **縁にある文字を描いていなかった。**`split_by_edge` が highs/lows から
+   外すのは「文字の位置は中心ではないので矩形の内外判定に使うと嘘になる」
+   ためであって、そこに系が無いという意味ではない。描かないと拾えているのに
+   拾えていないように見える(図の上端の H が2つ漏れた)。細線で描いて
+   中心として信用できるものと見分けるようにした
+
 ```powershell
 python -m scripts.annotate_charts --in-dir $processed_dir `
-    --templates data\templates --out-dir data\annotated --workers 8
+    --templates data\templates --marks data\marks `
+    --out-dir data\annotated --workers 8
 python -m scripts.cross_validate --data-dir data\annotated `
     --labels data\labels_v2.csv --years 2023 2024 2025 --out-dir runs\cv_annot
 python -m scripts.compare_runs runs\cv_baseline runs\cv_annot
