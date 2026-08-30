@@ -163,3 +163,33 @@ def test_one_fronts_halo_does_not_paint_over_another_front():
                                            "stationary_front": stationary}},
                            detections(), thickness=5)
     assert np.all(out[warm] == (252, 4, 4)), "停滞前線の縁取りが温暖前線を塗っている"
+
+
+def test_letters_at_the_edge_are_drawn_too():
+    """縁にある文字も描くこと。
+
+    `split_by_edge` が highs/lows から外すのは「文字の位置は中心ではないので
+    矩形の内外判定に使うと嘘になる」ためであって、そこに系が無いという意味では
+    ない。**描かないと、拾えているのに拾えていないように見える。**
+    実測で、図の上端にある H が2つ漏れた。
+    """
+    det = ChartDetections(highs=[], lows=[], edge_highs=[(0.5, 0.03)],
+                          edge_lows=[(0.5, 0.97)], front_segments={},
+                          stationary_pixels=0)
+    out = draw_annotations(blank(400, 400), {"masks": None}, det)
+    painted = np.unique(out.reshape(-1, 3), axis=0).tolist()
+    assert list(HIGH_COLOR) in painted, "縁の高気圧が描かれていない"
+    assert list(LOW_COLOR) in painted, "縁の低気圧が描かれていない"
+
+
+def test_edge_boxes_are_drawn_thinner_than_centre_boxes():
+    """縁の枠は細くして、中心として信用できるものと見分けられるようにする。"""
+    centre = ChartDetections(highs=[(0.5, 0.5)], lows=[], edge_highs=[],
+                             edge_lows=[], front_segments={}, stationary_pixels=0)
+    edge = ChartDetections(highs=[], lows=[], edge_highs=[(0.5, 0.5)],
+                           edge_lows=[], front_segments={}, stationary_pixels=0)
+    n_centre = np.all(draw_annotations(blank(400, 400), {"masks": None}, centre,
+                                       thickness=5) == HIGH_COLOR, axis=2).sum()
+    n_edge = np.all(draw_annotations(blank(400, 400), {"masks": None}, edge,
+                                     thickness=5) == HIGH_COLOR, axis=2).sum()
+    assert n_edge < n_centre, "縁の枠が細くなっていない"

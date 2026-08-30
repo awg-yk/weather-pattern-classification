@@ -25,9 +25,14 @@ r"""検出した高低気圧と前線を天気図に描き込み、注釈付き�
 渡す場合は損失に混じるだけだが、**画像に描き込むと誤りが入力そのものに
 焼き付く。**モデルはそれを本物として扱う。
 
+**`--marks` を必ず渡すこと。**中心の×との裏書きが無いと、等圧線に横切られた
+H/L が拾えない(`analyse_chart` の letter_threshold は印がある場合にだけ効く)。
+実測で、印なしでは1枚あたり3個しか拾えず、印ありでは6個拾えた。
+
 使い方:
     python -m scripts.annotate_charts --in-dir data\processed\jma `
-        --templates data\templates --out-dir data\annotated --workers 8
+        --templates data\templates --marks data\marks `
+        --out-dir data\annotated --workers 8
 """
 
 import argparse
@@ -106,14 +111,24 @@ def draw_annotations(rgb: np.ndarray, report: dict, detections,
             out[grown & ~protected] = FRONT_COLORS[name]
 
     if boxes:
-        for points, color in ((detections.highs, HIGH_COLOR),
-                              (detections.lows, LOW_COLOR)):
+        # 縁にある文字も描く。**位置としては使えないが、検出はできている。**
+        # `split_by_edge` が highs/lows から外すのは「文字の位置は中心では
+        # ないので矩形の内外判定に使うと嘘になる」ためであって、そこに系が
+        # 無いという意味ではない。描かないと、拾えているのに拾えていないように
+        # 見える(実測で、図の上端にある H が2つ漏れた)。
+        # 細い線で描いて、中心として信用できるものと見分けられるようにする。
+        for points, color, width_px in (
+            (detections.highs, HIGH_COLOR, thickness),
+            (detections.lows, LOW_COLOR, thickness),
+            (detections.edge_highs, HIGH_COLOR, max(1, thickness - 2)),
+            (detections.edge_lows, LOW_COLOR, max(1, thickness - 2)),
+        ):
             for cx, cy in points:
                 x0 = int((cx - BOX_W / 2) * width)
                 y0 = int((cy - BOX_H / 2) * height)
                 x1 = int((cx + BOX_W / 2) * width)
                 y1 = int((cy + BOX_H / 2) * height)
-                cv2.rectangle(out, (x0, y0), (x1, y1), color, thickness)
+                cv2.rectangle(out, (x0, y0), (x1, y1), color, width_px)
     return out
 
 
@@ -143,7 +158,8 @@ def _run_one(job) -> tuple:
                               thickness=_WORKER["thickness"])
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(marked).save(out_path)
-    return (Path(path).name, len(detections.highs), len(detections.lows))
+    return (Path(path).name, len(detections.highs), len(detections.lows),
+            len(detections.edge_highs) + len(detections.edge_lows))
 
 
 def main():
@@ -195,24 +211,30 @@ def main():
     options = {"boxes": not args.no_boxes, "fronts": not args.no_fronts,
                "thickness": args.thickness}
 
-    started, done, highs, lows = time(), 0, 0, 0
+    started, done, highs, lows, edges = time(), 0, 0, 0, 0
     with ProcessPoolExecutor(
         max_workers=args.workers, initializer=_init_worker,
         initargs=(args.templates, args.marks, args.scale, args.mark_scale,
                   args.mark_radius, args.letter_threshold, options),
     ) as pool:
-        for _name, n_high, n_low in pool.map(_run_one, jobs, chunksize=4):
+        for _name, n_high, n_low, n_edge in pool.map(_run_one, jobs, chunksize=4):
             done += 1
             highs += n_high
             lows += n_low
+            edges += n_edge
             if done % 20 == 0 or done == len(todo):
                 rate = (time() - started) / done
                 print(f"  {done}/{len(todo)}  {rate:.1f}秒/枚  "
                       f"残り{rate * (len(todo) - done) / 60:.0f}分", flush=True)
 
     print(f"\n書き出しました: {out_dir.resolve()}")
-    print(f"1枚あたり 高気圧の枠 {highs / max(1, done):.2f} / "
-          f"低気圧の枠 {lows / max(1, done):.2f}")
+    per = max(1, done)
+    print(f"1枚あたり 高気圧の枠 {highs / per:.2f} / 低気圧の枠 {lows / per:.2f} / "
+          f"縁の枠(細線) {edges / per:.2f}")
+    if not args.marks and (highs + lows) / per < 5.0:
+        print("★--marks を指定していません。等圧線に横切られた H/L は、"
+              "中心の×との裏書きが無いと拾えません。")
+        print("  data\\marks を渡すと拾える数が増えます(実測で 高2.65 / 低3.40)。")
     print("\n**まず数枚を目で見ること。**枠が本物の高低気圧に付いているか、")
     print("前線の塗りが実際の前線と合っているかを確かめてから学習に回す。")
     print("\n学習側の変更は要らない。--data-dir をこの出力に向けるだけ:")
