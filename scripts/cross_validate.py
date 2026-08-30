@@ -99,9 +99,6 @@ def main():
         common += ["--data-dir", args.data_dir]
     if args.era5_features:
         common += ["--era5-features", args.era5_features]
-    if args.aux_features:
-        common += ["--aux-features", args.aux_features,
-                   "--aux-weight", args.aux_weight]
 
     results = []
     for test_year in args.years:
@@ -131,6 +128,12 @@ def main():
                 if args.no_pretrained:
                     train_cmd.append("--no-pretrained")
                 train_cmd += ["--arch", args.arch, "--cnn-widths", *args.cnn_widths]
+                # **train.pyだけが受け取る。**評価では補助の答えは要らない
+                # (重みに num_aux が記録してあり、model(x) は10ラベルを返す)。
+                # common に入れると evaluate.py が知らない引数で落ちる
+                if args.aux_features:
+                    train_cmd += ["--aux-features", args.aux_features,
+                                  "--aux-weight", args.aux_weight]
             if train_cmd is not None:
                 if args.coordconv:
                     train_cmd.append("--coordconv")

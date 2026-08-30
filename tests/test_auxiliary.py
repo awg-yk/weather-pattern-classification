@@ -19,7 +19,7 @@ from PIL import Image
 
 from src.dataset import WeatherMapDataset, compute_aux_stats
 from src.labels import LABELS
-from src.model import AuxiliaryTargets, build_model, load_checkpoint, load_model, save_checkpoint
+from src.model import build_model, load_checkpoint, load_model, save_checkpoint
 from src.train import masked_mse
 
 
@@ -255,3 +255,52 @@ def test_an_aux_file_with_no_matching_rows_is_refused(workspace, tmp_path):
     with pytest.raises(ValueError, match="突き合いません"):
         WeatherMapDataset(workspace["images"], workspace["labels"],
                           aux_csv=tmp_path / "wrong.csv")
+
+
+# --- cross_validate が組み立てるコマンド --------------------------------
+
+def test_every_shared_flag_is_accepted_by_evaluate():
+    """cross_validate が train と evaluate の両方に渡す引数を、
+    evaluate.py が全部受け取れること。
+
+    **学習が終わったあとに評価だけが落ちる**ので、数十分かけたfoldが無駄に
+    なる。実際に --aux-features を共通側に入れて、fold 2023 の学習が終わって
+    から `unrecognized arguments` で止まった。
+
+    ここは cross_validate.py のソースを読んで「common に足している引数」を
+    集め、evaluate.py のパーサが知っているかを突き合わせる。
+    """
+    import ast
+    import re
+
+    from pathlib import Path
+
+    source = Path("scripts/cross_validate.py").read_text(encoding="utf-8")
+    # common に足している文字列リテラルのうち、ハイフンで始まるものを集める
+    shared = set()
+    for node in ast.walk(ast.parse(source)):
+        is_common_assign = (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "common"
+        )
+        is_common_init = (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "common" for t in node.targets)
+        )
+        if is_common_assign or is_common_init:
+            for sub in ast.walk(node):
+                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
+                    if sub.value.startswith("--"):
+                        shared.add(sub.value)
+    assert shared, "common に足している引数を1つも読み取れなかった(この検査が空回りしている)"
+
+    parser_source = Path("src/evaluate.py").read_text(encoding="utf-8")
+    known = set(re.findall(r'add_argument\(\s*"(--[a-z0-9-]+)"', parser_source))
+    assert known, "evaluate.py の引数を1つも読み取れなかった"
+
+    missing = sorted(shared - known)
+    assert not missing, (
+        f"cross_validate が evaluate に渡すが、evaluate.py が知らない引数: {missing}\n"
+        "train.py だけが受け取るものは common ではなく train_cmd に足すこと。"
+    )
