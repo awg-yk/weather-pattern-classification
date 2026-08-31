@@ -16,7 +16,16 @@
 """
 
 import argparse
+import sys
 from pathlib import Path
+
+# `python scripts/predict.py ...` で起動された場合、sys.path に入るのは scripts/
+# だけなので、この下の `from scripts...` / `from src...` が解決できない。
+# リポジトリのルートを自分で足しておく(`python -m scripts.predict` なら既に
+# 入っているので、この行は何もしない)。
+_ROOT = Path(__file__).resolve().parent.parent
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
 import torch
 from PIL import Image
@@ -27,7 +36,11 @@ from src.labels import INDEX_TO_LABEL, LABEL_JA
 from src.model import load_model
 from src.train import get_transforms
 
-DEFAULT_WEIGHTS = Path(__file__).resolve().parent.parent / "weights" / "model.pt"
+DEFAULT_WEIGHTS = _ROOT / "weights" / "model.pt"
+# テンプレートと印はリポジトリに同梱されている。カレントディレクトリが
+# どこであっても見つかるよう、絶対パスを既定にする。
+DEFAULT_TEMPLATES = _ROOT / "data" / "templates"
+DEFAULT_MARKS = _ROOT / "data" / "marks"
 
 
 def maybe_annotate(image, args):
@@ -58,7 +71,7 @@ def maybe_annotate(image, args):
     return out
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("image", nargs="?", help="分類したい天気図画像のパス(--dateを使う場合は不要)")
     parser.add_argument("--date", help="YYYY-MM-DD形式。指定すると気象庁アーカイブから直接取得する")
@@ -93,12 +106,17 @@ def main():
         help="検出した高低気圧の枠を描き込んでから分類する。"
              "**注釈付き画像で学習した重みを使うときは必須**(--weights weights/model_annot.pt)",
     )
-    parser.add_argument("--templates", default="data/templates",
+    parser.add_argument("--templates", default=str(DEFAULT_TEMPLATES),
                         help="--annotate で使う H/L のテンプレート")
-    parser.add_argument("--marks", default="data/marks",
+    parser.add_argument("--marks", default=str(DEFAULT_MARKS),
                         help="--annotate で使う中心の印。無ければ検出が減る")
     parser.add_argument("--save-annotated", default=None,
                         help="注釈付き画像の保存先。検出が当たっているか目で確かめられる")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.date:
