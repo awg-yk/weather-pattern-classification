@@ -192,7 +192,9 @@ def main():
     print()
     print("--- 全ラベルの確信度" + ("(校正前の生の値)" if args.raw else "") + " ---")
     for label, p in ranked:
-        mark = " ✓" if p > thresholds[label] else ""
+        # cp932(日本語Windowsのコンソール)で出せる文字だけを使う。
+        # U+2713 のチェックマークはそこで UnicodeEncodeError になる
+        mark = " <-該当" if p > thresholds[label] else ""
         print(f"{LABEL_JA[label]}: {p * 100:.1f}%(しきい値 {thresholds[label] * 100:.1f}%){mark}")
 
 

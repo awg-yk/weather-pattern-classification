@@ -419,11 +419,23 @@ def test_scripts_print_only_characters_cp932_can_show():
     そちらを使う。絵文字や✓・⚠も同じ理由で使えない。
     """
     root = Path(__file__).resolve().parent.parent
+    # **人が実際に手元で走らせるものを全部入れる。**当初4本しか見ておらず、
+    # scripts/predict.py の "✓"(U+2713)を見逃していた。日本語Windowsでは
+    # 確信度の一覧を出し終えた最後の行で落ちる。
     targets = [
         root / "src" / "chartsymbols.py",
+        root / "src" / "blend.py",
         root / "scripts" / "chart_palette.py",
         root / "scripts" / "extract_fronts.py",
         root / "scripts" / "extract_symbols.py",
+        root / "scripts" / "predict.py",
+        root / "scripts" / "annotate_charts.py",
+        root / "scripts" / "build_features.py",
+        root / "scripts" / "cross_validate.py",
+        root / "scripts" / "compare_runs.py",
+        root / "scripts" / "cv_features.py",
+        root / "scripts" / "ensemble_chart_features.py",
+        root / "scripts" / "feature_report.py",
     ]
     offenders = []
     for path in targets:
