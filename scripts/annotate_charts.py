@@ -132,6 +132,40 @@ def draw_annotations(rgb: np.ndarray, report: dict, detections,
     return out
 
 
+def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
+                 scale: float = 0.7, mark_scale: float = 1.0,
+                 mark_radius: float = MARK_LETTER_RADIUS,
+                 threshold: float = 0.65,
+                 letter_threshold: float = LETTER_THRESHOLD,
+                 angle_range: float = 60.0, angle_step: float = 5.0,
+                 boxes: bool = True, fronts: bool = False,
+                 thickness: int = 3) -> tuple:
+    """1枚を注釈付きにして返す。`(注釈付き画像, 検出結果)`。
+
+    `scripts/predict.py` から使う。学習に使った画像と**同じ描き方**にする
+    必要があるので、既定は `--no-fronts` で回した `cv_annot_boxes` に合わせて
+    `fronts=False` にしてある。**ここが学習時と食い違うと、モデルは見たことの
+    ない絵を渡されることになり、成績が静かに落ちる。**
+    """
+    letters = load_templates_scaled(Path(templates_dir), scale, quiet=True)
+    if not letters:
+        raise SystemExit(
+            f"{templates_dir} に H/L のテンプレートがありません。\n"
+            "検出には人が切り出したテンプレートが要ります"
+            "(docs/2026-08-26-detection-prescreen.md)。"
+        )
+    marks = (load_templates_scaled(Path(marks_dir), mark_scale, quiet=True)
+             if marks_dir and Path(marks_dir).exists() else {})
+    detections, report = analyse_chart(
+        rgb, letters, marks, scale, threshold, angle_range, angle_step,
+        mark_scale, mark_radius, letter_threshold,
+        overlay_dir=None, want_masks=fronts,
+    )
+    marked = draw_annotations(rgb, report, detections,
+                              boxes=boxes, fronts=fronts, thickness=thickness)
+    return marked, detections
+
+
 _WORKER = {}
 
 

@@ -6,6 +6,10 @@ data/processed/
 *.pt
 *.pth
 !weights/model.pt
+# 注釈付き画像(検出した枠を描き込んだもの)で学習した重み。
+# 素の天気図用とは入力が違うので、別名で同梱する。
+# 使うときは scripts/predict.py --annotate と必ず組にすること
+!weights/model_annot.pt
 .cdsapirc
 .env
 .DS_Store

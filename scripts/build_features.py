@@ -193,7 +193,12 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
     """
     from scripts.extract_symbols import symbol_of
 
-    rgb = np.array(Image.open(path).convert("RGB"))
+    # 配列をそのまま受けられるようにする。`scripts/predict.py` は前処理を
+    # 済ませた画像をメモリ上に持っているので、一時ファイルに書き出さずに渡せる
+    if isinstance(path, np.ndarray):
+        rgb = path
+    else:
+        rgb = np.array(Image.open(path).convert("RGB"))
 
     # 前線は原寸のまま。色マスクは安いので縮める必要がない
     masks = color_masks(rgb)

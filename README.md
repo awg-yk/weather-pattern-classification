@@ -5,6 +5,35 @@
 
 ## すぐに使う
 
+### 検出した枠を描き込んでから分類する(注釈方式)
+
+高低気圧を先に検出して枠を描き、その画像で分類する方式が使える。素の天気図で
+学習したモデルより macro F1 が +0.021 高い(3年とも同じ向き。
+`docs/2026-08-27-features-vs-cnn.md`)。
+
+**成績とは別に、Grad-CAM では示せないものが示せる。**Grad-CAM は「モデルが
+どこを見たか」だが、枠は「**検出が当たったか**」を示す。運用でAIの判定を人が
+検証する場面ではこちらのほうが直接的である。
+
+```bash
+python scripts/predict.py path/to/天気図.png --annotate \
+    --weights weights/model_annot.pt --save-annotated annotated.png
+```
+
+`--annotate` と `--weights weights/model_annot.pt` は**必ず組にすること。**
+入力の見た目が学習時と違うと、モデルは見たことのない絵を渡されて成績が静かに
+落ちる。Colabノートブックでは `USE_ANNOTATION` にチェックを入れると同じことができる。
+
+必要なもの:
+
+| | 置き場所 | 用意する人 |
+|---|---|---|
+| H/L の文字テンプレート | `data/templates/` | **人が手で切り出す**(同ディレクトリのREADME) |
+| 中心の印のテンプレート | `data/marks/` | 同上。無いと検出が半減する |
+| 注釈方式の重み | `weights/model_annot.pt` | `runs/cv_annot_boxes/model_test<年>.pt` を複製 |
+
+
+
 学習済みモデル(`weights/model.pt`)をリポジトリに同梱しているので、学習不要ですぐに使える。
 確信度の校正(`weights/model.calib.json`)も同梱してあるので、表示される%は実際に
 当たる割合の目安として読める([確信度の校正](#確信度表示するの校正)を参照)。

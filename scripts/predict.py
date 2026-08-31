@@ -30,6 +30,34 @@ from src.train import get_transforms
 DEFAULT_WEIGHTS = Path(__file__).resolve().parent.parent / "weights" / "model.pt"
 
 
+def maybe_annotate(image, args):
+    """--annotate が指定されていれば、検出した枠を描き込んだ画像を返す。
+
+    **描き方は学習に使ったものと揃える必要がある。**`runs/cv_annot_boxes` は
+    `--no-fronts`(枠のみ)で作った画像で学習したので、ここも枠のみにする。
+    食い違うと、モデルは見たことのない絵を渡されて静かに成績が落ちる。
+    """
+    if not args.annotate:
+        return image
+
+    import numpy as np
+
+    from scripts.annotate_charts import annotate_one
+
+    marked, detections = annotate_one(
+        np.array(image), args.templates, args.marks, boxes=True, fronts=False,
+    )
+    print(f"検出: 高気圧 {len(detections.highs)}個 / 低気圧 {len(detections.lows)}個"
+          f"(枠外の系 {len(detections.edge_highs) + len(detections.edge_lows)}個)")
+    out = Image.fromarray(marked)
+    if args.save_annotated:
+        path = Path(args.save_annotated)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        out.save(path)
+        print(f"注釈付き画像: {path}  ← 枠が本物の高低気圧に付いているか確かめること")
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("image", nargs="?", help="分類したい天気図画像のパス(--dateを使う場合は不要)")
@@ -60,6 +88,17 @@ def main():
         help="指定したディレクトリに、確信度上位3件のGrad-CAMヒートマップ画像を保存する",
     )
     parser.add_argument("--top-k", type=int, default=3, help="--save-gradcam で保存する件数")
+    parser.add_argument(
+        "--annotate", action="store_true",
+        help="検出した高低気圧の枠を描き込んでから分類する。"
+             "**注釈付き画像で学習した重みを使うときは必須**(--weights weights/model_annot.pt)",
+    )
+    parser.add_argument("--templates", default="data/templates",
+                        help="--annotate で使う H/L のテンプレート")
+    parser.add_argument("--marks", default="data/marks",
+                        help="--annotate で使う中心の印。無ければ検出が減る")
+    parser.add_argument("--save-annotated", default=None,
+                        help="注釈付き画像の保存先。検出が当たっているか目で確かめられる")
     args = parser.parse_args()
 
     if args.date:
@@ -84,11 +123,26 @@ def main():
         out_dir = Path(args.save_gradcam)
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        # --annotate と併用するときは、先に描き込んだ画像を作ってから渡す。
+        # Grad-CAM は「モデルがどこを見たか」、注釈は「検出が当たったか」で
+        # 別のことを示すので、両方あると読み解きやすい
+        gradcam_source = args.image
+        if args.annotate:
+            source = Image.open(args.image).convert("RGB")
+            if not args.no_preprocess:
+                source = autocrop_to_content(source)
+                source = mask_stamp_box(source, DEFAULT_STAMP_BOX)
+            marked = maybe_annotate(source, args)
+            gradcam_source = str(Path(args.save_gradcam) / "_annotated.png")
+            Path(args.save_gradcam).mkdir(parents=True, exist_ok=True)
+            marked.save(gradcam_source)
+
         display_image, top_overlays, ranked = explain_top_predictions(
-            image_path=args.image,
+            image_path=gradcam_source,
             weights_path=args.weights,
             top_k=args.top_k,
-            apply_preprocess=not args.no_preprocess,
+            # 描き込み済みの画像には前処理を二重にかけない
+            apply_preprocess=(not args.no_preprocess) and not args.annotate,
             calibration=calibration,
         )
         for rank, (label, prob, overlay) in enumerate(top_overlays, start=1):
@@ -108,6 +162,8 @@ def main():
         if not args.no_preprocess:
             image = autocrop_to_content(image)
             image = mask_stamp_box(image, DEFAULT_STAMP_BOX)
+        # 描き込みは前処理のあと。学習に使った画像も前処理済みのものから作った
+        image = maybe_annotate(image, args)
 
         transform = get_transforms(train=False, image_size=meta["image_size"])
         input_tensor = transform(image).unsqueeze(0).to(device)
