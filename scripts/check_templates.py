@@ -94,6 +94,9 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.65)
     parser.add_argument("--angle-range", type=float, default=60.0)
     parser.add_argument("--angle-step", type=float, default=5.0)
+    parser.add_argument("--save-annotated", default=None,
+                        help="当たった場所に枠を描いた画像の保存先。"
+                             "**どれが当たってどれが外れたかは、これを見ないと分からない**")
     args = parser.parse_args()
 
     templates = load_templates(Path(args.templates))
@@ -154,6 +157,21 @@ def main():
     if len(hits) <= 1:
         print("★1個以下です。**自分自身にしか当たっていない可能性が高い。**"
               "テンプレートに等圧線が混ざっていないか確かめてください。")
+
+    if args.save_annotated:
+        out = rgb.copy()
+        for hit in hits:
+            kind = symbol_of(hit.label)
+            colour = (0, 150, 0) if kind == "H" else (255, 130, 0)
+            cv2.rectangle(out, (hit.x0, hit.y0), (hit.x1, hit.y1), colour, 3)
+            cv2.putText(out, f"{kind} {hit.score:.2f}", (hit.x0, max(hit.y0 - 6, 14)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2, cv2.LINE_AA)
+        path = Path(args.save_annotated)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(out).save(path)
+        print(f"\n枠を描いた画像: {path}")
+        print("  緑=高気圧 橙=低気圧。**当たらなかった H・L がどれかを見てください。**")
+        print("  取りこぼしが多いなら、その個体からもう1枚テンプレートを作ると当たります。")
 
 
 if __name__ == "__main__":
