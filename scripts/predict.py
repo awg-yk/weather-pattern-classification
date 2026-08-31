@@ -61,6 +61,15 @@ def maybe_annotate(image, args):
         np.array(image), args.templates, args.marks, boxes=True, fronts=False,
         letter_size=args.letter_size,
     )
+    from src.chartsymbols import ink_mask
+
+    # 固定の色帯が読めずに控えへ切り替わったなら、黙っていてはいけない。
+    # 色を見ないぶん海岸線も拾うので、枠が増えたり外れたりしうる
+    _, fell_back = ink_mask(np.array(image))
+    if fell_back:
+        print("※ 等圧線の色帯が読めませんでした(紙のスキャンなど)。"
+              "濃さのしきい値に切り替えています。")
+        print("  色を見ないので海岸線も線として拾います。枠の位置を必ず目で確かめてください。")
     print(f"検出: 高気圧 {len(detections.highs)}個 / 低気圧 {len(detections.lows)}個"
           f"(枠外の系 {len(detections.edge_highs) + len(detections.edge_lows)}個)")
     out = Image.fromarray(marked)

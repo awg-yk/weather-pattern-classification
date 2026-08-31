@@ -87,14 +87,13 @@ from src.chartfeatures import (
     to_row,
 )
 from src.chartsymbols import (
-    DEFAULT_BANDS,
     FRONT_BANDS,
     clean_mask,
     color_masks,
+    ink_mask,
     match_templates,
     segments,
     stationary_mask,
-    to_hsv,
 )
 from src.regions import load_regions
 
@@ -123,13 +122,19 @@ LETTER_THRESHOLD = 0.42
 _WORKER = {}
 
 
-def ink_image(rgb: np.ndarray, band: str = "isobar") -> np.ndarray:
+def ink_image(rgb: np.ndarray, band: str = "isobar",
+              adaptive: bool = True) -> np.ndarray:
     """色で分けたあとの2値マスクを、白地に黒のRGB画像として返す。
 
     縮小するのはこれに対して行う。RGBのまま縮めると海岸線の赤茶と黒が
     混ざり、色の切り分けが崩れる。
+
+    `adaptive` は、固定の色帯がほとんど空だったときに濃さのしきい値へ
+    切り替える控え(`src.chartsymbols.ink_mask`)。紙をスキャンした天気図は
+    線が真っ黒にならず、固定のしきい値では1画素も取れないことがある。
+    色帯が読めている天気図では働かないので、結果は変わらない。
     """
-    mask = DEFAULT_BANDS[band].mask(to_hsv(rgb))
+    mask, _ = ink_mask(rgb, band, adaptive=adaptive)
     out = np.full(rgb.shape, 255, dtype=np.uint8)
     out[mask] = 0
     return out

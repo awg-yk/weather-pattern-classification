@@ -37,7 +37,8 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from scripts.build_features import ink_image, load_templates_scaled
-from src.chartsymbols import DEFAULT_BANDS, match_templates, to_hsv
+from src.chartsymbols import (DEFAULT_BANDS, ink_mask, match_templates,
+                             to_hsv)
 
 DEFAULT_TEMPLATES = _ROOT / "data" / "templates"
 
@@ -84,9 +85,10 @@ def counts_at(ink: np.ndarray, templates: dict, size: float,
 def diagnose(path: Path, templates: dict, threshold: float, angles) -> dict:
     rgb = np.array(Image.open(path).convert("RGB"))
     height, width = rgb.shape[:2]
-    ink_mask = DEFAULT_BANDS["isobar"].mask(to_hsv(rgb))
-    ink_share = float(ink_mask.mean())
-    ink = ink_image(rgb)
+    fixed = DEFAULT_BANDS["isobar"].mask(to_hsv(rgb))
+    ink_share = float(fixed.mean())
+    adaptive_mask, fell_back = ink_mask(rgb)
+    ink = ink_image(rgb)   # 控えが要る画像では、ここで自動的に切り替わる
 
     sweep = {size: counts_at(ink, templates, size, threshold, angles)
              for size in SIZES}
@@ -100,6 +102,8 @@ def diagnose(path: Path, templates: dict, threshold: float, angles) -> dict:
         "width": width,
         "height": height,
         "ink_share": ink_share,
+        "adaptive_share": float(adaptive_mask.mean()),
+        "fell_back": fell_back,
         "colour_share": colourfulness(rgb),
         "sweep": sweep,
         "best_size": best,
@@ -115,10 +119,17 @@ def verdict(result: dict) -> str:
     縮めたテンプレートは誤検出が増えるので(MAX_PLAUSIBLE 参照)、当たった数が
     増えたことだけを根拠に「解像度の違いだ」と言い切ってはいけない。
     """
-    if result["ink_share"] < MIN_INK_SHARE:
-        return ("等圧線の色帯がほぼ空です(黒い画素 "
-                f"{result['ink_share']:.2%})。白黒スキャンか、天気図でないか、"
-                "前処理が済んでいない可能性があります。**大きさの問題ではありません。**")
+    if result["fell_back"]:
+        head = (f"固定の色帯では読めません(黒い画素 {result['ink_share']:.2%})。"
+                "紙のスキャンなどで線が真っ黒でない場合に起きます。"
+                f"**濃さのしきい値に自動で切り替えました**(同 {result['adaptive_share']:.2%})。")
+        if result["plain_total"] > 0:
+            return head + f"\n     切り替え後は原寸で {result['plain_total']}個。" \
+                          "色を見ないので海岸線も拾います。枠を目で確かめてください。"
+        return head + "\n     切り替えても0個なので、別の原因が重なっています。"
+    if result["adaptive_share"] < MIN_INK_SHARE:
+        return ("線の画素がほとんどありません。天気図でないか、前処理が"
+                "済んでいない可能性があります。**大きさの問題ではありません。**")
     if result["plain_total"] > 0:
         return f"原寸で {result['plain_total']}個。この天気図は問題ありません。"
     if result["best_total"] == 0:
@@ -171,7 +182,10 @@ def main():
         results.append(result)
         print(f"=== {path.name}")
         print(f"  大きさ    : {result['width']} x {result['height']}")
-        print(f"  黒い画素  : {result['ink_share']:.2%}"
+        share = f"{result['ink_share']:.2%}"
+        if result["fell_back"]:
+            share += f" -> 控えで {result['adaptive_share']:.2%}"
+        print(f"  線の画素  : {share}"
               f"   色のある画素: {result['colour_share']:.2%}")
         # 信用できない数には * を付ける。25個などは模様を拾っている
         row = "  ".join(

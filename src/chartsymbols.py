@@ -124,6 +124,47 @@ DEFAULT_BANDS: dict[str, ColorBand] = {
 
 FRONT_BANDS = ("warm_front", "cold_front", "occluded_front")
 
+# 等圧線の画素がこの割合を下回ったら、固定の色帯では読めていないとみなす。
+# 実測では気象庁PDF版の天気図で 2〜11%。0.5% は明らかに壊れている水準。
+MIN_INK_SHARE = 0.005
+
+
+def otsu_ink(rgb: np.ndarray) -> np.ndarray:
+    """濃さのしきい値を画像ごとに決めて、線の画素を拾う。
+
+    `DEFAULT_BANDS["isobar"]` は V<=90 という固定のしきい値で、気象庁PDF版の
+    真っ黒な等圧線に合わせてある。**紙をスキャンした天気図では線が真っ黒に
+    ならない。**合成天気図で確かめたところ、線の濃さが V=110 になった時点で
+    マスクは 10.82% から 0.00% に落ち、検出も3個から0個になった。粒状ノイズ
+    でも 0.95% まで崩れる。どちらも固定のしきい値だから起きる。
+
+    大津の方法は濃淡の分布から境目を決めるので、線が薄くても紙が灰色でも追従
+    する。上の実験では、薄い線もノイズ入りも 10.9% と検出3個に戻った。
+
+    **ただし色は見ないので、海岸線や前線も一緒に拾う。**色帯が読めている
+    天気図では固定のほうがきれいなので、控えとしてだけ使うこと
+    (`ink_mask` を参照)。
+    """
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    gray = cv2.medianBlur(gray, 3)   # 粒状ノイズを落とす。線の太さは変えない
+    _, binary = cv2.threshold(gray, 0, 255,
+                              cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    return binary.astype(bool)
+
+
+def ink_mask(rgb: np.ndarray, band: str = "isobar",
+             adaptive: bool = True) -> tuple[np.ndarray, bool]:
+    """線の画素マスクと、控えに切り替えたかどうかを返す。
+
+    まず固定の色帯で読む。**ほとんど空だったときにだけ**大津の方法に切り替える。
+    こうすると、色帯が読めている天気図の結果は1画素も変わらない(記録済みの
+    実行結果が再現できなくなるのを防ぐ)一方、読めない天気図は救われる。
+    """
+    mask = DEFAULT_BANDS[band].mask(to_hsv(rgb))
+    if adaptive and float(mask.mean()) < MIN_INK_SHARE:
+        return otsu_ink(rgb), True
+    return mask, False
+
 
 def to_hsv(rgb: np.ndarray) -> np.ndarray:
     """RGB画像(H, W, 3 / uint8)をHSVに変換する。"""
