@@ -41,6 +41,37 @@ def load(run_dir: Path) -> dict:
     raise SystemExit(f"{path} の文字コードを判別できません(utf-8・cp932のどちらでもありません)。")
 
 
+SPLIT_KEYS = ("val_mode", "seed", "gap_days", "val_ratio", "split_mode", "years")
+
+
+def check_same_split(summaries) -> list:
+    """分割の条件がそろっているかを確かめる。
+
+    **そろっていないと、モデルの差と学習データ量の差が混ざる。**
+    実測で、`--val-mode spread` は `tail` より学習データが2割少なくなった
+    (テスト2025年で 906件 対 1157件)。片方だけ spread で回した結果を
+    tail の結果と並べると、+0.025 の上積みがモデルのものか学習データ量の
+    ものか分けられない。
+
+    `docs/2026-08-26-stale-run-comparisons.md` と同じ落とし穴である。
+    ラベルの食い違いは既に見ているが、分割の条件は見ていなかった。
+    """
+    base_path, base = summaries[0]
+    base_config = base.get("config") or {}
+    problems = []
+    for path, summary in summaries[1:]:
+        config = summary.get("config") or {}
+        if not config or not base_config:
+            continue
+        differing = {}
+        for key in SPLIT_KEYS:
+            if key in base_config and key in config and base_config[key] != config[key]:
+                differing[key] = (base_config[key], config[key])
+        if differing:
+            problems.append((path, differing))
+    return problems
+
+
 def describe(summary: dict) -> str:
     """設定を1行で表す。configを記録する前に作ったsummary.jsonでも落ちないようにする。"""
     config = summary.get("config")
@@ -220,6 +251,20 @@ def main():
         raise SystemExit("\n".join(lines))
     if problems and args.force:
         print("警告: ラベルが食い違ったまま比較しています(--force)。差にラベルの影響が入ります。\n")
+
+    split_problems = check_same_split(summaries)
+    if split_problems:
+        base_name = summaries[0][0].name
+        print("=" * 72)
+        print("★分割の条件が違います。差にモデル以外の影響が入ります。")
+        for path, differing in split_problems:
+            for key, (base_value, other_value) in differing.items():
+                print(f"  {key:<12} {base_name}={base_value}  {path.name}={other_value}")
+        print()
+        print("  val_mode が違うと学習データの量が変わる(実測で spread は tail より")
+        print("  2割少ない)。同じ条件で測り直してから比べること。")
+        print("=" * 72)
+        print()
 
     print("=" * 72)
     if args.exclude:

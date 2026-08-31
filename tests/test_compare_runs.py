@@ -87,3 +87,69 @@ def test_cross_validate_records_the_labels_fingerprint():
     source = Path("scripts/cross_validate.py").read_text(encoding="utf-8")
     assert "labels_fingerprint" in source
     assert "file_fingerprint" in source
+
+
+# --- 分割の条件がそろっているか ------------------------------------------
+
+def _summary(val_mode, seed=42, gap_days=3):
+    return {
+        "config": {"val_mode": val_mode, "seed": seed, "gap_days": gap_days,
+                   "split_mode": "loyo", "years": ["2023", "2024", "2025"]},
+        "folds": [],
+    }
+
+
+def test_a_different_val_mode_is_reported():
+    """分割の条件が違えば知らせること。
+
+    **そろっていないと、モデルの差と学習データ量の差が混ざる。**実測で
+    spread は tail より学習データが2割少なかった(906件 対 1157件)。
+    片方だけ spread で回した結果を tail の結果と並べると、上積みが
+    モデルのものか学習データ量のものか分けられない。
+    """
+    from pathlib import Path
+
+    from scripts.compare_runs import check_same_split
+
+    problems = check_same_split([
+        (Path("cv_baseline"), _summary("spread")),
+        (Path("cv_annot"), _summary("tail")),
+    ])
+    assert len(problems) == 1
+    _path, differing = problems[0]
+    assert differing["val_mode"] == ("spread", "tail")
+
+
+def test_the_same_split_raises_nothing():
+    from pathlib import Path
+
+    from scripts.compare_runs import check_same_split
+
+    assert check_same_split([
+        (Path("a"), _summary("spread")),
+        (Path("b"), _summary("spread")),
+    ]) == []
+
+
+def test_seed_and_gap_days_are_checked_too():
+    from pathlib import Path
+
+    from scripts.compare_runs import check_same_split
+
+    problems = check_same_split([
+        (Path("a"), _summary("tail", seed=42, gap_days=3)),
+        (Path("b"), _summary("tail", seed=1, gap_days=7)),
+    ])
+    assert set(problems[0][1]) == {"seed", "gap_days"}
+
+
+def test_a_summary_without_config_is_skipped():
+    """configを記録する前に作った古い結果でも落ちないこと。"""
+    from pathlib import Path
+
+    from scripts.compare_runs import check_same_split
+
+    assert check_same_split([
+        (Path("a"), {"folds": []}),
+        (Path("b"), _summary("tail")),
+    ]) == []
