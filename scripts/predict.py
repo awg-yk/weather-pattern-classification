@@ -33,6 +33,7 @@ from PIL import Image
 from scripts.preprocess_jma import DEFAULT_STAMP_BOX, autocrop_to_content, mask_stamp_box
 from src import calibration as calib
 from src.labels import INDEX_TO_LABEL, LABEL_JA
+from src.chartscale import letter_size_arg
 from src.model import load_model
 from src.train import get_transforms
 
@@ -120,10 +121,12 @@ def build_parser():
                         help="--annotate で使う H/L のテンプレート")
     parser.add_argument("--marks", default=str(DEFAULT_MARKS),
                         help="--annotate で使う中心の印。無ければ検出が減る")
-    parser.add_argument("--letter-size", type=float, default=1.0,
-                        help="H/Lのテンプレートだけを縮める倍率。解像度の違う"
-                             "天気図で検出できないときに使う。"
-                             "python -m scripts.diagnose_detection が値を教える")
+    parser.add_argument("--letter-size", type=letter_size_arg, default=1.0,
+                        help="H/Lのテンプレートを縮める倍率。auto で天気図の幅から"
+                             "自動で決める(data/templates/reference.json が要る)。"
+                             "**解像度の違いには効くが、記号の線の太さが違う天気図"
+                             "(国会図書館由来の2000〜2022年)には効かない。**"
+                             "そちらはテンプレートの切り直しが要る")
     parser.add_argument("--save-annotated", default=None,
                         help="注釈付き画像の保存先。検出が当たっているか目で確かめられる")
     return parser

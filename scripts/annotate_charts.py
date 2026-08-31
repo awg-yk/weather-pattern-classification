@@ -53,6 +53,8 @@ from scripts.build_features import (
     warn_about_misplaced_marks,
 )
 from src.chartfeatures import MARK_LETTER_RADIUS
+from src.chartscale import (auto_letter_size, letter_size_arg,
+                            sizes_around)
 
 # 描き込みの色(RGB)。**天気図に既にある色帯と重ならないものを選ぶ。**
 #
@@ -133,7 +135,7 @@ def draw_annotations(rgb: np.ndarray, report: dict, detections,
 
 
 def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
-                 scale: float = 0.7, letter_size: float = 1.0,
+                 scale: float = 0.7, letter_size=1.0,
                  mark_scale: float = 1.0,
                  mark_radius: float = MARK_LETTER_RADIUS,
                  threshold: float = 0.65,
@@ -153,6 +155,15 @@ def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
     # まったく当たらない(scripts/diagnose_detection.py で測れる)。
     # scale は画像とテンプレートの両方にかかる速度の調整なので、大きさの
     # 食い違いは直せない。**両方を掛けたものがテンプレートの最終的な倍率**。
+    # 自動のときは、推定した倍率がぴったりとは限らないので、まわりを少しだけ
+    # 振って当てる(src/chartscale.SPREAD)。手で倍率を指定したときは振らない
+    sizes = (1.0,)
+    if letter_size == "auto":
+        letter_size, _note = auto_letter_size(rgb.shape[1], templates_dir)
+        sizes = sizes_around(letter_size)
+        if letter_size != 1.0:
+            # テンプレートは推定倍率まで縮めてあるので、振る幅は1.0のまわり
+            sizes = tuple(s / letter_size for s in sizes)
     letters = load_templates_scaled(Path(templates_dir), scale * letter_size,
                                     quiet=True)
     if not letters:
@@ -166,7 +177,7 @@ def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
     detections, report = analyse_chart(
         rgb, letters, marks, scale, threshold, angle_range, angle_step,
         mark_scale, mark_radius, letter_threshold,
-        overlay_dir=None, want_masks=fronts,
+        overlay_dir=None, want_masks=fronts, letter_sizes=sizes,
     )
     marked = draw_annotations(rgb, report, detections,
                               boxes=boxes, fronts=fronts, thickness=thickness)
@@ -216,7 +227,7 @@ def main():
     parser.add_argument("--marks", default=None)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--scale", type=float, default=0.7)
-    parser.add_argument("--letter-size", type=float, default=1.0,
+    parser.add_argument("--letter-size", type=letter_size_arg, default=1.0,
                         help="H/Lのテンプレートだけを縮める倍率。解像度の違う"
                              "天気図で検出できないときに使う"
                              "(scripts/diagnose_detection.py が値を教える)")
@@ -251,6 +262,12 @@ def main():
         print("すべて済んでいます。作り直すには --out-dir の中身を消してください。")
         return
 
+    if args.letter_size == "auto":
+        # **並列の子には数値で配る。**フォルダ内の天気図は同じ大きさなので、
+        # 1枚目で決めれば足りる。子で毎回決めると、同じ知らせが人数ぶん出る
+        first = Image.open(todo[0]).convert("RGB")
+        args.letter_size, note = auto_letter_size(first.size[0], args.templates)
+        print(f"大きさの自動調整: {note}")
     letters = load_templates_scaled(Path(args.templates),
                                     args.scale * args.letter_size)
     warn_about_misplaced_marks(letters)

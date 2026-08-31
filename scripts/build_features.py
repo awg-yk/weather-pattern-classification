@@ -95,6 +95,7 @@ from src.chartsymbols import (
     segments,
     stationary_mask,
 )
+from src.chartscale import auto_letter_size, letter_size_arg
 from src.regions import load_regions
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
@@ -185,7 +186,8 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
                   mark_scale: float = 1.0,
                   mark_radius: float = MARK_LETTER_RADIUS,
                   letter_threshold: float = LETTER_THRESHOLD,
-                  overlay_dir=None, want_masks: bool = False) -> tuple:
+                  overlay_dir=None, want_masks: bool = False,
+                  letter_sizes: tuple = (1.0,)) -> tuple:
     """1枚から検出結果を取り出す。位置はすべて相対座標(0〜1)。
 
     文字と印で倍率を変えられる。**印は文字よりずっと小さい**(印は約31x31、
@@ -218,8 +220,11 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
         if not templates:
             return {}
         # cx / cy は画像の幅・高さで割った相対座標なので、倍率が違っても比べられる
+        # letter_sizes は、推定した倍率のまわりを少しだけ振るためのもの
+        # (src/chartscale.py)。印には振らない ― 印の大きさは実測で揃っている
         hits = match_templates(shrink(ink, image_scale), templates,
-                               threshold=at, angles=angles)
+                               threshold=at, angles=angles,
+                               sizes=letter_sizes if templates is letters else (1.0,))
         grouped: dict = {}
         for hit in hits:
             grouped.setdefault(symbol_of(hit.label), []).append(
@@ -403,7 +408,7 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="先頭から何枚まで(0で全部)")
     parser.add_argument("--scale", type=float, default=0.7,
                         help="H/L の文字を探すときの縮小率。0.7で速さ2.7倍、検出は変わらなかった")
-    parser.add_argument("--letter-size", type=float, default=1.0,
+    parser.add_argument("--letter-size", type=letter_size_arg, default=1.0,
                         help="H/Lのテンプレートだけを縮める倍率。解像度の違う"
                              "天気図で検出できないときに使う"
                              "(scripts/diagnose_detection.py が値を教える)")
@@ -451,6 +456,11 @@ def main():
 
     # テンプレートの検分は親で1度だけ。子でやると人数ぶん繰り返される。
     # 反転の知らせは手で作ったテンプレートでは必ず全部に出るので、数だけ出す
+    if args.letter_size == "auto":
+        # 並列の子には数値で配る(annotate_charts.py と同じ理由)
+        args.letter_size, note = auto_letter_size(
+            Image.open(paths[0]).convert("RGB").size[0], args.templates)
+        print(f"大きさの自動調整: {note}")
     letters = load_templates_scaled(Path(args.templates),
                                     args.scale * args.letter_size, quiet=True)
     warn_about_misplaced_marks(letters)
