@@ -153,8 +153,11 @@ def main():
     parser.add_argument("--templates", default=str(DEFAULT_TEMPLATES))
     parser.add_argument("--threshold", type=float, default=0.65,
                         help="テンプレートマッチングのしきい値")
-    parser.add_argument("--angle-range", type=float, default=6.0)
-    parser.add_argument("--angle-step", type=float, default=3.0)
+    # **本番と同じ値にすること。**build_features.py と annotate_charts.py は
+    # どちらも ±60度・5度刻みで当てている。ここだけ狭いと、本番なら見つかる
+    # ものを「見つからない」と診断してしまう(実際にそうなっていた)。
+    parser.add_argument("--angle-range", type=float, default=60.0)
+    parser.add_argument("--angle-step", type=float, default=5.0)
     parser.add_argument("--limit", type=int, default=3,
                         help="フォルダを渡したときに見る枚数")
     args = parser.parse_args()

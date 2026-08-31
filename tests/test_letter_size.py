@@ -113,3 +113,30 @@ def test_the_image_scale_is_not_multiplied_by_the_size(script):
     assert '_WORKER["scale"] = scale * letter_size' not in source, \
         "画像側の倍率にも掛けている"
     assert 'scale=scale * letter_size' not in source, "画像側の倍率にも掛けている"
+
+
+def _cli_default(script: str, option: str):
+    """argparse の既定値を、実行せずにソースから読む。"""
+    tree = ast.parse((ROOT / "scripts" / script).read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)
+                and getattr(node.func, "attr", None) == "add_argument"):
+            continue
+        if not (node.args and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == option):
+            continue
+        for kw in node.keywords:
+            if kw.arg == "default" and isinstance(kw.value, ast.Constant):
+                return kw.value.value
+    raise AssertionError(f"{script} に {option} の既定値がない")
+
+
+@pytest.mark.parametrize("option", ["--angle-range", "--angle-step"])
+def test_the_diagnostic_matches_production_angles(option):
+    """診断だけ角度の範囲が狭いと、本番なら見つかるものを「見つからない」と
+    診断してしまう。実際にそうなっていた(診断 ±6度 対 本番 ±60度)。"""
+    production = _cli_default("build_features.py", option)
+    assert _cli_default("diagnose_detection.py", option) == production, (
+        f"診断の {option} が本番と違う。診断の結果が本番を表さなくなる"
+    )
+    assert _cli_default("annotate_charts.py", option) == production
