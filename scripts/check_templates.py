@@ -130,7 +130,17 @@ def main():
               "(**こちらが本番の確認です**)。")
         return
 
-    rgb = np.array(Image.open(args.chart).convert("RGB"))
+    chart = Path(args.chart)
+    if not chart.exists():
+        # ファイル名だけを渡すとここに来る。例外ではなく、直し方を言う
+        raise SystemExit(
+            f"天気図が見つかりません: {args.chart}\n"
+            f"  いまの場所: {Path.cwd()}\n"
+            "  ファイル名だけでなく、フルパスを渡してください。探すには:\n"
+            f'    Get-ChildItem C:\\ -Recurse -Filter "{chart.name}" '
+            "-ErrorAction SilentlyContinue | Select-Object -First 3 FullName"
+        )
+    rgb = np.array(Image.open(chart).convert("RGB"))
     angles = np.arange(-args.angle_range,
                        args.angle_range + args.angle_step, args.angle_step)
     hits = match_templates(ink_image(rgb), templates,
@@ -138,7 +148,7 @@ def main():
     counts: dict = {}
     for hit in hits:
         counts[symbol_of(hit.label)] = counts.get(symbol_of(hit.label), 0) + 1
-    print(f"\n{Path(args.chart).name}({rgb.shape[1]}x{rgb.shape[0]})に当てた結果: "
+    print(f"\n{chart.name}({rgb.shape[1]}x{rgb.shape[0]})に当てた結果: "
           + (", ".join(f"{k} {v}個" for k, v in sorted(counts.items())) or "0個"))
     print("  2023年以降の天気図では H 2.8個 / L 3.9〜4.2個 が平均です。")
     if len(hits) <= 1:

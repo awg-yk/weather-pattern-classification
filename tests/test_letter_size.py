@@ -165,3 +165,18 @@ def test_the_checker_flags_a_tiny_crop():
     tiny = np.zeros((15, 12), dtype=bool)
     tiny[3:12, 3:8] = True
     assert any("小さすぎる" in n for n in inspect("tiny", tiny))
+
+
+def test_a_missing_chart_gives_advice_not_a_traceback(tmp_path):
+    """ファイル名だけを渡すのは起きやすい。例外の山ではなく直し方を出す。"""
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.check_templates",
+         "--templates", str(ROOT / "data" / "templates"),
+         "--chart", "Js_2004042700_page001.jpg"],
+        cwd=ROOT, capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "Traceback" not in combined, combined
+    assert "天気図が見つかりません" in combined
+    assert "フルパス" in combined
