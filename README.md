@@ -32,6 +32,20 @@ python scripts/predict.py path/to/天気図.png --annotate \
 | 中心の印のテンプレート | `data/marks/` | 同上。無いと検出が半減する |
 | 注釈方式の重み | `weights/model_annot.pt` | `runs/cv_annot_boxes/model_test<年>.pt` を複製 |
 
+**検出が0個になるとき**は、天気図の解像度が違う可能性がある。テンプレートは
+特定の天気図から切り出したもので、`cv2.matchTemplate` は大きさの違いに対応
+しない。**解像度が違うと同じ H でも画素数が違い、1個も当たらない。**
+`--scale` では直らない(画像とテンプレートの両方に同じ倍率がかかるので、
+相対的な大きさが変わらない)。原因の切り分けはこれで行う:
+
+```bash
+python -m scripts.diagnose_detection --images <うまくいく天気図> --images <いかない天気図>
+```
+
+倍率ごとの検出数を出し、解像度の違いなのか、白黒スキャンで色帯が空なのか、
+記号の書体が違うのかを見分ける。解像度の違いなら `--letter-size <倍率>` で
+直る(`predict.py`・`annotate_charts.py`・`build_features.py` のすべてにある)。
+
 
 
 学習済みモデル(`weights/model.pt`)をリポジトリに同梱しているので、学習不要ですぐに使える。

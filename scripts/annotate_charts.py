@@ -133,7 +133,8 @@ def draw_annotations(rgb: np.ndarray, report: dict, detections,
 
 
 def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
-                 scale: float = 0.7, mark_scale: float = 1.0,
+                 scale: float = 0.7, letter_size: float = 1.0,
+                 mark_scale: float = 1.0,
                  mark_radius: float = MARK_LETTER_RADIUS,
                  threshold: float = 0.65,
                  letter_threshold: float = LETTER_THRESHOLD,
@@ -147,7 +148,13 @@ def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
     `fronts=False` にしてある。**ここが学習時と食い違うと、モデルは見たことの
     ない絵を渡されることになり、成績が静かに落ちる。**
     """
-    letters = load_templates_scaled(Path(templates_dir), scale, quiet=True)
+    # letter_size は解像度の違う天気図を救うための倍率。テンプレートは特定の
+    # 天気図から切り出したものなので、解像度が違うと同じ H でも画素数が違い、
+    # まったく当たらない(scripts/diagnose_detection.py で測れる)。
+    # scale は画像とテンプレートの両方にかかる速度の調整なので、大きさの
+    # 食い違いは直せない。**両方を掛けたものがテンプレートの最終的な倍率**。
+    letters = load_templates_scaled(Path(templates_dir), scale * letter_size,
+                                    quiet=True)
     if not letters:
         raise SystemExit(
             f"{templates_dir} に H/L のテンプレートがありません。\n"
@@ -169,9 +176,13 @@ def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
 _WORKER = {}
 
 
-def _init_worker(template_dir, mark_dir, scale, mark_scale, mark_radius,
-                 letter_threshold, options):
-    _WORKER["letters"] = load_templates_scaled(Path(template_dir), scale, quiet=True)
+def _init_worker(template_dir, mark_dir, scale, letter_size, mark_scale,
+                 mark_radius, letter_threshold, options):
+    # **文字のテンプレートだけ letter_size を掛ける。**画像側の倍率 (scale) は
+    # そのまま analyse_chart に渡す。ここで両方を掛けてしまうと、画像も一緒に
+    # 縮んで相対的な大きさが元に戻り、直したつもりが何も変わらない。
+    _WORKER["letters"] = load_templates_scaled(Path(template_dir),
+                                               scale * letter_size, quiet=True)
     _WORKER["marks"] = (load_templates_scaled(Path(mark_dir), mark_scale, quiet=True)
                         if mark_dir else {})
     _WORKER.update(scale=scale, mark_scale=mark_scale, mark_radius=mark_radius,
@@ -205,6 +216,10 @@ def main():
     parser.add_argument("--marks", default=None)
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--scale", type=float, default=0.7)
+    parser.add_argument("--letter-size", type=float, default=1.0,
+                        help="H/Lのテンプレートだけを縮める倍率。解像度の違う"
+                             "天気図で検出できないときに使う"
+                             "(scripts/diagnose_detection.py が値を教える)")
     parser.add_argument("--mark-scale", type=float, default=1.0)
     parser.add_argument("--mark-radius", type=float, default=MARK_LETTER_RADIUS)
     parser.add_argument("--threshold", type=float, default=0.65)
@@ -236,9 +251,11 @@ def main():
         print("すべて済んでいます。作り直すには --out-dir の中身を消してください。")
         return
 
-    letters = load_templates_scaled(Path(args.templates), args.scale)
+    letters = load_templates_scaled(Path(args.templates),
+                                    args.scale * args.letter_size)
     warn_about_misplaced_marks(letters)
-    print(f"文字 {len(letters)}枚、{len(todo)}枚を{args.workers}並列で処理する。")
+    size_note = f"、文字の倍率 {args.letter_size:g}" if args.letter_size != 1.0 else ""
+    print(f"文字 {len(letters)}枚{size_note}、{len(todo)}枚を{args.workers}並列で処理する。")
 
     jobs = [(str(p), str(out_dir / p.name), args.threshold,
              args.angle_range, args.angle_step) for p in todo]
@@ -248,8 +265,9 @@ def main():
     started, done, highs, lows, edges = time(), 0, 0, 0, 0
     with ProcessPoolExecutor(
         max_workers=args.workers, initializer=_init_worker,
-        initargs=(args.templates, args.marks, args.scale, args.mark_scale,
-                  args.mark_radius, args.letter_threshold, options),
+        initargs=(args.templates, args.marks, args.scale, args.letter_size,
+                  args.mark_scale, args.mark_radius, args.letter_threshold,
+                  options),
     ) as pool:
         for _name, n_high, n_low, n_edge in pool.map(_run_one, jobs, chunksize=4):
             done += 1

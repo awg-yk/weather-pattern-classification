@@ -347,9 +347,12 @@ def draw_overlay(rgb: np.ndarray, letter_groups: dict, weak_letters: set,
     image.save(out_path)
 
 
-def _init_worker(template_dir, mark_dir, scale, mark_scale, mark_radius,
-                 letter_threshold, overlay):
-    _WORKER["letters"] = load_templates_scaled(Path(template_dir), scale, quiet=True)
+def _init_worker(template_dir, mark_dir, scale, letter_size, mark_scale,
+                 mark_radius, letter_threshold, overlay):
+    # 文字のテンプレートだけ letter_size を掛ける。画像側の倍率 (scale) には
+    # 掛けない ― 両方を縮めると相対的な大きさが戻り、何も変わらなくなる。
+    _WORKER["letters"] = load_templates_scaled(Path(template_dir),
+                                               scale * letter_size, quiet=True)
     _WORKER["marks"] = (load_templates_scaled(Path(mark_dir), mark_scale, quiet=True)
                         if mark_dir else {})
     _WORKER["regions"] = load_regions()
@@ -395,6 +398,10 @@ def main():
     parser.add_argument("--limit", type=int, default=0, help="先頭から何枚まで(0で全部)")
     parser.add_argument("--scale", type=float, default=0.7,
                         help="H/L の文字を探すときの縮小率。0.7で速さ2.7倍、検出は変わらなかった")
+    parser.add_argument("--letter-size", type=float, default=1.0,
+                        help="H/Lのテンプレートだけを縮める倍率。解像度の違う"
+                             "天気図で検出できないときに使う"
+                             "(scripts/diagnose_detection.py が値を教える)")
     parser.add_argument("--mark-scale", type=float, default=1.0,
                         help="中心の印を探すときの縮小率。印は約31x31しかないので既定は原寸")
     parser.add_argument("--overlay", default=None,
@@ -439,7 +446,8 @@ def main():
 
     # テンプレートの検分は親で1度だけ。子でやると人数ぶん繰り返される。
     # 反転の知らせは手で作ったテンプレートでは必ず全部に出るので、数だけ出す
-    letters = load_templates_scaled(Path(args.templates), args.scale, quiet=True)
+    letters = load_templates_scaled(Path(args.templates),
+                                    args.scale * args.letter_size, quiet=True)
     warn_about_misplaced_marks(letters)
     line = f"文字 {len(letters)}枚(縮小{args.scale})"
     if args.marks:
@@ -461,8 +469,9 @@ def main():
     with ProcessPoolExecutor(
         max_workers=args.workers,
         initializer=_init_worker,
-        initargs=(args.templates, args.marks, args.scale, args.mark_scale,
-                  args.mark_radius, args.letter_threshold, args.overlay),
+        initargs=(args.templates, args.marks, args.scale, args.letter_size,
+                  args.mark_scale, args.mark_radius, args.letter_threshold,
+                  args.overlay),
     ) as pool, open(out_path, "a", encoding="utf-8") as handle:
         for name, row, report in pool.map(_run_one, jobs, chunksize=4):
             distances.extend(report.pop("distances"))

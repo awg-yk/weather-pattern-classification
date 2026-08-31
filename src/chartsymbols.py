@@ -493,6 +493,23 @@ def glyph_candidates(
     return sorted(found, key=lambda c: (c.y0, c.x0))
 
 
+def resize_template(template: np.ndarray, factor: float) -> np.ndarray:
+    """2値テンプレートを拡大・縮小して返す。
+
+    `cv2.matchTemplate` は大きさの違いに対応しない。テンプレートは特定の
+    天気図から切り出したものなので、**解像度の違う天気図では同じ H でも
+    画素数が違い、まったく当たらない。**角度と同じで、テンプレートの側を
+    何通りか変えて当てるしかない。
+    """
+    if factor == 1.0:
+        return template
+    height, width = template.shape
+    new_w, new_h = max(1, round(width * factor)), max(1, round(height * factor))
+    resized = cv2.resize(template.astype(np.uint8), (new_w, new_h),
+                         interpolation=cv2.INTER_AREA if factor < 1 else cv2.INTER_NEAREST)
+    return resized.astype(bool)
+
+
 def rotate_template(template: np.ndarray, degrees: float) -> np.ndarray:
     """2値テンプレートを回して返す。角が切れないよう画布を広げる。
 
@@ -521,6 +538,7 @@ def match_templates(
     threshold: float = 0.8,
     bands: dict[str, ColorBand] | None = None,
     angles: Iterable[float] = (0.0,),
+    sizes: Iterable[float] = (1.0,),
 ) -> list[Candidate]:
     """記号のテンプレートを画像全体に当て、閾値を超えた位置を返す。
 
@@ -538,22 +556,24 @@ def match_templates(
     black = bands["isobar"].mask(to_hsv(rgb)).astype(np.float32)
     hits: list[Candidate] = []
     for name, template in templates.items():
-        for angle in angles:
-            patch = rotate_template(template, angle).astype(np.float32)
-            if patch.shape[0] > black.shape[0] or patch.shape[1] > black.shape[1]:
-                continue
-            if patch.sum() == 0:
-                continue
-            response = cv2.matchTemplate(black, patch, cv2.TM_CCOEFF_NORMED)
-            ys, xs = np.nonzero(response >= threshold)
-            h, w = patch.shape
-            for y, x in zip(ys, xs):
-                hits.append(Candidate(
-                    x0=int(x), y0=int(y), x1=int(x) + w, y1=int(y) + h,
-                    pixels=int(patch.sum()), fill=float(patch.mean()),
-                    cx=(x + w / 2) / width, cy=(y + h / 2) / height,
-                    label=name, score=float(response[y, x]), angle=float(angle),
-                ))
+        for size in sizes:
+            sized = resize_template(template, size)
+            for angle in angles:
+                patch = rotate_template(sized, angle).astype(np.float32)
+                if patch.shape[0] > black.shape[0] or patch.shape[1] > black.shape[1]:
+                    continue
+                if patch.sum() == 0:
+                    continue
+                response = cv2.matchTemplate(black, patch, cv2.TM_CCOEFF_NORMED)
+                ys, xs = np.nonzero(response >= threshold)
+                h, w = patch.shape
+                for y, x in zip(ys, xs):
+                    hits.append(Candidate(
+                        x0=int(x), y0=int(y), x1=int(x) + w, y1=int(y) + h,
+                        pixels=int(patch.sum()), fill=float(patch.mean()),
+                        cx=(x + w / 2) / width, cy=(y + h / 2) / height,
+                        label=name, score=float(response[y, x]), angle=float(angle),
+                    ))
     return _suppress_overlaps(hits)
 
 

@@ -59,6 +59,7 @@ def maybe_annotate(image, args):
 
     marked, detections = annotate_one(
         np.array(image), args.templates, args.marks, boxes=True, fronts=False,
+        letter_size=args.letter_size,
     )
     print(f"検出: 高気圧 {len(detections.highs)}個 / 低気圧 {len(detections.lows)}個"
           f"(枠外の系 {len(detections.edge_highs) + len(detections.edge_lows)}個)")
@@ -110,6 +111,10 @@ def build_parser():
                         help="--annotate で使う H/L のテンプレート")
     parser.add_argument("--marks", default=str(DEFAULT_MARKS),
                         help="--annotate で使う中心の印。無ければ検出が減る")
+    parser.add_argument("--letter-size", type=float, default=1.0,
+                        help="H/Lのテンプレートだけを縮める倍率。解像度の違う"
+                             "天気図で検出できないときに使う。"
+                             "python -m scripts.diagnose_detection が値を教える")
     parser.add_argument("--save-annotated", default=None,
                         help="注釈付き画像の保存先。検出が当たっているか目で確かめられる")
     return parser
