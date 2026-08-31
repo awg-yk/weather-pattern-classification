@@ -140,3 +140,28 @@ def test_the_diagnostic_matches_production_angles(option):
         f"診断の {option} が本番と違う。診断の結果が本番を表さなくなる"
     )
     assert _cli_default("annotate_charts.py", option) == production
+
+
+def test_the_checker_flags_a_contaminated_crop():
+    """周りの等圧線を消し忘れた切り出しを見つけること。
+    **これが一番多い失敗**で、見た目では気づきにくい。"""
+    from scripts.check_templates import inspect
+
+    glyph = np.zeros((100, 80), dtype=bool)
+    glyph[10:90, 10:25] = True          # L の縦棒
+    glyph[75:90, 10:70] = True          # L の横棒
+    assert not inspect("clean", glyph), "きれいな切り出しに文句を言っている"
+
+    with_isobar = glyph.copy()
+    with_isobar[30, :] = True           # 端から端まで通る線を1本足す
+    notes = inspect("dirty", with_isobar)
+    assert notes, "等圧線の混入を見逃している"
+    assert any("等圧線" in n for n in notes)
+
+
+def test_the_checker_flags_a_tiny_crop():
+    from scripts.check_templates import inspect
+
+    tiny = np.zeros((15, 12), dtype=bool)
+    tiny[3:12, 3:8] = True
+    assert any("小さすぎる" in n for n in inspect("tiny", tiny))
