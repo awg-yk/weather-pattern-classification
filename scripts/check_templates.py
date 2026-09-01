@@ -31,7 +31,8 @@ if str(_ROOT) not in sys.path:
 
 from scripts.build_features import ink_image
 from scripts.extract_symbols import INK_RANGE, load_templates, symbol_of
-from src.chartsymbols import match_templates
+from src.chartscale import auto_letter_size, letter_size_arg, sizes_around
+from src.chartsymbols import match_templates, resize_template
 
 # 記号の本体が占めるべき割合。これを下回ると、余分なものが写り込んでいる。
 # 輪郭文字は1つの塊になるので、本来はほぼ100%になる。
@@ -94,6 +95,9 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.65)
     parser.add_argument("--angle-range", type=float, default=60.0)
     parser.add_argument("--angle-step", type=float, default=5.0)
+    parser.add_argument("--letter-size", type=letter_size_arg, default=1.0,
+                        help="テンプレートを縮める倍率。auto で天気図の幅から"
+                             "自動で決める(data/templates/reference.json が要る)")
     parser.add_argument("--save-annotated", default=None,
                         help="当たった場所に枠を描いた画像の保存先。"
                              "**どれが当たってどれが外れたかは、これを見ないと分からない**")
@@ -144,10 +148,21 @@ def main():
             "-ErrorAction SilentlyContinue | Select-Object -First 3 FullName"
         )
     rgb = np.array(Image.open(chart).convert("RGB"))
+
+    sizes = (1.0,)
+    size = args.letter_size
+    if size == "auto":
+        size, note = auto_letter_size(rgb.shape[1], args.templates)
+        print(f"\n大きさの自動調整: {note}")
+        # 推定がぴったりとは限らないので、まわりを少しだけ振る
+        sizes = tuple(s / size for s in sizes_around(size)) if size != 1.0 else (1.0,)
+    if size != 1.0:
+        templates = {name: resize_template(t, size) for name, t in templates.items()}
+
     angles = np.arange(-args.angle_range,
                        args.angle_range + args.angle_step, args.angle_step)
     hits = match_templates(ink_image(rgb), templates,
-                           threshold=args.threshold, angles=angles)
+                           threshold=args.threshold, angles=angles, sizes=sizes)
     counts: dict = {}
     for hit in hits:
         counts[symbol_of(hit.label)] = counts.get(symbol_of(hit.label), 0) + 1
