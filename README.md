@@ -100,6 +100,10 @@ macro F1 0.667、基準 0.647 など)はすべて 0.65 で出したものなの�
 
 <a href="https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/main/notebooks/predict.ipynb" target="_blank" rel="noopener noreferrer"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 
+**手元(VS Code)で同じことをする場合**は `notebooks/predict_local.ipynb` を開く。
+Colab版と**同じ関数**(`src/quicklook.py`)を呼んでいるので、結果は一致する。
+セットアップのセル(clone・pip install)が無いぶん短い。
+
 上のバッジからColabノートブックを開けば、①画像をアップロードする、②日付を指定して
 気象庁アーカイブから直接取得する、のどちらかの方法で分類結果と判断根拠(Grad-CAMの
 ヒートマップ)が表示される。
