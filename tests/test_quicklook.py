@@ -104,11 +104,10 @@ def test_the_local_notebook_builds_paths_from_the_repository_root():
     """カレントディレクトリに依らず動くこと。"""
     code = code_of(NOTEBOOKS["local"])
     assert "ROOT = Path.cwd()" in code, "ROOT を決めていない"
-    for name in ("IMAGE", "OLD_IMAGE"):
-        line = next((ln for ln in code.split("\n")
-                     if ln.startswith(f"{name} =")), None)
-        assert line, f"{name} が無い"
-        assert "ROOT /" in line, f"{name} が ROOT からの相対になっていない: {line}"
+    lines = [ln for ln in code.split("\n") if ln.startswith("IMAGE =")]
+    assert lines, "IMAGE が無い"
+    for line in lines:
+        assert "ROOT /" in line, f"IMAGE が ROOT からの相対になっていない: {line}"
 
 
 def test_magics_keep_their_indentation():
@@ -116,3 +115,15 @@ def test_magics_keep_their_indentation():
     IndentationError になる。実際にそれでテストが赤くなった。"""
     code = "if x:\n    %matplotlib inline\n    y = 1\nelse:\n    !pip install z\n    y = 2\n"
     ast.parse(without_magics(code))
+
+
+def test_the_local_notebook_has_one_place_to_set_the_image():
+    """時代ごとにセルを分けない。**利用者に時代を覚えさせる作りは、
+    渡し忘れれば黙って取りこぼす。**設定はファイル名の日付から選ぶ
+    (tests/test_detection_settings.py)。"""
+    code = code_of(NOTEBOOKS["local"])
+    assert code.count("classify_and_show(") == 1, (
+        "分類を呼ぶ場所が複数ある。時代ごとにセルを分けていないか"
+    )
+    for gone in ("OLD_IMAGE", "detect_threshold=0.55", 'letter_size="auto"'):
+        assert gone not in code, f"時代ごとの打ち分けが残っている: {gone}"
