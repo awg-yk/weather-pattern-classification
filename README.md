@@ -100,7 +100,23 @@ macro F1 0.667、基準 0.647 など)はすべて 0.65 で出したものなの�
 
 <a href="https://colab.research.google.com/github/awg-yk/weather-pattern-classification/blob/main/notebooks/predict.ipynb" target="_blank" rel="noopener noreferrer"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
 
-**手元(VS Code)で同じことをする場合**は `notebooks/predict_local.ipynb` を開く。
+**手元(VS Code)だけで作業する場合**は `notebooks/predict_local.ipynb` を開く。
+GitHubにもColabにも繋がず、このリポジトリのフォルダの中だけで完結する。
+天気図の置き場所は次の決まりにする(`data/raw/` と `data/processed/` は
+Gitの追跡対象外なので容量の心配はない):
+
+    data/raw/jma_add/png/   2023年以降の生の天気図(PDFから変換したPNG)
+    data/raw/ndl_png/       2000〜2022年の生の天気図
+    data/processed/jma/     2023年以降の前処理後
+    data/processed/ndl/     2000〜2022年の前処理後
+
+揃っているかは次で確かめられる。足りないものがあれば、用意するコマンドまで出る。
+
+```bash
+python -m scripts.check_local_setup
+```
+
+
 Colab版と**同じ関数**(`src/quicklook.py`)を呼んでいるので、結果は一致する。
 セットアップのセル(clone・pip install)が無いぶん短い。
 

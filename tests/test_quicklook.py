@@ -77,3 +77,25 @@ def test_annotation_availability_reports_what_is_missing(tmp_path):
     (tmp_path / "w.pt").write_bytes(b"")
     (tmp_path / "t").mkdir()
     assert annotation_available(tmp_path / "w.pt", tmp_path / "t") == (True, [])
+
+
+def test_the_local_notebook_stays_inside_the_repository():
+    """手元版は**このフォルダの中だけで完結**させる。隣の
+    weather-pattern-classification-data を参照すると、フォルダを移した
+    だけで動かなくなる。"""
+    code = code_of(NOTEBOOKS["local"])
+    assert "weather-pattern-classification-data" not in code, (
+        "手元版が隣のリポジトリを参照している"
+    )
+    assert "/content/" not in code, "手元版にColab用のパスが混ざっている"
+
+
+def test_the_local_notebook_builds_paths_from_the_repository_root():
+    """カレントディレクトリに依らず動くこと。"""
+    code = code_of(NOTEBOOKS["local"])
+    assert "ROOT = Path.cwd()" in code, "ROOT を決めていない"
+    for name in ("IMAGE", "OLD_IMAGE"):
+        line = next((ln for ln in code.split("\n")
+                     if ln.startswith(f"{name} =")), None)
+        assert line, f"{name} が無い"
+        assert "ROOT /" in line, f"{name} が ROOT からの相対になっていない: {line}"
