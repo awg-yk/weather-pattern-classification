@@ -67,6 +67,40 @@ def mask_stamp_box(image: Image.Image, stamp_box: tuple) -> Image.Image:
     return Image.fromarray(arr)
 
 
+def crop_box(image: Image.Image, white_threshold: int = 250) -> tuple:
+    """autocrop_to_content が切る位置と、非白の連結成分の数を返す。
+
+    `(left, top, right, bottom, 連結成分の数)`。書き出さずに理由だけ見たいときに使う。
+    """
+    gray = ImageOps.grayscale(image)
+    arr = np.array(gray)
+    non_white = arr < white_threshold
+    if not non_white.any():
+        return (0, 0, image.size[0], image.size[1], 0)
+    labeled, count = ndimage.label(non_white, structure=np.ones((3, 3)))
+    if count > 1:
+        sizes = ndimage.sum(non_white, labeled, range(1, count + 1))
+        non_white = labeled == (np.argmax(sizes) + 1)
+    rows = np.where(non_white.any(axis=1))[0]
+    cols = np.where(non_white.any(axis=0))[0]
+    return (int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1, int(count))
+
+
+def report(files: list) -> None:
+    """切り取り位置を並べて出す。**生が同じでも切り取り後が違う**理由が見える。"""
+    print("ファイル                          生の大きさ    切り取り位置(左,上,右,下)      切り取り後   塊")
+    for path in files:
+        image = Image.open(path).convert("RGB")
+        left, top, right, bottom, count = crop_box(image)
+        print(f"{path.name:32s} {image.size[0]:5d}x{image.size[1]:<5d} "
+              f"({left:4d},{top:4d},{right:5d},{bottom:5d})  "
+              f"{right - left:5d}x{bottom - top:<5d} {count:4d}")
+    print("\n切るのは紙の大きさではなく「非白の最大の連結成分」の外接矩形。")
+    print("**枠が紙のどこにどれだけの大きさで描かれているか**で切り取り後の大きさが決まる。")
+    print("塊の数が多いのは、図郭の外に何か写り込んでいるということ")
+    print("(国会図書館のビューアの灰色のボタンなど。最大の塊だけ使うので普通は無害)。")
+
+
 def process_image(src_path: Path, dst_path: Path, stamp_box: tuple) -> None:
     image = Image.open(src_path).convert("RGB")
     image = autocrop_to_content(image)
@@ -78,6 +112,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--in-dir", required=True)
     parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--limit", type=int, default=3,
+                        help="--report で見る枚数")
     parser.add_argument(
         "--stamp-box",
         type=float,
@@ -85,6 +121,13 @@ def main():
         default=DEFAULT_STAMP_BOX,
         metavar=("LEFT", "TOP", "RIGHT", "BOTTOM"),
         help="日時スタンプの位置(相対座標 0-1)。デフォルトは右下想定。",
+    )
+    parser.add_argument(
+        "--report", action="store_true",
+        help="書き出さずに、切り取り位置だけを報告する。**生の大きさが同じでも"
+             "切り取り後が違う**理由を見るためのもの。切るのは紙の大きさではなく"
+             "「非白の最大の連結成分」の外接矩形なので、枠が紙のどこにどれだけの"
+             "大きさで描かれているかで結果が変わる",
     )
     args = parser.parse_args()
 
@@ -95,6 +138,10 @@ def main():
     files = sorted(in_dir.glob("*.png"))
     if not files:
         print(f"no PNG files found in {in_dir}")
+        return
+
+    if args.report:
+        report(files[:args.limit] if args.limit else files)
         return
 
     for src_path in files:
