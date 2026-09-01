@@ -19,6 +19,19 @@ NOTEBOOKS = {"colab": ROOT / "notebooks" / "predict.ipynb",
 SHARED = ("annotation_available", "classify_and_show")
 
 
+def without_magics(code: str) -> str:
+    """IPythonの %マジック・!コマンドを取り除き、Pythonとして読める形にする。
+
+    **字下げを保つこと。**`else:` の中の `%matplotlib inline` を字下げなしの
+    `pass` に置き換えると、そこで IndentationError になる(実際にそうなった)。
+    """
+    out = []
+    for line in code.split("\n"):
+        found = re.match(r"(\s*)[%!]", line)
+        out.append(f"{found.group(1)}pass" if found else line)
+    return "\n".join(out)
+
+
 def code_of(path: Path) -> str:
     nb = json.loads(path.read_text(encoding="utf-8"))
     parts = []
@@ -42,8 +55,7 @@ def test_the_notebook_imports_the_shared_module(name):
 @pytest.mark.parametrize("name", sorted(NOTEBOOKS))
 def test_the_notebook_does_not_redefine_the_shared_functions(name):
     code = code_of(NOTEBOOKS[name])
-    cleaned = "\n".join("pass" if re.match(r"\s*[%!]", ln) else ln
-                        for ln in code.split("\n"))
+    cleaned = without_magics(code)
     defined = {n.name for n in ast.walk(ast.parse(cleaned))
                if isinstance(n, ast.FunctionDef)}
     clashes = sorted(defined & set(SHARED))
@@ -53,9 +65,7 @@ def test_the_notebook_does_not_redefine_the_shared_functions(name):
 @pytest.mark.parametrize("name", sorted(NOTEBOOKS))
 def test_the_notebook_code_parses(name):
     code = code_of(NOTEBOOKS[name])
-    cleaned = "\n".join("pass" if re.match(r"\s*[%!]", ln) else ln
-                        for ln in code.split("\n"))
-    ast.parse(cleaned)
+    ast.parse(without_magics(code))
 
 
 def test_the_module_paths_are_absolute():
@@ -99,3 +109,10 @@ def test_the_local_notebook_builds_paths_from_the_repository_root():
                      if ln.startswith(f"{name} =")), None)
         assert line, f"{name} が無い"
         assert "ROOT /" in line, f"{name} が ROOT からの相対になっていない: {line}"
+
+
+def test_magics_keep_their_indentation():
+    """字下げなしの pass に置き換えると、条件分岐の中のマジックで
+    IndentationError になる。実際にそれでテストが赤くなった。"""
+    code = "if x:\n    %matplotlib inline\n    y = 1\nelse:\n    !pip install z\n    y = 2\n"
+    ast.parse(without_magics(code))
