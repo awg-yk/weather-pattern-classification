@@ -80,7 +80,11 @@ def main():
     parser.add_argument("--labels", default=str(_ROOT / "data" / "labels_v2.csv"))
     args = parser.parse_args()
 
-    print(f"リポジトリ: {_ROOT}\n")
+    # **どのPythonで動いているかを出す。**ノートブックのカーネルが別の
+    # Pythonだと、ここで「揃っている」と出てもノートブックでは足りない、
+    # という分かりにくい食い違いが起きる
+    print(f"リポジトリ: {_ROOT}")
+    print(f"Python    : {sys.executable}\n")
     problems = 0
 
     print("== 重み ==")
