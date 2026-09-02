@@ -182,3 +182,43 @@ def test_a_missing_chart_gives_advice_not_a_traceback(tmp_path):
     assert "Traceback" not in combined, combined
     assert "天気図が見つかりません" in combined
     assert "フルパス" in combined
+
+
+def test_annotate_can_be_limited_to_certain_years(tmp_path):
+    """**学習に使うのはラベルのある年だけ。**全期間を描き込むと、
+    17,898枚と2,168枚で数時間の差になる。"""
+    import numpy as np
+    from PIL import Image
+
+    src = tmp_path / "in"
+    src.mkdir()
+    for name in ("JS_2000010100_page001.png", "Js_2023010100.png",
+                 "Js_2025120100.png"):
+        Image.fromarray(np.full((200, 200, 3), 255, np.uint8)).save(src / name)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.annotate_charts",
+         "--in-dir", str(src), "--out-dir", str(tmp_path / "out"),
+         "--years", "2023", "2025", "--workers", "1",
+         "--angle-range", "0", "--angle-step", "5"],
+        cwd=ROOT, capture_output=True, text=True)
+    combined = result.stdout + result.stderr
+    assert "3枚 -> 2枚" in combined, combined
+
+
+def test_asking_for_a_year_with_no_charts_says_so(tmp_path):
+    import numpy as np
+    from PIL import Image
+
+    src = tmp_path / "in"
+    src.mkdir()
+    Image.fromarray(np.full((200, 200, 3), 255, np.uint8)).save(
+        src / "Js_2023010100.png")
+    result = subprocess.run(
+        [sys.executable, "-m", "scripts.annotate_charts",
+         "--in-dir", str(src), "--out-dir", str(tmp_path / "out"),
+         "--years", "1999", "--workers", "1"],
+        cwd=ROOT, capture_output=True, text=True)
+    combined = result.stdout + result.stderr
+    assert "Traceback" not in combined, combined
+    assert "その年の天気図がありません" in combined

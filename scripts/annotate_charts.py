@@ -226,6 +226,10 @@ def main():
     parser.add_argument("--templates", default="data/templates")
     parser.add_argument("--marks", default=None)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--years", type=int, nargs="+", default=None,
+                        help="この年の天気図だけを処理する。**学習に使うのは"
+                             "ラベルのある年だけ**なので、全期間を描き込むのは"
+                             "時間の無駄になる(17,898枚と2,168枚では数時間違う)")
     parser.add_argument("--scale", type=float, default=0.7)
     parser.add_argument("--letter-size", type=letter_size_arg, default=1.0,
                         help="H/Lのテンプレートだけを縮める倍率。解像度の違う"
@@ -246,6 +250,24 @@ def main():
 
     paths = sorted(p for p in Path(args.in_dir).iterdir()
                    if p.suffix.lower() in IMAGE_SUFFIXES)
+    if args.years:
+        import pandas as pd
+
+        from src.split import parse_datetime
+
+        wanted = set(args.years)
+        before = len(paths)
+
+        def in_wanted(path) -> bool:
+            stamp = parse_datetime(path.name)
+            return not pd.isna(stamp) and stamp.year in wanted
+
+        paths = [p for p in paths if in_wanted(p)]
+        print(f"{sorted(wanted)} に絞り込み: {before}枚 -> {len(paths)}枚")
+        if not paths:
+            raise SystemExit(
+                f"その年の天気図がありません。ファイル名に日付(YYYYMMDDHH)が"
+                f"入っているか確かめてください: {args.in_dir}")
     if args.limit:
         paths = paths[:args.limit]
     if not paths:
