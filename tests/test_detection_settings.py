@@ -1,64 +1,46 @@
-"""検出の設定を、ファイル名の日付から選ぶ部分のテスト。
+"""検出の設定が1つだけであることを固定するテスト。
 
-**利用者に時代を覚えさせない。**以前はノートブックのセルを2つに分け、
-古い天気図のときだけ letter_size="auto" と detect_threshold=0.55 を
-手で渡す作りだった。渡し忘れれば黙って取りこぼす。
+以前は2023年を境に設定を打ち分けていた(古い天気図では
+letter_size="auto"・detect_threshold=0.55)。**前処理がすべての天気図を
+1453x1500 に揃えるようにしてから、打ち分けは不要になった。**
 
-境目は2023-01-01(data/labels_v2.csv の始まり)。**それ以降は学習時と
-まったく同じ設定で描く必要がある** ― 描き方が学習時と違うと、モデルは
-見たことのない絵を渡されて成績が静かに落ちる。
+実測(2000-01-01の天気図、しきい値0.65・テンプレート原寸):
+    揃える前 1499x1548  H 0 / L 0
+    揃えた後 1453x1500  H 3 / L 4   <- 2023年以降の平均 H 2.8 / L 3.9〜4.2 と同水準
+
+**この値は runs/cv_annot_boxes を作ったときのもので、同梱の重みはこの設定で
+描いた画像で学習してある。**変えると、モデルに学習時と違う絵を渡すことになる。
 """
 
-import pytest
+import inspect
 
-from src.quicklook import OLD_ERA, TRAINING_ERA, detection_settings
-
-
-def test_a_chart_from_the_training_era_uses_the_training_settings():
-    settings, note = detection_settings("Js_2023010100.png")
-    assert settings == TRAINING_ERA
-    assert "2023-01-01" in note
+from src import quicklook
+from src.quicklook import DETECTION, classify_and_show, make_annotated
 
 
-def test_a_chart_from_before_the_training_era_uses_the_old_settings():
-    settings, note = detection_settings("JS_2000010100_page001.png")
-    assert settings == OLD_ERA
-    assert "古い天気図" in note
+def test_there_is_one_setting_not_one_per_era():
+    assert DETECTION == {"letter_size": 1.0, "detect_threshold": 0.65}
 
 
-def test_the_boundary_is_the_first_day_of_2023():
-    """大晦日は古い、元日は学習時と同じ。"""
-    assert detection_settings("Js_2022123112_page001.png")[0] == OLD_ERA
-    assert detection_settings("Js_2023010100.png")[0] == TRAINING_ERA
+def test_the_era_split_is_gone():
+    """時代で打ち分ける関数が復活していないこと。"""
+    source = inspect.getsource(quicklook)
+    for gone in ("detection_settings", "TRAINING_ERA", "OLD_ERA"):
+        assert gone not in source, f"時代の打ち分けが戻っている: {gone}"
 
 
-def test_an_unreadable_name_falls_back_to_the_training_settings():
-    """本来の用途は2023年以降なので、分からないときはそちらに寄せる。
-    **黙って古い設定にすると、描き方が学習時とずれる。**"""
-    settings, note = detection_settings("天気図.png")
-    assert settings == TRAINING_ERA
-    assert "読めない" in note
+def test_the_defaults_can_still_be_overridden():
+    """明示すれば、そちらが使われること。"""
+    for func in (classify_and_show, make_annotated):
+        params = inspect.signature(func).parameters
+        assert params["letter_size"].default is None
+        assert params["detect_threshold"].default is None
 
 
-@pytest.mark.parametrize("name", ["Js_2023010100.png", "JS_2000010100_page001.png"])
-def test_an_explicit_value_wins(name):
-    settings, note = detection_settings(name, detect_threshold=0.42)
-    assert settings["detect_threshold"] == 0.42
-    assert "指定された値" in note
+def test_the_canonical_size_and_the_threshold_stay_together():
+    """揃える大きさを変えると、記号の大きさが変わってしきい値も合わなくなる。
+    片方だけ動かせないことを、ここで結びつけておく。"""
+    from scripts.preprocess_jma import CANONICAL_SIZE
 
-    settings, _ = detection_settings(name, letter_size=0.8)
-    assert settings["letter_size"] == 0.8
-
-
-def test_the_training_settings_match_what_the_weights_were_trained_with():
-    """runs/cv_annot_boxes は しきい値0.65・原寸 で作った画像で学習した。
-    ここを変えると、同梱の重みに学習時と違う絵を渡すことになる。"""
-    assert TRAINING_ERA == {"letter_size": 1.0, "detect_threshold": 0.65}
-
-
-def test_the_settings_are_copies():
-    """返した辞書を書き換えても、次の呼び出しに影響しないこと。"""
-    first, _ = detection_settings("Js_2023010100.png")
-    first["detect_threshold"] = 0.1
-    second, _ = detection_settings("Js_2023010100.png")
-    assert second == TRAINING_ERA
+    assert CANONICAL_SIZE == (1453, 1500)
+    assert DETECTION["letter_size"] == 1.0
