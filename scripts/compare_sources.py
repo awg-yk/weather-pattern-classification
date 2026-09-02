@@ -78,6 +78,10 @@ def main():
                         help="指定すると、両方をモデルに通して確信度も比べる。"
                              "**これが「重みをそのまま使えるか」の決め手。**"
                              "画素が違っても、モデルの出力が一致するなら使える")
+    parser.add_argument("--labels", default=None,
+                        help="ラベルCSV。--weights と併せて渡すと、**同じ重みで"
+                             "両方を評価して macro F1 を比べる。**"
+                             "確信度の差ではなく、成績が動くかどうかで判断できる")
     parser.add_argument("--save-dir", default=None,
                         help="見比べる画像(左:A 右:B 下:差)の書き出し先")
     args = parser.parse_args()
@@ -135,9 +139,29 @@ def main():
     header = "日時          違う画素   平均の差   検出 A(H/L)  検出 B(H/L)"
     if to_probabilities:
         header += "   確信度の差(最大/平均)"
+    truth = {}
+    if args.labels:
+        if not to_probabilities:
+            raise SystemExit("--labels は --weights と一緒に指定してください")
+        import pandas as pd
+
+        from src.labels import LABELS
+        from src.split import parse_datetime
+
+        frame = pd.read_csv(args.labels)
+        for _, row in frame.iterrows():
+            stamp = parse_datetime(row["filename"])
+            if pd.isna(stamp):
+                continue
+            marks = set(str(row["label"]).split("|"))
+            truth[f"{stamp:%Y%m%d%H}"] = np.array(
+                [1 if name in marks else 0 for name in LABELS])
+        print(f"ラベル: {len(truth)}件\n")
+
     print(header)
     diffs = []
     prob_gaps = []
+    probs_a, probs_b, used = [], [], []
     for stamp in picked:
         a = prepare(Path(a_index[stamp]), args.a_processed)
         b = prepare(Path(b_index[stamp]), args.b_processed)
@@ -155,6 +179,10 @@ def main():
             pa, pb = to_probabilities(a), to_probabilities(b)
             spread = np.abs(pa - pb)
             prob_gaps.append(spread)
+            if stamp in truth:
+                probs_a.append(pa)
+                probs_b.append(pb)
+                used.append(stamp)
             line += f"      {spread.max():.3f} / {spread.mean():.3f}"
         print(line)
         if save_dir:
@@ -166,6 +194,33 @@ def main():
         return
     worst = max(diffs)
     print(f"\n違う画素の割合: 平均 {np.mean(diffs):.2%}  最大 {worst:.2%}")
+
+    if prob_gaps and truth:
+        # **確信度の差より、成績が動くかどうかで判断する。**
+        # ラベルごとのしきい値は0.12〜0.50なので、確信度が少し動いても
+        # 判定は変わらないことが多い
+        from sklearn.metrics import f1_score
+
+        thresholds = calibration.thresholds()
+        y = np.vstack([truth[st] for st in used])
+        report_f1 = {}
+        for tag, probs in (("A", np.vstack(probs_a)), ("B", np.vstack(probs_b))):
+            preds = (probs >= thresholds).astype(int)
+            per_label = [f1_score(y[:, i], preds[:, i], zero_division=0)
+                         for i in range(y.shape[1])]
+            report_f1[tag] = float(np.mean(per_label))
+        preds_a = np.vstack(probs_a) >= thresholds
+        preds_b = np.vstack(probs_b) >= thresholds
+        changed = int((preds_a != preds_b).any(axis=1).sum())
+        print(f"\n同じ重みで測った macro F1: A {report_f1['A']:.4f} / "
+              f"B {report_f1['B']:.4f}  (差 {report_f1['B'] - report_f1['A']:+.4f})")
+        print(f"判定が1つでも変わった天気図: {len(used)}枚中 {changed}枚")
+        if abs(report_f1["B"] - report_f1["A"]) < 0.01:
+            print("**成績はほとんど変わりません。**入れ替えても、いまの重みが"
+                  "そのまま使えます。一本化してよい。")
+        else:
+            print("**成績が動きます。**入れ替えるなら学習し直しが要ります。")
+        return
 
     if prob_gaps:
         stacked = np.vstack(prob_gaps)
