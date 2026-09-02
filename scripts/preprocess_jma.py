@@ -116,10 +116,12 @@ def report(files: list, size=CANONICAL_SIZE) -> None:
     """
     print("ファイル                          生の大きさ    切り取り位置(左,上,右,下)      切り取り後   揃えると")
     unchanged = 0
+    shapes: dict = {}
     for path in files:
         image = Image.open(path).convert("RGB")
         left, top, right, bottom, _ = crop_box(image)
         cropped = (right - left, bottom - top)
+        shapes.setdefault(cropped, []).append(path.name)
         if size and cropped == tuple(size):
             verdict, unchanged = "変わらない", unchanged + 1
         elif size:
@@ -132,6 +134,15 @@ def report(files: list, size=CANONICAL_SIZE) -> None:
     if size:
         print(f"\n{len(files)}枚のうち {unchanged}枚は揃えても変わらない"
               "(=いまの重みにこれまでと同じ絵を渡せる)。")
+    # **版面が何種類あるかが一番知りたいこと。**2種類なら想定どおり
+    # (気象庁PDF版と国会図書館版)。3種類以上なら、途中でまた変わっている
+    print("\n見つかった版面(切り取り後の大きさ):")
+    for shape, names in sorted(shapes.items(), key=lambda kv: -len(kv[1])):
+        example = names[0]
+        print(f"  {shape[0]}x{shape[1]:<5d} {len(names):5d}枚   例: {example}")
+    if len(shapes) > 2:
+        print("  ★3種類以上あります。途中で版面が変わっているので、"
+              "揃えたあとに検出が通るか必ず確かめること")
     print("\n切るのは紙の大きさではなく「非白の最大の連結成分」の外接矩形。")
     print("**枠が紙のどこにどれだけの大きさで描かれているか**で切り取り後の大きさが決まる。")
     print("塊の数が多いのは、図郭の外に何か写り込んでいるということ")
@@ -153,7 +164,8 @@ def process_image(src_path: Path, dst_path: Path, stamp_box: tuple,
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--in-dir", required=True)
-    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--out-dir", default=None,
+                        help="書き出し先。--report のときは要らない")
     parser.add_argument("--limit", type=int, default=3,
                         help="--report で見る枚数")
     parser.add_argument(
@@ -184,17 +196,25 @@ def main():
         int(v) for v in args.size.lower().split("x"))
 
     in_dir = Path(args.in_dir)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     files = sorted(in_dir.glob("*.png"))
     if not files:
-        print(f"no PNG files found in {in_dir}")
-        return
+        print(f"PNGが見つかりません: {in_dir}")
+        raise SystemExit(1)
 
     if args.report:
-        report(files[:args.limit] if args.limit else files, size)
+        # **先頭から取ると、日付順に並んでいるので最初の年しか見えない。**
+        # 全期間に散らして拾う。版面が途中で変わっていれば、それで気づける
+        picked = files
+        if args.limit and len(files) > args.limit:
+            step = len(files) / args.limit
+            picked = [files[int(i * step)] for i in range(args.limit)]
+        report(picked, size)
         return
+
+    if not args.out_dir:
+        raise SystemExit("--out-dir を指定してください(--report なら不要)")
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     for src_path in files:
         dst_path = out_dir / src_path.name

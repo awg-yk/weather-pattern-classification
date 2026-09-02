@@ -28,6 +28,9 @@ if str(_ROOT) not in sys.path:
 
 RAW_JMA = _ROOT / "data" / "raw" / "jma_add" / "png"
 RAW_NDL = _ROOT / "data" / "raw" / "ndl_png"
+# 2000〜2025年を取り直したもの。ここが本命になる
+RAW_NEW = _ROOT / "data" / "raw" / "new_png"
+PROC_NEW = _ROOT / "data" / "processed" / "new"
 PROC_JMA = _ROOT / "data" / "processed" / "jma"
 PROC_NDL = _ROOT / "data" / "processed" / "ndl"
 
@@ -116,6 +119,11 @@ def main():
         PROC_JMA, "2023年以降(前処理後)",
         f"python -m scripts.preprocess_jma --in-dir {RAW_JMA.relative_to(_ROOT)} "
         f"--out-dir {PROC_JMA.relative_to(_ROOT)}")
+    check_images(RAW_NEW, "2000〜2025年 取り直し(生)")
+    check_images(
+        PROC_NEW, "2000〜2025年 取り直し(前処理後)",
+        f"python -m scripts.preprocess_jma --in-dir {RAW_NEW.relative_to(_ROOT)} "
+        f"--out-dir {PROC_NEW.relative_to(_ROOT)}")
     check_images(
         PROC_NDL, "2000〜2022年(前処理後)",
         f"python -m scripts.preprocess_jma --in-dir {RAW_NDL.relative_to(_ROOT)} "
