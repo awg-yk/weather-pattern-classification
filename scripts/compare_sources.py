@@ -74,6 +74,10 @@ def main():
     parser.add_argument("--threshold", type=float, default=0.65)
     parser.add_argument("--angle-range", type=float, default=60.0)
     parser.add_argument("--angle-step", type=float, default=5.0)
+    parser.add_argument("--weights", default=None,
+                        help="指定すると、両方をモデルに通して確信度も比べる。"
+                             "**これが「重みをそのまま使えるか」の決め手。**"
+                             "画素が違っても、モデルの出力が一致するなら使える")
     parser.add_argument("--save-dir", default=None,
                         help="見比べる画像(左:A 右:B 下:差)の書き出し先")
     args = parser.parse_args()
@@ -101,8 +105,39 @@ def main():
     if save_dir:
         save_dir.mkdir(parents=True, exist_ok=True)
 
-    print("日時          違う画素   平均の差   検出 A(H/L)  検出 B(H/L)")
+    to_probabilities = None
+    if args.weights:
+        # 重い読み込みは、必要なときだけ。**scripts/predict.py と同じ手順にする。**
+        # ここがずれると、比べているものが本番と違ってしまう
+        import torch
+
+        from src.calibration import load_for_weights_cli
+        from src.model import load_model
+        from src.train import get_transforms
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model, meta = load_model(args.weights, map_location=device)
+        model.to(device)
+        model.eval()
+        transform = get_transforms(train=False, image_size=meta["image_size"])
+        calibration = load_for_weights_cli(args.weights, verbose=False)
+
+        def _to_probabilities(rgb):
+            tensor = transform(Image.fromarray(rgb)).unsqueeze(0).to(device)
+            with torch.no_grad():
+                logits = model(tensor)[0].cpu().numpy()
+            return np.asarray(calibration.probabilities(logits))
+
+        to_probabilities = _to_probabilities
+
+        print(f"モデル: {args.weights}\n")
+
+    header = "日時          違う画素   平均の差   検出 A(H/L)  検出 B(H/L)"
+    if to_probabilities:
+        header += "   確信度の差(最大/平均)"
+    print(header)
     diffs = []
+    prob_gaps = []
     for stamp in picked:
         a = prepare(Path(a_index[stamp]), args.a_processed)
         b = prepare(Path(b_index[stamp]), args.b_processed)
@@ -114,8 +149,14 @@ def main():
         diffs.append(differing)
         ca = detect(a, templates, args.threshold, angles)
         cb = detect(b, templates, args.threshold, angles)
-        print(f"{stamp}  {differing:7.2%}  {gap.mean():8.2f}   "
-              f"{ca['H']} / {ca['L']}        {cb['H']} / {cb['L']}")
+        line = (f"{stamp}  {differing:7.2%}  {gap.mean():8.2f}   "
+                f"{ca['H']} / {ca['L']}        {cb['H']} / {cb['L']}")
+        if to_probabilities:
+            pa, pb = to_probabilities(a), to_probabilities(b)
+            spread = np.abs(pa - pb)
+            prob_gaps.append(spread)
+            line += f"      {spread.max():.3f} / {spread.mean():.3f}"
+        print(line)
         if save_dir:
             band = np.full((a.shape[0], 8, 3), 255, np.uint8)
             Image.fromarray(np.hstack([a, band, b])).save(
@@ -125,6 +166,22 @@ def main():
         return
     worst = max(diffs)
     print(f"\n違う画素の割合: 平均 {np.mean(diffs):.2%}  最大 {worst:.2%}")
+
+    if prob_gaps:
+        stacked = np.vstack(prob_gaps)
+        print(f"確信度の差: 平均 {stacked.mean():.4f}  最大 {stacked.max():.4f}")
+        # ラベルごとのしきい値は0.12〜0.50。0.02程度の揺れなら判定は変わらない
+        if stacked.max() < 0.02:
+            print("**モデルの出力はほぼ同じです。**画素が違っても、"
+                  "重みはそのまま使えます。一本化してよい。")
+        elif stacked.max() < 0.05:
+            print("モデルの出力は少しだけ動きます。しきい値の近くにある"
+                  "ラベルだけ判定が変わりえます。**入れ替えるなら、"
+                  "同じ重みで両方を評価して macro F1 を比べること。**")
+        else:
+            print("**モデルの出力が動きます。**入れ替えるなら学習し直しが要ります。")
+        return
+
     if worst < 0.02:
         print("**ほぼ同じ画像です。**片方に一本化してよい"
               "(学習済みの重みもそのまま使える見込み)。")

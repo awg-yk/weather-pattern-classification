@@ -84,3 +84,34 @@ def test_the_script_actually_runs(pair):
     chart(0).save(a / "Js_2023010100.png")
     chart(0).save(b / "Js_2023010100_page001.png")
     assert run(a, b).strip(), "何も出力されていない"
+
+
+def test_the_model_comparison_separates_identical_from_different(pair):
+    """**画素が違ってもモデルの出力が同じなら、重みはそのまま使える。**
+    そこが「一本化してよいか」の決め手なので、判定が効くことを固定する。"""
+    a, b = pair
+    weights = ROOT / "weights" / "model.pt"
+    if not weights.exists():
+        pytest.skip("重みが無い")
+
+    image = chart(0, size=(400, 420))
+    image.save(a / "Js_2023010100.png")
+    image.save(b / "Js_2023010100_page001.png")
+    same = run(a, b, "--weights", str(weights))
+    assert "確信度の差" in same, same
+    assert "0.0000" in same or "0.000 / 0.000" in same, same
+
+    chart(99, size=(400, 420)).save(b / "Js_2023010100_page001.png")
+    differ = run(a, b, "--weights", str(weights))
+    assert "確信度の差" in differ, differ
+
+
+def test_the_model_is_not_loaded_unless_asked(pair):
+    """--weights を渡さないときに重い読み込みを走らせないこと。"""
+    a, b = pair
+    image = chart(0)
+    image.save(a / "Js_2023010100.png")
+    image.save(b / "Js_2023010100_page001.png")
+    out = run(a, b)
+    assert "モデル:" not in out
+    assert "確信度の差" not in out
