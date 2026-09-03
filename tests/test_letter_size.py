@@ -169,19 +169,33 @@ def test_the_checker_flags_a_tiny_crop():
     assert any("小さすぎる" in n for n in inspect("tiny", tiny))
 
 
-def test_a_missing_chart_gives_advice_not_a_traceback(tmp_path):
-    """ファイル名だけを渡すのは起きやすい。例外の山ではなく直し方を出す。"""
+def _check_templates(chart) -> str:
     result = subprocess.run(
         [sys.executable, "-m", "scripts.check_templates",
-         "--templates", str(ROOT / "data" / "templates"),
-         "--chart", "Js_2004042700_page001.jpg"],
+         "--templates", str(ROOT / "data" / "templates"), "--chart", str(chart)],
         cwd=ROOT, capture_output=True, text=True,
     )
     assert result.returncode != 0
-    combined = result.stdout + result.stderr
+    return result.stdout + result.stderr
+
+
+def test_a_missing_folder_is_told_apart_from_a_missing_file(tmp_path):
+    """**原因は2通りある。**フォルダが無いのか、そのフォルダにその名前が
+    無いのか。取り違えると見当違いの案内になる(実際に「フルパスを渡して
+    ください」と言っていたが、パスは正しくファイルが無いだけだった)。"""
+    combined = _check_templates(tmp_path / "nosuch" / "x.png")
     assert "Traceback" not in combined, combined
-    assert "天気図が見つかりません" in combined
-    assert "フルパス" in combined
+    assert "フォルダがありません" in combined
+
+
+def test_a_near_miss_name_is_suggested(tmp_path):
+    """末尾が違うだけのことが多い(国会図書館由来は _page001 が付く)。"""
+    (tmp_path / "Js_2025120100_page001.png").write_bytes(b"")
+    combined = _check_templates(tmp_path / "Js_2025120100.png")
+    assert "Traceback" not in combined, combined
+    assert "似た名前のファイル" in combined
+    assert "Js_2025120100_page001.png" in combined
+    assert "_page001" in combined
 
 
 def test_annotate_can_be_limited_to_certain_years(tmp_path):

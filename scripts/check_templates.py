@@ -139,14 +139,25 @@ def main():
 
     chart = Path(args.chart)
     if not chart.exists():
-        # ファイル名だけを渡すとここに来る。例外ではなく、直し方を言う
-        raise SystemExit(
-            f"天気図が見つかりません: {args.chart}\n"
-            f"  いまの場所: {Path.cwd()}\n"
-            "  ファイル名だけでなく、フルパスを渡してください。探すには:\n"
-            f'    Get-ChildItem C:\\ -Recurse -Filter "{chart.name}" '
-            "-ErrorAction SilentlyContinue | Select-Object -First 3 FullName"
-        )
+        # **原因は2通りある。**フォルダが無いのか、そのフォルダに
+        # その名前が無いのか。取り違えると見当違いの案内になる
+        lines = [f"天気図が見つかりません: {args.chart}"]
+        if chart.parent.exists():
+            lines.append(f"  フォルダはあります: {chart.parent}")
+            stem = chart.stem.split("_")[0] + "_" + chart.stem.split("_")[1][:8] \
+                if chart.stem.count("_") >= 1 else chart.stem[:12]
+            near = sorted(q.name for q in chart.parent.glob(f"{stem}*"))[:5]
+            if near:
+                lines.append("  似た名前のファイル:")
+                lines.extend(f"    {name}" for name in near)
+                lines.append("  末尾が違うだけかもしれません"
+                             "(国会図書館由来のものは _page001 が付く)")
+            else:
+                lines.append(f"  {stem}* に当てはまるファイルはありません")
+        else:
+            lines.append(f"  フォルダがありません: {chart.parent}")
+            lines.append(f"  いまの場所: {Path.cwd()}")
+        raise SystemExit("\n".join(lines))
     rgb = np.array(Image.open(chart).convert("RGB"))
 
     sizes = (1.0,)
