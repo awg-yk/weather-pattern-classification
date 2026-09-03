@@ -8,21 +8,31 @@
 数える。生のsigmoid出力をそのまま使うと、学習時のpos_weightのぶん実際より高い
 確信度が出て、明らかに違う判定が確信度60%として並ぶ(src/calibration.py を参照)。
 
-天気図は日付に応じて自動的に取得元が切り替わる:
-    2022-10-01以降 : 気象庁JSMAPアーカイブ
-    それ以前        : 手動アーカイブ(weather-pattern-classification-data)
+天気図の入手は2通り:
 
-一度取得した画像はキャッシュされるので、2回目以降は通信しない。
+    --images-dir data/processed/all   手元の前処理済み画像を使う(通信しない)
+    (指定しない場合)                  日付に応じて取得元が切り替わる
+                                        2022-10-01以降 : 気象庁JSMAPアーカイブ
+                                        それ以前        : 手動アーカイブ
+
+**手元に画像があるなら --images-dir を使うこと。**通信しないので速く、
+2000年より前も含めて取りこぼしがない。ファイル名の表記は取得元で違う
+(Js_2023010100.png と Js_2023010100_page001.png)ので、10桁の日時で照合する。
+取得する場合は、一度取った画像はキャッシュされるので2回目以降は通信しない。
 
 使い方:
     python -m scripts.classify_dates \
-        --dates-csv 風替わり.csv --weights runs/loyo/model_test2023.pt \
+        --dates-csv 風替わり.csv --images-dir data/processed/all \
+        --weights weights/model_annot.pt --annotate \
         --out 風替わり_気圧配置.csv
+
+**--annotate と weights/model_annot.pt は必ず組にすること。**注釈付き画像で
+学習した重みに素の天気図を渡すと、モデルは見たことのない絵を受け取ることに
+なり、成績が静かに落ちる。
 """
 
 import argparse
 import collections
-from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -40,6 +50,8 @@ from src import calibration as calib
 from src.dataset import parse_labels
 from src.labels import INDEX_TO_LABEL, LABEL_JA, LABELS
 from src.model import load_model
+from src.quicklook import DETECTION, MARKS_DIR, TEMPLATES_DIR
+from src.split import index_images_by_stamp
 from src.train import get_transforms
 
 
@@ -127,9 +139,26 @@ def main():
         "逆転し、どちらの天気図も1位に選ばなかった気圧配置が出ることがある",
     )
     parser.add_argument(
+        "--images-dir",
+        default=None,
+        help="手元の前処理済み天気図が入ったフォルダ(例 data/processed/all)。"
+        "指定すると通信せずここから引く。ファイル名ではなく10桁の日時で照合する",
+    )
+    parser.add_argument(
+        "--annotate",
+        action="store_true",
+        help="検出した高低気圧の枠を描き込んでから判定する。"
+        "**注釈付き画像で学習した重み(weights/model_annot.pt)を使うときは必須**",
+    )
+    parser.add_argument("--templates", default=str(TEMPLATES_DIR),
+                        help="--annotate で使う H/L のテンプレート")
+    parser.add_argument("--marks", default=str(MARKS_DIR),
+                        help="--annotate で使う中心の印。無ければ検出が減る")
+    parser.add_argument(
         "--cache-dir",
         default="data/raw/date_lookup",
-        help="取得した天気図の保存先。同じ日付を再実行しても通信しない",
+        help="取得した天気図の保存先。同じ日付を再実行しても通信しない"
+        "(--images-dir を使うときは関係ない)",
     )
     parser.add_argument(
         "--poppler-path",
@@ -261,6 +290,31 @@ def main():
         print(f"ERA5併用: 特徴量{len(era5['columns'])}個 / "
               f"学習{era5['rows']}件 / 重み {args.blend_weight}")
 
+    # 手元の画像を使う場合は、先に日時10桁で引ける索引を作る。
+    # 名前の厳密一致で引くと、取得元によって表記が違うぶんを取りこぼす
+    index = None
+    if args.images_dir:
+        index = index_images_by_stamp(args.images_dir)
+        if not index:
+            raise SystemExit(
+                f"天気図が1枚もありません: {args.images_dir}\n"
+                "  python -m scripts.preprocess_jma --in-dir data/raw/new_png "
+                f"--out-dir {args.images_dir} で作れます")
+        stamps = sorted(index)
+        print(f"天気図: {args.images_dir} の{len(index)}枚を使います"
+              f"({stamps[0][:8]} 〜 {stamps[-1][:8]}、通信しません)")
+    else:
+        print("天気図: 日付ごとにアーカイブから取得します"
+              "(手元にあるなら --images-dir を指定した方が速い)")
+
+    if args.annotate:
+        missing = [d for d in (args.templates,) if not Path(d).exists()]
+        if missing:
+            raise SystemExit(
+                "--annotate に必要なテンプレートがありません: " + ", ".join(missing))
+        print(f"判定前に高低気圧の枠を描き込みます(--annotate)。"
+              f"重みは注釈付き画像で学習したものにすること: {args.weights}")
+
     df = pd.read_csv(args.dates_csv)
     if args.date_column not in df.columns:
         raise SystemExit(f"列 '{args.date_column}' がありません。列: {list(df.columns)}")
@@ -268,14 +322,44 @@ def main():
     df = df.dropna(subset=[args.date_column]).reset_index(drop=True)
     print(f"対象: {len(df)}件({df[args.date_column].min():%Y-%m-%d} 〜 {df[args.date_column].max():%Y-%m-%d})\n")
 
-    def predict(target, hour):
-        """1つの日時の天気図(と、あればERA5)から全ラベルの確率を返す。"""
+    def chart_of(target, hour):
+        """1つの日時の天気図を開く。手元にあればそれを、無ければ取得する。
+
+        手元の `data/processed/all` は前処理済みなので、そのまま使える。
+        (前処理をもう一度かけても結果は同じだが、無駄に読み書きしない)
+        """
+        if index is not None:
+            stamp = f"{target:%Y%m%d}{hour:02d}"
+            found = index.get(stamp)
+            if found is None:
+                raise FileNotFoundError(
+                    f"{args.images_dir} に {stamp} の天気図がありません")
+            return Image.open(found).convert("RGB")
+
         image_path = fetch_chart(
             target.isoformat(), hour=hour,
             cache_dir=args.cache_dir, poppler_path=args.poppler_path,
         )
         image = Image.open(image_path).convert("RGB")
-        image = mask_stamp_box(autocrop_to_content(image), DEFAULT_STAMP_BOX)
+        return mask_stamp_box(autocrop_to_content(image), DEFAULT_STAMP_BOX)
+
+    def predict(target, hour):
+        """1つの日時の天気図(と、あればERA5)から全ラベルの確率を返す。"""
+        image = chart_of(target, hour)
+        if args.annotate:
+            # **描き方は学習に使ったものと揃える。**`--no-fronts`(枠のみ)で
+            # 作った画像で学習しているので、ここも枠のみにする。食い違うと
+            # モデルは見たことのない絵を渡され、成績が静かに落ちる
+            from scripts.annotate_charts import annotate_one
+
+            marked, _ = annotate_one(
+                np.array(image), args.templates,
+                args.marks if args.marks and Path(args.marks).exists() else None,
+                letter_size=DETECTION["letter_size"],
+                threshold=DETECTION["detect_threshold"],
+                boxes=True, fronts=False,
+            )
+            image = Image.fromarray(marked)
         tensor = transform(image).unsqueeze(0).to(device)
         with torch.no_grad():
             logits = [m(tensor)[0].cpu().numpy() for m in models]

@@ -35,6 +35,55 @@ ANNOT_WEIGHTS = REPO_ROOT / "weights" / "model_annot.pt"
 TEMPLATES_DIR = REPO_ROOT / "data" / "templates"
 MARKS_DIR = REPO_ROOT / "data" / "marks"
 
+# 前処理済みの天気図の置き場所。2000〜2025年をここに揃えてある
+PROCESSED_DIR = REPO_ROOT / "data" / "processed" / "all"
+
+# 注釈付き画像の書き出し先。**入力の隣には置かない。**
+# data/processed/all に書くと、学習に使うフォルダに派生画像が混ざる
+ANNOTATED_DIR = REPO_ROOT / "reports" / "annotated"
+
+# 日時10桁 -> パス の索引を、フォルダごとに覚えておく。
+# 値は (フォルダの更新時刻, 索引)。更新時刻が変わったら作り直す
+_INDEX: dict = {}
+
+
+def chart_for(date, hour: int = 0, images_dir=PROCESSED_DIR):
+    """日付から天気図のパスを引く。
+
+    ファイル名の表記は取得元で違う(`Js_2023010100.png` と
+    `Js_2023010100_page001.png`)ので、10桁の日時で照合する。
+
+    索引は一度作ったら使い回す。17,898枚を毎回走査すると遅い。ただし
+    **フォルダの更新時刻が変わったら作り直す。**そうしないと、ノートブックを
+    開いたまま画像を足したときに「ありません」と言い続ける。
+    """
+    from src.split import index_images_by_stamp
+
+    key = str(images_dir)
+    stat = Path(images_dir).stat().st_mtime if Path(images_dir).is_dir() else None
+    if _INDEX.get(key, (None, None))[0] != stat:
+        _INDEX[key] = (stat, index_images_by_stamp(images_dir))
+        if not _INDEX[key][1]:
+            try:
+                shown = Path(images_dir).relative_to(REPO_ROOT)
+            except ValueError:
+                shown = Path(images_dir)
+            raise SystemExit(
+                f"天気図が1枚もありません: {images_dir}\n"
+                "  python -m scripts.preprocess_jma "
+                f"--in-dir data/raw/new_png --out-dir {shown} で作れます")
+
+    stamp = f"{str(date).replace('-', '').replace('/', '')[:8]}{hour:02d}"
+    found = _INDEX[key][1].get(stamp)
+    if found is None:
+        have = sorted(_INDEX[key][1])
+        raise SystemExit(
+            f"{date} {hour:02d}Z の天気図がありません(探した名前: {stamp})\n"
+            f"  {images_dir} にあるのは {len(have)}枚、"
+            f"{have[0][:8]} 〜 {have[-1][:8]}\n"
+            "  00Z と 12Z しかありません。hour は 0 か 12 を指定してください")
+    return Path(found)
+
 
 # 検出の設定。**時代で打ち分けない。**前処理がすべての天気図を
 # 1453x1500 に揃えるので、記号の大きさは時代によらず同じになる。
@@ -73,8 +122,10 @@ def make_annotated(image_path, out_path=None, *, templates=TEMPLATES_DIR,
         letter_size=letter_size, threshold=detect_threshold,
         boxes=True, fronts=False,
     )
-    out_path = Path(out_path) if out_path else Path(image_path).with_name(
-        Path(image_path).stem + "_annotated.png")
+    # **入力の隣には置かない。**data/processed/all に書くと、学習に使う
+    # フォルダに派生画像が混ざり、次の学習で拾われかねない
+    out_path = Path(out_path) if out_path else (
+        ANNOTATED_DIR / (Path(image_path).stem + "_annotated.png"))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(marked).save(out_path)
     if not quiet:
@@ -148,3 +199,15 @@ def classify_and_show(image_path, threshold=None, annotate=False, *,
     for label, prob in ranked:
         print(f"{LABEL_JA[label]}: {prob * 100:.1f}%")
     return ranked
+
+
+def classify_date(date, hour: int = 0, threshold=None, annotate: bool = True,
+                  images_dir=PROCESSED_DIR, **kwargs):
+    """日付を指定して、その日の天気図を分類する。
+
+    `classify_and_show` に日付から画像を引く手間を足しただけ。
+    どの天気図を見たのかが分かるよう、パスを表示する。
+    """
+    path = chart_for(date, hour, images_dir)
+    print(f"天気図: {path.name}  ({date} {hour:02d}Z)")
+    return classify_and_show(path, threshold=threshold, annotate=annotate, **kwargs)

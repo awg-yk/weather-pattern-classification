@@ -7,13 +7,16 @@ r"""手元だけで作業できる状態かを点検する。
 
 置き場所の決まり(すべてこのフォルダの中):
 
-    data/raw/jma_add/png/       2023年以降の生の天気図(PDFから変換したPNG)
-    data/raw/ndl_png/           2000〜2022年の生の天気図
-    data/processed/jma/         2023年以降の前処理後
-    data/processed/ndl/         2000〜2022年の前処理後
-    data/labels_v2.csv          2023年以降のラベル(2432件)
-    data/templates/             H/L のテンプレートと reference.json
+    data/raw/new_png/           生の天気図(2000〜2025年)
+    data/processed/all/         前処理後。**時代で分けない**
+    data/processed/all_annot/   検出結果を描き込んだもの(学習用)
+    data/labels_v2.csv          ラベル
+    data/templates/             H/L のテンプレート
     weights/                    学習済みの重みと校正ファイル
+
+前処理がすべての天気図を 1453x1500 に揃えるので、取得元や時代で
+フォルダを分ける必要はない。詳しくは
+docs/2026-09-02-rebuild-and-final-numbers.md を参照。
 
 data/raw/ と data/processed/ はGitの追跡対象外なので、容量の心配はない。
 """
@@ -26,13 +29,12 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-RAW_JMA = _ROOT / "data" / "raw" / "jma_add" / "png"
-RAW_NDL = _ROOT / "data" / "raw" / "ndl_png"
-# 2000〜2025年を取り直したもの。ここが本命になる
-RAW_NEW = _ROOT / "data" / "raw" / "new_png"
-PROC_NEW = _ROOT / "data" / "processed" / "new"
-PROC_JMA = _ROOT / "data" / "processed" / "jma"
-PROC_NDL = _ROOT / "data" / "processed" / "ndl"
+RAW = _ROOT / "data" / "raw" / "new_png"
+PROC = _ROOT / "data" / "processed" / "all"
+PROC_ANNOT = _ROOT / "data" / "processed" / "all_annot"
+
+# 学習と評価に使う年。2026年は区切りが悪いので入れない
+YEARS = (2023, 2024, 2025)
 
 
 def count_images(directory: Path) -> int:
@@ -99,9 +101,6 @@ def main():
     print("\n== 検出のテンプレート ==")
     n = check_images(_ROOT / "data" / "templates", "H/L のテンプレート")
     problems += n == 0
-    problems += not check_file(
-        _ROOT / "data" / "templates" / "reference.json", "基準の幅",
-        "python -m scripts.set_template_reference --image data\\raw\\jma_add\\png\\<2023年の1枚>")
 
     print("\n== ラベル ==")
     labels = Path(args.labels)
@@ -113,35 +112,34 @@ def main():
         problems += 1
 
     print("\n== 天気図 ==")
-    raw_jma = check_images(RAW_JMA, "2023年以降(生)")
-    check_images(RAW_NDL, "2000〜2022年(生)")
-    proc_jma = check_images(
-        PROC_JMA, "2023年以降(前処理後)",
-        f"python -m scripts.preprocess_jma --in-dir {RAW_JMA.relative_to(_ROOT)} "
-        f"--out-dir {PROC_JMA.relative_to(_ROOT)}")
-    check_images(RAW_NEW, "2000〜2025年 取り直し(生)")
+    check_images(RAW, "生(2000〜2025年)")
+    proc = check_images(
+        PROC, "前処理後",
+        f"python -m scripts.preprocess_jma --in-dir {RAW.relative_to(_ROOT)} "
+        f"--out-dir {PROC.relative_to(_ROOT)}")
+    years = " ".join(str(y) for y in YEARS)
     check_images(
-        PROC_NEW, "2000〜2025年 取り直し(前処理後)",
-        f"python -m scripts.preprocess_jma --in-dir {RAW_NEW.relative_to(_ROOT)} "
-        f"--out-dir {PROC_NEW.relative_to(_ROOT)}")
-    check_images(
-        PROC_NDL, "2000〜2022年(前処理後)",
-        f"python -m scripts.preprocess_jma --in-dir {RAW_NDL.relative_to(_ROOT)} "
-        f"--out-dir {PROC_NDL.relative_to(_ROOT)}")
+        PROC_ANNOT, "描き込み後(学習用)",
+        f"python -m scripts.annotate_charts --in-dir {PROC.relative_to(_ROOT)} "
+        f"--out-dir {PROC_ANNOT.relative_to(_ROOT)} --years {years} --no-fronts")
 
-    if raw_jma and not proc_jma:
-        problems += 1
-    if not raw_jma and not proc_jma:
-        print("       ★2023年以降の天気図がありません。学習も評価もできません")
+    if not proc:
+        print("       ★前処理後の天気図がありません。分類も学習もできません")
         problems += 1
 
-    # ラベルの行が、前処理後のフォルダで実際に開けるか
-    if labels.exists() and proc_jma:
+    # ラベルの行が、前処理後のフォルダで実際に開けるか。
+    # ファイル名の表記が取得元で違う(Js_2023010100.png と
+    # Js_2023010100_page001.png)ので、名前ではなく10桁の日時で照合する
+    if labels.exists() and proc:
         import pandas as pd
-        names = {p.name for p in PROC_JMA.iterdir()}
+
+        from src.split import DATE_IN_FILENAME, index_images_by_stamp
+
+        index = index_images_by_stamp(PROC)
         df = pd.read_csv(labels)
-        found = sum(1 for n in df["filename"] if n in names)
-        print(f"\n  ラベル{len(df)}件のうち、{PROC_JMA.relative_to(_ROOT)} で "
+        stamps = (DATE_IN_FILENAME.search(str(n)) for n in df["filename"])
+        found = sum(1 for m in stamps if m and m.group(0) in index)
+        print(f"\n  ラベル{len(df)}件のうち、{PROC.relative_to(_ROOT)} で "
               f"見つかるのは {found}件")
         if found < len(df):
             print("       ★足りない分は学習に使えません。変換し直すか、"
