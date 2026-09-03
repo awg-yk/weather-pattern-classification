@@ -79,17 +79,50 @@ def per_label(summary: dict) -> dict:
     return table
 
 
+def top1_baselines(summary: dict) -> dict:
+    """1位正解率を読むための下敷き。
+
+    **83%が良いのかどうかは、何もしない場合と比べないと分からない。**
+    このデータは1枚に複数のラベルが付くので、1位が正解の1つに当たれば
+    「当たり」と数える。当たりやすさは1枚あたりのラベル数で決まる。
+    """
+    per_chart, chance, majority = [], [], []
+    for fold in summary["folds"]:
+        n = fold.get("n_eval")
+        if not n:
+            continue
+        supports = [fold["per_label"][label]["support"] for label in LABELS]
+        total = sum(supports)
+        per_chart.append(total / n)
+        # でたらめに1つ選んだとき、それが正解に含まれている確率
+        chance.append(total / n / len(LABELS))
+        # 一番多いラベルを毎回答えたときに当たる割合
+        majority.append(max(supports) / n)
+    if not per_chart:
+        return {}
+    return {"per_chart": mean_sd(per_chart), "chance": mean_sd(chance),
+            "majority": mean_sd(majority)}
+
+
 def print_overall(summary: dict, name: str) -> None:
     got = overall(summary)
     years = "・".join(str(y) for y in got["_folds"])
     total = sum(n for n in got["_n_eval"] if n)
     print(f"\n{'=' * 64}\n{name}\n{'=' * 64}")
-    print(f"  {len(got['_folds'])}fold(テスト年 {years})、評価した天気図 {total}枚\n")
+    # 古いまとめには枚数が入っていない。0枚と言うより、黙っている方がよい
+    counted = f"、評価した天気図 {total}枚" if total else ""
+    print(f"  {len(got['_folds'])}fold(テスト年 {years}){counted}\n")
 
+    base = top1_baselines(summary)
     if "top1_accuracy" in got:
         mean, sd = got["top1_accuracy"]
         print(f"  1位正解率        {mean * 100:5.1f}% ± {sd * 100:.1f}"
               f"   ← 「何%当たるか」に一番近い数字")
+        if base:
+            print(f"      1枚に付く正解ラベルは平均 {base['per_chart'][0]:.2f}個。"
+                  "1位がそのどれかに当たれば正解と数える")
+            print(f"      でたらめに1つ選んだ場合   {base['chance'][0] * 100:5.1f}%")
+            print(f"      一番多いラベルを毎回答えた場合 {base['majority'][0] * 100:5.1f}%")
     for key, label, note in (
         ("macro_f1_evaluable", "macro F1", "10ラベルを均等に平均。出現の少ないラベルも1票"),
         ("micro_f1", "micro F1", "全ての判定をまとめて数えたF1。多いラベルの影響が大きい"),

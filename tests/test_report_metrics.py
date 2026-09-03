@@ -121,3 +121,45 @@ def test_it_still_runs_on_older_summaries(tmp_path, missing):
     done = _run("--run", str(run_dir))
     assert done.returncode == 0, done.stdout + done.stderr
     assert "macro F1" in done.stdout
+
+
+def test_accuracy_comes_with_something_to_compare_it_against(tmp_path):
+    """**83%が良いのかどうかは、何もしない場合と比べないと分からない。**
+    1枚に複数のラベルが付くので、当たりやすさはラベル数で決まる。"""
+    done = _run("--run", str(_summary(tmp_path / "annot")))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "でたらめに1つ選んだ場合" in done.stdout
+    assert "一番多いラベルを毎回答えた場合" in done.stdout
+    assert "1枚に付く正解ラベルは平均" in done.stdout
+
+
+def test_the_baselines_match_the_supports(tmp_path):
+    """件数から手で計算した値と合うこと。"""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT))
+    from scripts.report_metrics import load_summary, top1_baselines
+
+    run_dir = _summary(tmp_path / "annot")
+    summary = load_summary(run_dir)
+    got = top1_baselines(summary)
+
+    # _summary は support を 10, 11, ... 19 で作る(合計145)、n_eval は723
+    total, n = sum(range(10, 10 + len(LABELS))), 723
+    assert got["per_chart"][0] == pytest.approx(total / n)
+    assert got["chance"][0] == pytest.approx(total / n / len(LABELS))
+    assert got["majority"][0] == pytest.approx(max(range(10, 10 + len(LABELS))) / n)
+
+
+def test_baselines_are_skipped_when_the_count_is_missing(tmp_path):
+    """n_eval の無い古いまとめでも落ちない。"""
+    run_dir = _summary(tmp_path / "old")
+    path = run_dir / "summary.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for fold in data["folds"]:
+        fold.pop("n_eval")
+    path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    done = _run("--run", str(run_dir))
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "1位正解率" in done.stdout
+    assert "でたらめに1つ選んだ場合" not in done.stdout
