@@ -298,6 +298,7 @@ def show_site(date, hour: int = 0, site="komatsu", *, radius=None, grid=False,
 
 
 def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: float = 1.0,
+                   mode: str = "proximity", scale=None,
                    radius=None, annotate: bool = True, top_k: int = 3,
                    images_dir=PROCESSED_DIR, sites_path=None,
                    weights=DEFAULT_WEIGHTS, annot_weights=ANNOT_WEIGHTS,
@@ -312,10 +313,23 @@ def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: flo
     を示す。**そのラベルの根拠が地点の近くに無いなら、その地点の現象の説明
     としては弱い。**そこで
 
-        新しい点数 = 確信度 × (円の中に入った熱の割合 ** attention_weight)
+        新しい点数 = 確信度 × (近さで重み付けした熱の割合 ** attention_weight)
 
     で並べ替える。`attention_weight=0` なら元の順位のまま、`1` で全面的に
-    熱の割合を効かせる。
+    効かせる。
+
+    mode
+    ----
+    "proximity"(既定) 地点からの距離で滑らかに重み付けする。
+                      w = exp(-(距離 / scale) ** 2)、scale の既定は半径。
+    "circle"          円の中だけを1、外を0にする(以前の方法)。
+
+    **既定を距離にしてある。**円は境界のすぐ外を全部捨てる。小松のおろし風
+    167日では、半径0.12の円に高低気圧が1つも入らない日が85.6%あり、その
+    大半は「円が天気図の4.5%しかないから」で説明がついてしまった。
+    距離0.13(円のすぐ外)の熱は、円では0.000、距離の重みでは0.300になる。
+    両者の目盛りは揃えてあるので(src/sites.proximity_weight を参照)、
+    集中度(lift)は同じ意味で読み比べられる。
 
     **注意: これは冬型のような広域の配置で決まるラベルを不利にする。**
     冬型の根拠は日本全体に広がる等圧線なので、円の中の割合は小さくなる。
@@ -331,7 +345,8 @@ def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: flo
                                         autocrop_to_content, fit_to_canonical,
                                         mask_stamp_box)
     from src.labels import LABELS, LABEL_JA
-    from src.sites import attention_lift, attention_mass, draw_site, get_site
+    from src.sites import (attention_lift, attention_mass, attention_proximity,
+                           draw_site, get_site, proximity_lift)
     from src.train import get_transforms
 
     found_site = get_site(site, sites_path) if isinstance(site, str) else site
@@ -368,14 +383,21 @@ def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: flo
     tensor = transform(image).unsqueeze(0).to(device)
     probs = _probabilities(model, tensor, str(used_weights))
 
+    if mode not in ("proximity", "circle"):
+        raise ValueError(f"mode は 'proximity' か 'circle' です: {mode!r}")
+
     rows = []
     for index, label in enumerate(LABELS):
         cam = gradcam.generate(tensor, index)
-        mass = attention_mass(cam, found_site)
+        if mode == "proximity":
+            mass = attention_proximity(cam, found_site, scale)
+            lift = proximity_lift(cam, found_site, scale)
+        else:
+            mass = attention_mass(cam, found_site)
+            lift = attention_lift(cam, found_site)
         prob = float(probs[index])
         rows.append({
-            "label": label, "prob": prob, "mass": mass,
-            "lift": attention_lift(cam, found_site),
+            "label": label, "prob": prob, "mass": mass, "lift": lift,
             "score": prob * (mass ** attention_weight),
             "cam": cam,
         })
@@ -398,14 +420,18 @@ def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: flo
             ax.imshow(draw_site(overlay, found_site))
             ax.set_title(f"{LABEL_JA[row['label']]}\n"
                          f"確信度 {row['prob'] * 100:.1f}% / "
-                         f"円の中 {row['mass'] * 100:.0f}%")
+                         f"集中度 {row['lift']:.2f}")
             ax.axis("off")
         plt.tight_layout()
         plt.show()
 
+    used_scale = found_site.radius if scale is None else scale
+    how = (f"地点からの近さ(exp(-(距離/{used_scale})^2))で重み付け"
+           if mode == "proximity" else f"円(半径 {found_site.radius})の中だけ")
     print(f"天気図: {path.name}   重み: {'注釈付き' if annotate else '素'}")
-    print(f"点数 = 確信度 × (円の中の熱の割合 ** {attention_weight})\n")
-    print(f"  {'順位':<4}{'ラベル':<24}{'確信度':>8}{'円の中':>8}"
+    print(f"熱の測り方: {how}")
+    print(f"点数 = 確信度 × (熱の割合 ** {attention_weight})\n")
+    print(f"  {'順位':<4}{'ラベル':<24}{'確信度':>8}{'熱の割合':>9}"
           f"{'集中度':>8}{'点数':>9}  元の順位")
     print("  " + "-" * 70)
     for new_rank, row in enumerate(after, start=1):
@@ -425,7 +451,9 @@ def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: flo
         print(f"1位は変わりません: {LABEL_JA[top_after]}")
     else:
         print(f"1位が入れ替わりました: {LABEL_JA[top_before]} -> {LABEL_JA[top_after]}")
+    print("  ※集中度(lift)は、1なら画像全体を一様に見ているのと同じ、"
+          "1より大きいほど地点の近くに集中している。")
     print("  ※冬型・前線のように広域の配置で決まるラベルは、根拠が日本全体に"
-          "広がるため円の中の割合が小さくなり、不利に働きます。")
+          "広がるため不利に働きます。")
 
     return [(r["label"], r["prob"], r["mass"], r["score"]) for r in after]

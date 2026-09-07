@@ -68,6 +68,9 @@ def _detect_one(job) -> dict:
         "全体の低気圧": found["n_low_all"],
         "最も近い系": nearest["kind"] if nearest else "",
         "最も近い距離": round(nearest["distance"], 4) if nearest else "",
+        # **円は境界のすぐ外を捨てる。**距離で滑らかに重み付けした点数も出す。
+        # 円の中の個数は0の日ばかりになって差が付かない(167日で85.6%が0)
+        "近さの点数": round(found["nearness"], 4),
     }
 
 
@@ -224,6 +227,16 @@ def _finish(result, site, args):
           f"(全体 {result['全体の高気圧'].mean():.2f}個)")
     print(f"  周辺の低気圧 平均     {result['周辺の低気圧'].mean():>5.2f}個"
           f"(全体 {result['全体の低気圧'].mean():.2f}個)")
+
+    if "近さの点数" in result.columns:
+        # 円の内外(0か1か)ではなく、距離で滑らかに測ったもの。
+        # 円だと0の日ばかりになって差が付かないので、こちらで順位を付ける
+        score = result["近さの点数"]
+        print("\n  近さの点数(距離で重み付け。円の内外では差が付かないため)")
+        print(f"    平均 {score.mean():.3f}   中央値 {score.median():.3f}   "
+              f"最大 {score.max():.3f}")
+        print(f"    点数が0.01未満の日 {int((score < 0.01).sum()):>5}日 "
+              f"({(score < 0.01).mean() * 100:.1f}%)")
     print("\n  ※**周辺に系が無い=誤り、ではない。**冬型は西の高気圧と東の低気圧の"
           "\n    配置で決まるので、地点の近くにあるのは混んだ等圧線であって中心では"
           "\n    ない。前線通過・停滞前線も、前線は中心ではないので0になる。"
@@ -236,14 +249,25 @@ def _finish(result, site, args):
         # 冬型や前線なら当たり前、日本海低気圧なら怪しい、と読み分けられる
         labelled = result[result[args.label_column].notna()]
         if len(labelled):
+            has_score = "近さの点数" in labelled.columns
             print(f"\n  ラベル別の内訳({args.label_column})")
-            print(f"  {'ラベル':<24}{'日数':>6}{'周辺に系なし':>14}")
-            print("  " + "-" * 46)
+            header = f"  {'ラベル':<24}{'日数':>6}{'周辺に系なし':>14}"
+            if has_score:
+                header += f"{'近さの点数(平均)':>18}"
+            print(header)
+            print("  " + "-" * (46 + (18 if has_score else 0)))
             grouped = labelled.groupby(args.label_column, sort=False)
-            for name, rows in grouped:
+            for name, rows in sorted(grouped, key=lambda kv: -len(kv[1])):
                 none_near = int(((rows["周辺の高気圧"] + rows["周辺の低気圧"]) == 0).sum())
-                print(f"  {str(name):<24}{len(rows):>6}{none_near:>10}"
-                      f"({none_near / len(rows) * 100:>3.0f}%)")
+                line = (f"  {str(name):<24}{len(rows):>6}{none_near:>10}"
+                        f"({none_near / len(rows) * 100:>3.0f}%)")
+                if has_score:
+                    line += f"{rows['近さの点数'].mean():>16.3f}"
+                print(line)
+            if has_score:
+                print("\n  ※近さの点数が大きいほど、地点の近くに系があった。"
+                      "\n    日本海低気圧のように『近くの系』が定義のラベルで低いなら、"
+                      "\n    モデルの言いすぎか、検出漏れを疑う。")
 
     if args.out:
         out_path = Path(args.out)

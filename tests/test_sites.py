@@ -228,3 +228,70 @@ def test_mass_and_lift_rank_labels_the_same_way():
     by_mass = sorted(range(len(cams)), key=lambda i: -attention_mass(cams[i], site))
     by_lift = sorted(range(len(cams)), key=lambda i: -attention_lift(cams[i], site))
     assert by_mass == by_lift
+
+
+# ---- 円ではなく距離で重み付けする ----
+
+def test_the_distance_weight_has_the_same_scale_as_the_circle():
+    """**目盛りを円と揃えてある。**ガウスを平面で積分すると pi*scale^2 に
+    なり、半径 scale の円の面積と一致する。だから lift を同じ意味で
+    読み比べられる。ここがずれると2つの方法を並べた比較が嘘になる。"""
+    site = Site(name="s", x=0.5, y=0.5, radius=0.12)
+    assert site.weight_map(224, 224).mean() == pytest.approx(site.area, rel=0.01)
+
+
+def test_a_uniform_heatmap_has_proximity_lift_one():
+    import numpy as np
+
+    from src.sites import proximity_lift
+
+    site = Site(name="s", x=0.5, y=0.5, radius=0.12)
+    cam = np.ones((7, 7), dtype="float32")
+    assert proximity_lift(cam, site) == pytest.approx(1.0, abs=0.05)
+
+
+def test_the_weight_falls_off_smoothly_instead_of_at_a_cliff():
+    """**円は境界のすぐ外を全部捨てる。**それが 167日の85.6%が0になった
+    原因だった。距離の重みは崖を作らない。"""
+    import numpy as np
+
+    from src.sites import attention_mass, attention_proximity
+
+    site = Site(name="s", x=0.5, y=0.5, radius=0.12)
+
+    def spot_at(offset):
+        cam = np.zeros((224, 224), dtype="float32")
+        cam[min(int((0.5 + offset) * 224), 223), 112] = 1.0
+        return cam
+
+    just_outside = spot_at(0.13)
+    assert attention_mass(just_outside, site) == 0.0, "円は捨てるはず"
+    assert attention_proximity(just_outside, site) > 0.2, "距離なら拾うはず"
+
+    # 遠いものは、距離で測っても小さくなる
+    assert attention_proximity(spot_at(0.40), site) < 0.01
+
+
+def test_the_weight_decreases_with_distance():
+    from src.sites import proximity_weight
+
+    scale = 0.12
+    values = [float(proximity_weight(d, scale)) for d in (0.0, 0.06, 0.12, 0.24)]
+    assert values == sorted(values, reverse=True), "遠いほど小さくなっていない"
+    assert values[0] == pytest.approx(1.0)
+    assert values[2] == pytest.approx(0.368, abs=0.01), "scale で約0.37になる決まり"
+
+
+def test_the_summary_carries_a_nearness_score():
+    """円の中の個数は0の日ばかりで差が付かない。距離で測った点数も出す。"""
+    site = Site(name="s", x=0.5, y=0.5, radius=0.12)
+    on_site = FakeDetections(lows=[(0.5, 0.5)])
+    just_outside = FakeDetections(lows=[(0.5, 0.63)])
+    far = FakeDetections(lows=[(0.1, 0.1)])
+
+    assert summarize(on_site, site)["nearness"] == pytest.approx(1.0, abs=0.01)
+    # 円の外でも0にはならない(ここが円との違い)
+    outside = summarize(just_outside, site)
+    assert outside["n_low"] == 0
+    assert outside["nearness"] > 0.1
+    assert summarize(far, site)["nearness"] < 0.01

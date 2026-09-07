@@ -101,6 +101,20 @@ class Site:
                 .reshape(height, supersample, width, supersample)
                 .mean(axis=(1, 3)))
 
+    def distance_map(self, height: int, width: int) -> np.ndarray:
+        """各画素の中心から地点までの距離(相対座標)。"""
+        ys = (np.arange(height) + 0.5) / height
+        xs = (np.arange(width) + 0.5) / width
+        return np.hypot(xs[None, :] - self.x, ys[:, None] - self.y)
+
+    def weight_map(self, height: int, width: int, scale: float = None) -> np.ndarray:
+        """地点に近いほど大きい重み(0〜1)。既定の scale は半径。
+
+        円のマスク(mask)と違い、境界で切らずに滑らかに落ちる。
+        """
+        scale = self.radius if scale is None else scale
+        return proximity_weight(self.distance_map(height, width), scale)
+
     def pixel_circle(self, width: int, height: int) -> tuple:
         """(left, top, right, bottom) を画素で返す。描画用。
 
@@ -175,16 +189,77 @@ def summarize(detections, site: Site) -> dict:
             if nearest is None or distance < nearest["distance"]:
                 nearest = {"kind": kind, "x": point[0], "y": point[1],
                            "distance": distance}
+    # 円の内外だけでなく、**距離で滑らかに重み付けした点数**も出す。
+    # 円は境界のすぐ外にある系を捨ててしまい、0の日ばかりになる
+    scale = site.radius
+    nearness = sum(
+        float(proximity_weight(site.distance(p[0], p[1]), scale))
+        for p in list(detections.highs) + list(detections.lows)
+    )
     return {
         "site": site.name,
         "n_high": len(highs),
         "n_low": len(lows),
+        "nearness": nearness,
         "highs": highs,
         "lows": lows,
         "nearest": nearest,
         "n_high_all": len(detections.highs),
         "n_low_all": len(detections.lows),
     }
+
+
+def proximity_weight(distance, scale: float):
+    """地点からの距離を 0〜1 の重みに直す(ガウス)。
+
+        w = exp(-(distance / scale) ** 2)
+
+    `scale` のところで重みが約0.37、その倍の距離で約0.018になる。
+
+    **円で「中か外か」を切るのをやめるための関数。**円は境界のすぐ外にある
+    ものを全部捨てる。小松のおろし風167日では、半径0.12の円に高低気圧が
+    1つも入らない日が85.6%あり、そのうち大半は「円が天気図の4.5%しか
+    ないから」で説明がついてしまった。距離で滑らかに落とせば崖が無くなる。
+
+    **面積の目盛りは円と揃っている。**この重みを平面全体で積分すると
+    pi * scale^2 になり、半径 scale の円の面積と一致する。だから
+    scale=半径 とすれば、下の lift は円のときと同じ意味で読める。
+    """
+    return np.exp(-(np.asarray(distance, dtype="float64") / scale) ** 2)
+
+
+def attention_proximity(cam, site: Site, scale: float = None,
+                        size: int = None) -> float:
+    """Grad-CAMの熱を、地点からの近さで重み付けして合計した割合。
+
+    `attention_mass` の円を、距離で滑らかに落ちる重みに置き換えたもの。
+    熱が全く無いCAMでは割合が決まらないので0.0を返す。
+    """
+    from src.regions import CAM_GRID, resize_cam
+
+    size = CAM_GRID if size is None else size
+    scale = site.radius if scale is None else scale
+    grid = resize_cam(cam, size)
+    total = float(grid.sum())
+    if total <= 0:
+        return 0.0
+    return float((grid * site.weight_map(size, size, scale)).sum() / total)
+
+
+def proximity_lift(cam, site: Site, scale: float = None, size: int = None) -> float:
+    """近さで重み付けした割合 / 一様に見たときの期待値。
+
+    1なら画像全体を一様に見ているのと同じ、1より大きいほど地点の近くに
+    集中している。**円のときの lift と同じ意味**で読める(上の注記を参照)。
+    """
+    from src.regions import CAM_GRID
+
+    size = CAM_GRID if size is None else size
+    scale = site.radius if scale is None else scale
+    uniform = float(site.weight_map(size, size, scale).mean())
+    if uniform <= 0:
+        return 0.0
+    return attention_proximity(cam, site, scale, size) / uniform
 
 
 def attention_mass(cam, site: Site, size: int = None) -> float:
