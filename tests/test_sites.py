@@ -108,12 +108,24 @@ def test_an_unknown_site_lists_the_ones_that_exist(tmp_path):
     assert "komatsu" in str(caught.value)
 
 
-def test_the_bundled_position_is_marked_as_provisional():
-    """**位置は緯度経度から変換できない**(天気図は正距円筒図法ではない)。
-    目視で確かめる前の値だと分かるようにしておく。"""
+def test_the_bundled_position_records_how_it_was_decided():
+    """**位置は緯度経度から変換してはいけない。**天気図は正距円筒図法ではなく、
+    経緯線の目盛りから作った線形の式は図の中央でずれる(実際に東京が本州北部に、
+    ソウルが満州に載った)。天気図に重ねて目で決めたことを控えに残しておく。
+    これが残っていないと、後から「緯度経度から計算し直そう」と戻されかねない。
+    """
     note = get_site("komatsu").note
-    assert "暫定" in note and "site_preview" in note, (
-        f"暫定値であることが書かれていない: {note!r}")
+    assert "目で決めた" in note, f"決め方が書かれていない: {note!r}"
+    assert "変換していない" in note, f"緯度経度から変換していないと明記が無い: {note!r}"
+
+
+def test_the_bundled_position_is_on_the_japan_sea_side_of_honshu():
+    """小松は本州の日本海側。**利用者の目視で決めた値がうっかり書き換わって
+    いないか**を、大まかな範囲で見張る。厳密な位置は目視でしか決められないので、
+    ここでは明らかにおかしい値(海の外・大陸・太平洋の真ん中)だけを弾く。"""
+    site = get_site("komatsu")
+    assert 0.45 <= site.x <= 0.62, f"東西の位置が日本付近から外れている: x={site.x}"
+    assert 0.45 <= site.y <= 0.65, f"南北の位置が日本付近から外れている: y={site.y}"
 
 
 def test_the_drawing_does_not_change_the_original():
