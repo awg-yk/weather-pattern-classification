@@ -44,6 +44,36 @@ def _mark(draw, point, size, color, width=3):
     draw.line([x - arm, y + arm, x + arm, y - arm], fill=color, width=width)
 
 
+def _draw_grid(image, step: float):
+    """相対座標の目盛りを重ねる。
+
+    **緯度経度からは変換しない。**この天気図は正距円筒図法ではないので、
+    経緯線の目盛りから作った線形の式は図の中央でずれる(実際に東京を置いたら
+    本州北部に載った)。地点を置くときは、この目盛りを見て地図の上で直接
+    読み取り、data/sites.csv に書き写す。
+    """
+    canvas = image.convert("RGB").copy()
+    draw = ImageDraw.Draw(canvas)
+    width, height = canvas.size
+    faint = (150, 150, 150)
+    strong = (90, 90, 90)
+
+    value = 0.0
+    while value <= 1.0001:
+        # 0.1刻みは濃く、その間は薄く。数えやすくするため
+        major = abs(round(value / 0.1) * 0.1 - value) < 1e-9
+        color = strong if major else faint
+        x = int(round(value * width))
+        y = int(round(value * height))
+        draw.line([x, 0, x, height], fill=color, width=2 if major else 1)
+        draw.line([0, y, width, y], fill=color, width=2 if major else 1)
+        if major:
+            draw.text((x + 4, 6), f"x={value:.1f}", fill=strong)
+            draw.text((6, y + 4), f"y={value:.1f}", fill=strong)
+        value += step
+    return canvas
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--site", required=True, help="data/sites.csv の地点名")
@@ -55,6 +85,11 @@ def main():
                         help="半径を一時的に変えて試す(CSVは書き換えない)")
     parser.add_argument("--detect", action="store_true",
                         help="高気圧・低気圧も検出して描く。円の内側は色付き、外側は灰色")
+    parser.add_argument("--grid", action="store_true",
+                        help="相対座標の目盛りを重ねる。地点の位置を読み取って"
+                             "data/sites.csv に書き写すために使う")
+    parser.add_argument("--grid-step", type=float, default=0.05,
+                        help="目盛りの間隔(相対座標)")
     parser.add_argument("--out", default=None, help="既定は reports/site_<地点>.png")
     args = parser.parse_args()
 
@@ -112,12 +147,18 @@ def main():
         else:
             print("      周辺には1つも検出されていません")
 
+    if args.grid:
+        image = _draw_grid(image, args.grid_step)
+
     image = draw_site(image, site, text=site.name)
 
     out = Path(args.out) if args.out else _ROOT / "reports" / f"site_{site.name}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     image.save(out)
     print(f"\n書き出しました: {out}")
+    if args.grid:
+        print(f"目盛りは {args.grid_step} 刻み(0.1ごとに濃い線)。"
+              "地点の載っている交点を読んで、その値を data/sites.csv に書きます。")
     print("★円が本当にその地点を囲んでいるか目で確かめてください。")
     print("  ずれていたら data/sites.csv の x, y を直します"
           "(x は左→右、y は上→下、どちらも0〜1)。")
