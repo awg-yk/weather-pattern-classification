@@ -25,53 +25,9 @@ _ROOT = Path(__file__).resolve().parent.parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
-from src.sites import draw_site, get_site
-
-# 描き分けの色。annotate_charts.py と揃えている
-HIGH_COLOR = (0, 160, 0)
-LOW_COLOR = (200, 0, 0)
-FAR_COLOR = (170, 170, 170)
-
-
-def _mark(draw, point, size, color, width=3):
-    """検出した系の中心に印を打つ。"""
-    x = point[0] * size[0]
-    y = point[1] * size[1]
-    arm = 14
-    draw.line([x - arm, y - arm, x + arm, y + arm], fill=color, width=width)
-    draw.line([x - arm, y + arm, x + arm, y - arm], fill=color, width=width)
-
-
-def _draw_grid(image, step: float):
-    """相対座標の目盛りを重ねる。
-
-    **緯度経度からは変換しない。**この天気図は正距円筒図法ではないので、
-    経緯線の目盛りから作った線形の式は図の中央でずれる(実際に東京を置いたら
-    本州北部に載った)。地点を置くときは、この目盛りを見て地図の上で直接
-    読み取り、data/sites.csv に書き写す。
-    """
-    canvas = image.convert("RGB").copy()
-    draw = ImageDraw.Draw(canvas)
-    width, height = canvas.size
-    faint = (150, 150, 150)
-    strong = (90, 90, 90)
-
-    value = 0.0
-    while value <= 1.0001:
-        # 0.1刻みは濃く、その間は薄く。数えやすくするため
-        major = abs(round(value / 0.1) * 0.1 - value) < 1e-9
-        color = strong if major else faint
-        x = int(round(value * width))
-        y = int(round(value * height))
-        draw.line([x, 0, x, height], fill=color, width=2 if major else 1)
-        draw.line([0, y, width, y], fill=color, width=2 if major else 1)
-        if major:
-            draw.text((x + 4, 6), f"x={value:.1f}", fill=strong)
-            draw.text((6, y + 4), f"y={value:.1f}", fill=strong)
-        value += step
-    return canvas
+from src.sites import draw_detections, draw_grid, draw_site, get_site
 
 
 def main():
@@ -132,12 +88,7 @@ def main():
             boxes=False, fronts=False,
         )
         found = summarize(detections, site)
-        draw = ImageDraw.Draw(image)
-        for points, color in ((detections.highs, HIGH_COLOR), (detections.lows, LOW_COLOR)):
-            for point in points:
-                inside = site.contains(point[0], point[1])
-                _mark(draw, point, image.size, color if inside else FAR_COLOR,
-                      width=4 if inside else 2)
+        image = draw_detections(image, detections, site)
         print(f"検出: 全体で 高 {found['n_high_all']}個 / 低 {found['n_low_all']}個")
         print(f"      {site.name} の周辺(半径 {site.radius}) に "
               f"高 {found['n_high']}個 / 低 {found['n_low']}個")
@@ -148,7 +99,7 @@ def main():
             print("      周辺には1つも検出されていません")
 
     if args.grid:
-        image = _draw_grid(image, args.grid_step)
+        image = draw_grid(image, args.grid_step)
 
     image = draw_site(image, site, text=site.name)
 

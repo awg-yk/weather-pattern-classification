@@ -160,6 +160,66 @@ def summarize(detections, site: Site) -> dict:
     }
 
 
+# 検出した系の印の色。annotate_charts.py と揃えている
+HIGH_COLOR = (0, 160, 0)
+LOW_COLOR = (200, 0, 0)
+FAR_COLOR = (170, 170, 170)
+
+
+def draw_detections(image: Image.Image, detections, site: Site, *,
+                    arm: int = 14) -> Image.Image:
+    """検出した高気圧・低気圧に印を打つ。円の内側は色付き、外側は灰色。
+
+    **描き方はここ1か所に置く。**同じ絵をノートブックとコマンドの両方で描くので、
+    書き写すと片方だけ直して食い違う(この計画では実際にその失敗をしている)。
+    """
+    from PIL import ImageDraw
+
+    canvas = image.convert("RGB").copy()
+    draw = ImageDraw.Draw(canvas)
+    width, height = canvas.size
+    for points, color in ((detections.highs, HIGH_COLOR), (detections.lows, LOW_COLOR)):
+        for point in points:
+            inside = site.contains(point[0], point[1])
+            x = point[0] * width
+            y = point[1] * height
+            line_width = 4 if inside else 2
+            shown = color if inside else FAR_COLOR
+            draw.line([x - arm, y - arm, x + arm, y + arm], fill=shown, width=line_width)
+            draw.line([x - arm, y + arm, x + arm, y - arm], fill=shown, width=line_width)
+    return canvas
+
+
+def draw_grid(image: Image.Image, step: float = 0.05) -> Image.Image:
+    """相対座標の目盛りを重ねる。地点の位置を読み取って書き写すために使う。
+
+    **緯度経度からは変換しない。**この天気図は正距円筒図法ではないので、
+    経緯線の目盛りから作った線形の式は図の中央でずれる(実際に東京が本州北部に
+    載った)。地点はこの目盛りを見て地図の上で直接読む。
+    """
+    from PIL import ImageDraw
+
+    canvas = image.convert("RGB").copy()
+    draw = ImageDraw.Draw(canvas)
+    width, height = canvas.size
+    faint, strong = (150, 150, 150), (90, 90, 90)
+
+    value = 0.0
+    while value <= 1.0001:
+        # 0.1刻みは濃く、その間は薄く。数えやすくするため
+        major = abs(round(value / 0.1) * 0.1 - value) < 1e-9
+        color = strong if major else faint
+        x = int(round(value * width))
+        y = int(round(value * height))
+        draw.line([x, 0, x, height], fill=color, width=2 if major else 1)
+        draw.line([0, y, width, y], fill=color, width=2 if major else 1)
+        if major:
+            draw.text((x + 4, 6), f"x={value:.1f}", fill=strong)
+            draw.text((6, y + 4), f"y={value:.1f}", fill=strong)
+        value += step
+    return canvas
+
+
 def draw_site(image: Image.Image, site: Site, color=(0, 140, 255), width: int = 4,
               text: str = None, font=None) -> Image.Image:
     """天気図に地点の円を描いて返す(元の画像は変更しない)。"""

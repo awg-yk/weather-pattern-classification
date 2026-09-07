@@ -211,3 +211,81 @@ def classify_date(date, hour: int = 0, threshold=None, annotate: bool = True,
     path = chart_for(date, hour, images_dir)
     print(f"天気図: {path.name}  ({date} {hour:02d}Z)")
     return classify_and_show(path, threshold=threshold, annotate=annotate, **kwargs)
+
+
+def detect_on(image, *, templates=TEMPLATES_DIR, marks=MARKS_DIR,
+              letter_size=None, detect_threshold=None):
+    """前処理済みの画像1枚から検出結果だけを取り出す(描き込みはしない)。"""
+    from scripts.annotate_charts import annotate_one
+
+    letter_size = DETECTION["letter_size"] if letter_size is None else letter_size
+    detect_threshold = (DETECTION["detect_threshold"]
+                        if detect_threshold is None else detect_threshold)
+    _marked, detections = annotate_one(
+        np.array(image), str(templates),
+        str(marks) if marks and os.path.exists(marks) else None,
+        letter_size=letter_size, threshold=detect_threshold,
+        boxes=False, fronts=False,
+    )
+    return detections
+
+
+def show_site(date, hour: int = 0, site="komatsu", *, radius=None, grid=False,
+              images_dir=PROCESSED_DIR, sites_path=None, figsize=(9, 9),
+              letter_size=None, detect_threshold=None):
+    """日付と地点を指定して、円と検出結果を描いた天気図をその場に表示する。
+
+    円の内側の系は色付き(高=緑、低=赤)、外側は灰色で描く。
+    `scripts/site_report.py` が数えているものを、そのまま目で確かめるためのもの。
+    描き方は `src/sites.py` の1か所から呼んでいるので、コマンド側とずれない。
+
+    grid=True にすると相対座標の目盛りを重ねる。地点の位置を直すときに使う。
+    """
+    import matplotlib.pyplot as plt
+
+    from scripts.preprocess_jma import (CANONICAL_SIZE, DEFAULT_STAMP_BOX,
+                                        autocrop_to_content, fit_to_canonical,
+                                        mask_stamp_box)
+    from src.sites import (draw_detections, draw_grid, draw_site, get_site,
+                           summarize)
+
+    found_site = get_site(site, sites_path) if isinstance(site, str) else site
+    if radius is not None:
+        found_site = type(found_site)(name=found_site.name, x=found_site.x,
+                                      y=found_site.y, radius=radius,
+                                      note=found_site.note)
+
+    path = chart_for(date, hour, images_dir)
+    image = Image.open(path).convert("RGB")
+    # 前処理済みの画像にもう一度かけても結果は変わらない(実測で画素一致)
+    image = mask_stamp_box(fit_to_canonical(autocrop_to_content(image), CANONICAL_SIZE),
+                           DEFAULT_STAMP_BOX)
+
+    detections = detect_on(image, letter_size=letter_size,
+                           detect_threshold=detect_threshold)
+    found = summarize(detections, found_site)
+
+    if grid:
+        image = draw_grid(image)
+    image = draw_detections(image, detections, found_site)
+    image = draw_site(image, found_site, text=found_site.name)
+
+    plt.figure(figsize=figsize)
+    plt.imshow(image)
+    plt.title(f"{date} {hour:02d}Z  {found_site.name}"
+              f"(半径 {found_site.radius})")
+    plt.axis("off")
+    plt.show()
+
+    print(f"天気図: {path.name}")
+    print(f"全体      : 高気圧 {found['n_high_all']}個 / 低気圧 {found['n_low_all']}個")
+    print(f"{found_site.name} の周辺: 高気圧 {found['n_high']}個 / "
+          f"低気圧 {found['n_low']}個")
+    if found["nearest"]:
+        near = found["nearest"]
+        print(f"最も近い系: {near['kind']}  距離 {near['distance']:.3f}")
+    elif found["n_high_all"] or found["n_low_all"]:
+        print("周辺には1つもありません(モデルは遠くを見て判断した可能性)")
+    else:
+        print("そもそも1つも検出できていません(検出漏れを疑うこと)")
+    return found
