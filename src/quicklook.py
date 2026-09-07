@@ -295,3 +295,137 @@ def show_site(date, hour: int = 0, site="komatsu", *, radius=None, grid=False,
     else:
         print("そもそも1つも検出できていません(検出漏れを疑うこと)")
     return found
+
+
+def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: float = 1.0,
+                   radius=None, annotate: bool = True, top_k: int = 3,
+                   images_dir=PROCESSED_DIR, sites_path=None,
+                   weights=DEFAULT_WEIGHTS, annot_weights=ANNOT_WEIGHTS,
+                   templates=TEMPLATES_DIR, marks=MARKS_DIR,
+                   show: bool = True, figsize=(15, 5)):
+    """Grad-CAMの熱が地点の円にどれだけ入っているかで、ラベルの順位を付け替える。
+
+    考え方
+    ------
+    モデルは日本全体を見て判断するので、その地点に関係のない気圧配置を1位に
+    出すことがある。一方 Grad-CAM は「モデルがどこを見て、そのラベルを出したか」
+    を示す。**そのラベルの根拠が地点の近くに無いなら、その地点の現象の説明
+    としては弱い。**そこで
+
+        新しい点数 = 確信度 × (円の中に入った熱の割合 ** attention_weight)
+
+    で並べ替える。`attention_weight=0` なら元の順位のまま、`1` で全面的に
+    熱の割合を効かせる。
+
+    **注意: これは冬型のような広域の配置で決まるラベルを不利にする。**
+    冬型の根拠は日本全体に広がる等圧線なので、円の中の割合は小さくなる。
+    「その地点の近くにある系で説明したい」という用途に限って使うこと。
+
+    戻り値は [(ラベル, 確信度, 熱の割合, 点数)] を点数の高い順に並べたもの。
+    """
+    import matplotlib.pyplot as plt
+    import torch
+
+    from scripts.gradcam import GradCAM, _load_model, _overlay_heatmap, _probabilities
+    from scripts.preprocess_jma import (CANONICAL_SIZE, DEFAULT_STAMP_BOX,
+                                        autocrop_to_content, fit_to_canonical,
+                                        mask_stamp_box)
+    from src.labels import LABELS, LABEL_JA
+    from src.sites import attention_lift, attention_mass, draw_site, get_site
+    from src.train import get_transforms
+
+    found_site = get_site(site, sites_path) if isinstance(site, str) else site
+    if radius is not None:
+        found_site = type(found_site)(name=found_site.name, x=found_site.x,
+                                      y=found_site.y, radius=radius,
+                                      note=found_site.note)
+
+    path = chart_for(date, hour, images_dir)
+    image = Image.open(path).convert("RGB")
+    image = mask_stamp_box(fit_to_canonical(autocrop_to_content(image), CANONICAL_SIZE),
+                           DEFAULT_STAMP_BOX)
+
+    # **描き込みと重みは必ず組にする。**注釈付き画像で学習した重みに素の
+    # 天気図を渡すと、モデルは見たことのない絵を受け取ることになる
+    used_weights = weights
+    if annotate:
+        ok, missing = annotation_available(annot_weights, templates)
+        if not ok:
+            print("注釈方式は使えません(見つからないもの: "
+                  + ", ".join(os.path.basename(m) for m in missing) + ")。"
+                  "素の天気図の方式で続けます。")
+            annotate = False
+        else:
+            marked_path = make_annotated(path, templates=templates, marks=marks,
+                                         quiet=True)
+            image = Image.open(marked_path).convert("RGB")
+            used_weights = annot_weights
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, meta = _load_model(str(used_weights), device)
+    gradcam = GradCAM(model)
+    transform = get_transforms(train=False, image_size=meta["image_size"])
+    tensor = transform(image).unsqueeze(0).to(device)
+    probs = _probabilities(model, tensor, str(used_weights))
+
+    rows = []
+    for index, label in enumerate(LABELS):
+        cam = gradcam.generate(tensor, index)
+        mass = attention_mass(cam, found_site)
+        prob = float(probs[index])
+        rows.append({
+            "label": label, "prob": prob, "mass": mass,
+            "lift": attention_lift(cam, found_site),
+            "score": prob * (mass ** attention_weight),
+            "cam": cam,
+        })
+
+    before = sorted(rows, key=lambda r: -r["prob"])
+    after = sorted(rows, key=lambda r: -r["score"])
+    rank_before = {r["label"]: i + 1 for i, r in enumerate(before)}
+
+    if show:
+        overlays = [r for r in before[:top_k]]
+        panels = len(overlays) + 1
+        fig, axes = plt.subplots(1, panels, figsize=figsize)
+        axes = list(np.atleast_1d(axes))
+        axes[0].imshow(draw_site(image, found_site, text=found_site.name))
+        axes[0].set_title(f"{date} {hour:02d}Z\n{found_site.name}"
+                          f"(半径 {found_site.radius})")
+        axes[0].axis("off")
+        for ax, row in zip(axes[1:], overlays):
+            overlay = _overlay_heatmap(image, row["cam"])
+            ax.imshow(draw_site(overlay, found_site))
+            ax.set_title(f"{LABEL_JA[row['label']]}\n"
+                         f"確信度 {row['prob'] * 100:.1f}% / "
+                         f"円の中 {row['mass'] * 100:.0f}%")
+            ax.axis("off")
+        plt.tight_layout()
+        plt.show()
+
+    print(f"天気図: {path.name}   重み: {'注釈付き' if annotate else '素'}")
+    print(f"点数 = 確信度 × (円の中の熱の割合 ** {attention_weight})\n")
+    print(f"  {'順位':<4}{'ラベル':<24}{'確信度':>8}{'円の中':>8}"
+          f"{'集中度':>8}{'点数':>9}  元の順位")
+    print("  " + "-" * 70)
+    for new_rank, row in enumerate(after, start=1):
+        moved = rank_before[row["label"]] - new_rank
+        arrow = f"  {rank_before[row['label']]}位"
+        if moved > 0:
+            arrow += f" (+{moved})"
+        elif moved < 0:
+            arrow += f" ({moved})"
+        print(f"  {new_rank:<4}{LABEL_JA[row['label']]:<24}"
+              f"{row['prob'] * 100:>7.1f}%{row['mass'] * 100:>7.0f}%"
+              f"{row['lift']:>8.2f}{row['score']:>9.4f}{arrow}")
+
+    top_before, top_after = before[0]["label"], after[0]["label"]
+    print()
+    if top_before == top_after:
+        print(f"1位は変わりません: {LABEL_JA[top_after]}")
+    else:
+        print(f"1位が入れ替わりました: {LABEL_JA[top_before]} -> {LABEL_JA[top_after]}")
+    print("  ※冬型・前線のように広域の配置で決まるラベルは、根拠が日本全体に"
+          "広がるため円の中の割合が小さくなり、不利に働きます。")
+
+    return [(r["label"], r["prob"], r["mass"], r["score"]) for r in after]

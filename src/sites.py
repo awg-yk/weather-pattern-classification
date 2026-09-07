@@ -33,6 +33,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 from PIL import Image
 
@@ -73,6 +74,32 @@ class Site:
     def contains(self, x: float, y: float) -> bool:
         """その点が地点の周辺(円の中)にあるか。"""
         return self.distance(x, y) <= self.radius
+
+    @property
+    def area(self) -> float:
+        """画像全体に対する円の面積比。注目が一様なときの mass の期待値。
+
+        相対座標のうえでの円なので、面積は pi*r^2。画素の上では縦横比のぶん
+        楕円に見えるが、判定も面積もすべて相対座標で揃えてある。
+        """
+        return math.pi * self.radius ** 2
+
+    def mask(self, height: int, width: int, supersample: int = 4) -> np.ndarray:
+        """円の内側を1、外側を0にした (height, width) の重み。
+
+        境界の画素は、その画素のうち円に入っている割合を持つ。
+        **0/1で切ると、格子の細かさを変えただけで数値が動いてしまう**
+        (src/regions.py の Region.mask と同じ理由)。境界だけを細かく
+        数え直すのは面倒なので、全体を supersample 倍で数えて平均する。
+        """
+        fine_h, fine_w = height * supersample, width * supersample
+        ys = (np.arange(fine_h) + 0.5) / fine_h
+        xs = (np.arange(fine_w) + 0.5) / fine_w
+        inside = ((xs[None, :] - self.x) ** 2
+                  + (ys[:, None] - self.y) ** 2) <= self.radius ** 2
+        return (inside.astype(np.float32)
+                .reshape(height, supersample, width, supersample)
+                .mean(axis=(1, 3)))
 
     def pixel_circle(self, width: int, height: int) -> tuple:
         """(left, top, right, bottom) を画素で返す。描画用。
@@ -158,6 +185,32 @@ def summarize(detections, site: Site) -> dict:
         "n_high_all": len(detections.highs),
         "n_low_all": len(detections.lows),
     }
+
+
+def attention_mass(cam, site: Site, size: int = None) -> float:
+    """Grad-CAMの熱のうち、地点の円の中に入っている割合(0〜1)。
+
+    `src/regions.py` の同名の関数と同じ measure を、矩形ではなく円で行う。
+    熱が全く無いCAMでは割合が決まらないので0.0を返す。
+    """
+    from src.regions import CAM_GRID, resize_cam
+
+    size = CAM_GRID if size is None else size
+    grid = resize_cam(cam, size)
+    total = float(grid.sum())
+    if total <= 0:
+        return 0.0
+    return float((grid * site.mask(size, size)).sum() / total)
+
+
+def attention_lift(cam, site: Site, size: int = None) -> float:
+    """mass / area。1なら一様に見ているのと同じ、1より大きいほど円に集中している。
+
+    **順位を付け替えるだけなら mass と lift は同じ結果になる。**同じ天気図・
+    同じ円ならラベルによらず area は一定なので、割っても順位は変わらない。
+    絶対値を「集中しているか」として読みたいときに lift を使う。
+    """
+    return attention_mass(cam, site, size) / site.area
 
 
 # 検出した系の印の色。annotate_charts.py と揃えている

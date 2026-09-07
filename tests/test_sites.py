@@ -159,3 +159,72 @@ def test_the_report_refuses_an_empty_image_folder(tmp_path):
         cwd=ROOT, capture_output=True, text=True)
     assert done.returncode != 0
     assert "preprocess_jma" in done.stdout + done.stderr
+
+
+# ---- Grad-CAM を円で測る ----
+
+def test_the_circle_mask_has_the_area_of_a_circle():
+    """**0/1で切ると格子の細かさで数値が動く。**境界の画素は入っている割合を
+    持たせる(src/regions.py の Region.mask と同じ理由)。"""
+    import numpy as np
+
+    site = Site(name="s", x=0.5, y=0.5, radius=0.2)
+    mask = site.mask(224, 224)
+    assert mask.sum() / mask.size == pytest.approx(site.area, abs=1e-3)
+    assert np.all((mask >= 0) & (mask <= 1))
+
+
+def test_a_uniform_heatmap_has_lift_one():
+    """一様に見ているなら「その円に集中している」とは言えない。
+    lift の目盛りがここで決まる。"""
+    import numpy as np
+
+    from src.sites import attention_lift, attention_mass
+
+    site = Site(name="s", x=0.5, y=0.5, radius=0.2)
+    cam = np.ones((7, 7), dtype="float32")
+    assert attention_mass(cam, site) == pytest.approx(site.area, abs=0.01)
+    assert attention_lift(cam, site) == pytest.approx(1.0, abs=0.05)
+
+
+def test_heat_on_the_site_counts_and_heat_far_away_does_not():
+    import numpy as np
+
+    from src.sites import attention_mass
+
+    site = Site(name="s", x=0.5, y=0.5, radius=0.2)
+    on_site = np.zeros((7, 7), dtype="float32")
+    on_site[3, 3] = 1.0
+    far = np.zeros((7, 7), dtype="float32")
+    far[0, 0] = 1.0
+    assert attention_mass(on_site, site) > 0.9
+    assert attention_mass(far, site) < 0.05
+
+
+def test_an_empty_heatmap_does_not_divide_by_zero():
+    """熱が無いCAMでは割合が決まらない。落ちずに0を返す。"""
+    import numpy as np
+
+    from src.sites import attention_mass
+
+    site = Site(name="s", x=0.5, y=0.5, radius=0.2)
+    assert attention_mass(np.zeros((7, 7), dtype="float32"), site) == 0.0
+
+
+def test_mass_and_lift_rank_labels_the_same_way():
+    """**順位を付け替えるだけなら mass と lift は同じ結果になる。**
+    同じ円なら area は一定なので、割っても順位は変わらない。
+    片方だけ直して食い違わせないための備忘。"""
+    import numpy as np
+
+    from src.sites import attention_lift, attention_mass
+
+    site = Site(name="s", x=0.4, y=0.6, radius=0.15)
+    cams = []
+    for cy, cx in ((3, 3), (0, 0), (6, 2), (2, 5)):
+        cam = np.zeros((7, 7), dtype="float32")
+        cam[cy, cx] = 1.0
+        cams.append(cam)
+    by_mass = sorted(range(len(cams)), key=lambda i: -attention_mass(cams[i], site))
+    by_lift = sorted(range(len(cams)), key=lambda i: -attention_lift(cams[i], site))
+    assert by_mass == by_lift
