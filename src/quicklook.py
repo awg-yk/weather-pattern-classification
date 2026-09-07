@@ -285,7 +285,13 @@ def show_site(date, hour: int = 0, site="komatsu", *, radius=None, grid=False,
         near = found["nearest"]
         print(f"最も近い系: {near['kind']}  距離 {near['distance']:.3f}")
     elif found["n_high_all"] or found["n_low_all"]:
-        print("周辺には1つもありません(モデルは遠くを見て判断した可能性)")
+        # **「周辺に無い」=「誤り」ではない。**冬型のように広域の配置で決まる
+        # 気圧配置では、地点の近くにあるのは混んだ等圧線であって中心ではない
+        # (中心はシベリアと東海上)。前線通過・停滞前線も、前線は中心ではない
+        # ので周辺は0になる。ラベルと併せて読むこと
+        print("周辺に高気圧・低気圧の中心はありません。")
+        print("  冬型・前線のように広域の配置で決まる気圧配置なら、これで正常です。")
+        print("  日本海低気圧など『近くの系』が定義のラベルなら、要確認です。")
     else:
         print("そもそも1つも検出できていません(検出漏れを疑うこと)")
     return found

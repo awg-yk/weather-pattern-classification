@@ -94,6 +94,8 @@ def main():
                         help="日付で突き合わせるCSV(classify_dates.py の出力など)")
     parser.add_argument("--join-date-column", default=None,
                         help="--join 側の日付の列名。既定は --date-column と同じ")
+    parser.add_argument("--label-column", default="気圧配置",
+                        help="--join 側の判定ラベルの列名。ラベル別の内訳に使う")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--scale", type=float, default=0.7)
     parser.add_argument("--letter-size", type=float, default=DETECTION["letter_size"])
@@ -199,9 +201,26 @@ def main():
           f"(全体 {result['全体の高気圧'].mean():.2f}個)")
     print(f"  周辺の低気圧 平均     {result['周辺の低気圧'].mean():>5.2f}個"
           f"(全体 {result['全体の低気圧'].mean():.2f}個)")
-    print("\n  ※周辺に系が無い日は、モデルが遠方の特徴で判断した可能性が高い。"
-          "\n    ただし、検出漏れの可能性もあるので、"
-          "site_preview.py で数枚は必ず目で確かめること。")
+    print("\n  ※**周辺に系が無い=誤り、ではない。**冬型は西の高気圧と東の低気圧の"
+          "\n    配置で決まるので、地点の近くにあるのは混んだ等圧線であって中心では"
+          "\n    ない。前線通過・停滞前線も、前線は中心ではないので0になる。"
+          "\n    下のラベル別の内訳と併せて読むこと。"
+          "\n    検出漏れの可能性もあるので、数枚は必ず目で確かめること"
+          "(notebooks/predict_local.ipynb の show_site)。")
+
+    if args.join and args.label_column in result.columns:
+        # **ラベルごとに分けて初めて読める。**「周辺に系が無い」が多いラベルが
+        # 冬型や前線なら当たり前、日本海低気圧なら怪しい、と読み分けられる
+        labelled = result[result[args.label_column].notna()]
+        if len(labelled):
+            print(f"\n  ラベル別の内訳({args.label_column})")
+            print(f"  {'ラベル':<24}{'日数':>6}{'周辺に系なし':>14}")
+            print("  " + "-" * 46)
+            grouped = labelled.groupby(args.label_column, sort=False)
+            for name, rows in grouped:
+                none_near = int(((rows["周辺の高気圧"] + rows["周辺の低気圧"]) == 0).sum())
+                print(f"  {str(name):<24}{len(rows):>6}{none_near:>10}"
+                      f"({none_near / len(rows) * 100:>3.0f}%)")
 
     if args.out:
         out_path = Path(args.out)
