@@ -215,7 +215,13 @@ def _run_one(job) -> tuple:
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(marked).save(out_path)
     return (Path(path).name, len(detections.highs), len(detections.lows),
-            len(detections.edge_highs) + len(detections.edge_lows))
+            len(detections.edge_highs) + len(detections.edge_lows),
+            # **座標も返す。**検出はこの処理で一番重い。あとで「位置だけ嘘の枠」を
+            # 描く対照実験をするときに、もう一度検出し直さずに済ませるため
+            {"highs": [[float(x), float(y)] for x, y in detections.highs],
+             "lows": [[float(x), float(y)] for x, y in detections.lows],
+             "edge_highs": [[float(x), float(y)] for x, y in detections.edge_highs],
+             "edge_lows": [[float(x), float(y)] for x, y in detections.edge_lows]})
 
 
 def main():
@@ -226,6 +232,10 @@ def main():
     parser.add_argument("--templates", default="data/templates")
     parser.add_argument("--marks", default=None)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--dump-detections", default=None,
+                        help="検出した座標をJSONに書き出す。検出はこの処理で一番"
+                             "重いので、対照実験(位置だけ嘘の枠)を作るときに"
+                             "検出し直さずに済む。scripts/shuffle_annotations.py が読む")
     parser.add_argument("--years", type=int, nargs="+", default=None,
                         help="この年の天気図だけを処理する。**学習に使うのは"
                              "ラベルのある年だけ**なので、全期間を描き込むのは"
@@ -302,23 +312,42 @@ def main():
                "thickness": args.thickness}
 
     started, done, highs, lows, edges = time(), 0, 0, 0, 0
+    detections_by_name = {}
     with ProcessPoolExecutor(
         max_workers=args.workers, initializer=_init_worker,
         initargs=(args.templates, args.marks, args.scale, args.letter_size,
                   args.mark_scale, args.mark_radius, args.letter_threshold,
                   options),
     ) as pool:
-        for _name, n_high, n_low, n_edge in pool.map(_run_one, jobs, chunksize=4):
+        for _name, n_high, n_low, n_edge, found in pool.map(_run_one, jobs, chunksize=4):
             done += 1
             highs += n_high
             lows += n_low
             edges += n_edge
+            detections_by_name[_name] = found
             if done % 20 == 0 or done == len(todo):
                 rate = (time() - started) / done
                 print(f"  {done}/{len(todo)}  {rate:.1f}秒/枚  "
                       f"残り{rate * (len(todo) - done) / 60:.0f}分", flush=True)
 
     print(f"\n書き出しました: {out_dir.resolve()}")
+
+    if args.dump_detections:
+        import json
+
+        dump_path = Path(args.dump_detections)
+        dump_path.parent.mkdir(parents=True, exist_ok=True)
+        # 途中で止めて再開した場合、今回処理したぶんしか手元に無い。
+        # 前回のぶんと合わせて残す(**上書きで消さない**)
+        existing = {}
+        if dump_path.exists():
+            existing = json.loads(dump_path.read_text(encoding="utf-8"))
+            print(f"  既存の {len(existing)}件に追記します")
+        existing.update(detections_by_name)
+        dump_path.write_text(json.dumps(existing, ensure_ascii=False),
+                             encoding="utf-8")
+        print(f"検出した座標: {dump_path.resolve()}({len(existing)}件)")
+
     per = max(1, done)
     print(f"1枚あたり 高気圧の枠 {highs / per:.2f} / 低気圧の枠 {lows / per:.2f} / "
           f"縁の枠(細線) {edges / per:.2f}")
