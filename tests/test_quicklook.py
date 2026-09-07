@@ -15,7 +15,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 NOTEBOOKS = {"colab": ROOT / "notebooks" / "predict.ipynb",
-             "local": ROOT / "notebooks" / "predict_local.ipynb"}
+             "local": ROOT / "notebooks" / "predict_local.ipynb",
+             "oroshi": ROOT / "notebooks" / "oroshi_komatsu.ipynb"}
 SHARED = ("annotation_available", "classify_and_show")
 
 

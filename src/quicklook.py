@@ -297,6 +297,89 @@ def show_site(date, hour: int = 0, site="komatsu", *, radius=None, grid=False,
     return found
 
 
+def site_scorer(*, annotate: bool = True, weights=DEFAULT_WEIGHTS,
+                annot_weights=ANNOT_WEIGHTS, templates=TEMPLATES_DIR,
+                marks=MARKS_DIR):
+    """モデルとGrad-CAMを1回だけ用意する。
+
+    **167日ぶんを回すときに効く。**1日ごとに重みを読み直すと、その時間だけで
+    大半を使ってしまう。1枚だけ見るときも同じ入り口を通す(書き分けると
+    片方だけ直して食い違う)。
+    """
+    import torch
+
+    from scripts.gradcam import GradCAM, _load_model
+    from src.train import get_transforms
+
+    # **描き込みと重みは必ず組にする。**注釈付き画像で学習した重みに素の
+    # 天気図を渡すと、モデルは見たことのない絵を受け取ることになる
+    used_weights = weights
+    if annotate:
+        ok, missing = annotation_available(annot_weights, templates)
+        if not ok:
+            print("注釈方式は使えません(見つからないもの: "
+                  + ", ".join(os.path.basename(m) for m in missing) + ")。"
+                  "素の天気図の方式で続けます。")
+            annotate = False
+        else:
+            used_weights = annot_weights
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model, meta = _load_model(str(used_weights), device)
+    return {
+        "model": model, "gradcam": GradCAM(model), "device": device,
+        "transform": get_transforms(train=False, image_size=meta["image_size"]),
+        "weights": str(used_weights), "annotate": annotate,
+        "templates": templates, "marks": marks,
+    }
+
+
+def score_chart(path, site, scorer, *, mode: str = "proximity", scale=None,
+                attention_weight: float = 1.0, keep_cam: bool = False):
+    """天気図1枚を採点する。`(使った画像, ラベルごとの行)` を返す。
+
+    行には 確信度(prob)・熱の割合(mass)・集中度(lift)・点数(score) が入る。
+    """
+    from scripts.gradcam import _probabilities
+    from scripts.preprocess_jma import (CANONICAL_SIZE, DEFAULT_STAMP_BOX,
+                                        autocrop_to_content, fit_to_canonical,
+                                        mask_stamp_box)
+    from src.labels import LABELS
+    from src.sites import (attention_lift, attention_mass, attention_proximity,
+                           proximity_lift)
+
+    if mode not in ("proximity", "circle"):
+        raise ValueError(f"mode は 'proximity' か 'circle' です: {mode!r}")
+
+    image = Image.open(path).convert("RGB")
+    image = mask_stamp_box(fit_to_canonical(autocrop_to_content(image), CANONICAL_SIZE),
+                           DEFAULT_STAMP_BOX)
+    if scorer["annotate"]:
+        marked = make_annotated(path, templates=scorer["templates"],
+                                marks=scorer["marks"], quiet=True)
+        image = Image.open(marked).convert("RGB")
+
+    tensor = scorer["transform"](image).unsqueeze(0).to(scorer["device"])
+    probs = _probabilities(scorer["model"], tensor, scorer["weights"])
+
+    rows = []
+    for index, label in enumerate(LABELS):
+        cam = scorer["gradcam"].generate(tensor, index)
+        if mode == "proximity":
+            mass = attention_proximity(cam, site, scale)
+            lift = proximity_lift(cam, site, scale)
+        else:
+            mass = attention_mass(cam, site)
+            lift = attention_lift(cam, site)
+        prob = float(probs[index])
+        row = {"label": label, "prob": prob, "mass": mass, "lift": lift,
+               "score": prob * (mass ** attention_weight)}
+        if keep_cam:
+            row["cam"] = cam
+        rows.append(row)
+    return image, rows
+
+
 def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: float = 1.0,
                    mode: str = "proximity", scale=None,
                    radius=None, annotate: bool = True, top_k: int = 3,
@@ -338,16 +421,10 @@ def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: flo
     戻り値は [(ラベル, 確信度, 熱の割合, 点数)] を点数の高い順に並べたもの。
     """
     import matplotlib.pyplot as plt
-    import torch
 
-    from scripts.gradcam import GradCAM, _load_model, _overlay_heatmap, _probabilities
-    from scripts.preprocess_jma import (CANONICAL_SIZE, DEFAULT_STAMP_BOX,
-                                        autocrop_to_content, fit_to_canonical,
-                                        mask_stamp_box)
-    from src.labels import LABELS, LABEL_JA
-    from src.sites import (attention_lift, attention_mass, attention_proximity,
-                           draw_site, get_site, proximity_lift)
-    from src.train import get_transforms
+    from scripts.gradcam import _overlay_heatmap
+    from src.labels import LABEL_JA
+    from src.sites import draw_site, get_site
 
     found_site = get_site(site, sites_path) if isinstance(site, str) else site
     if radius is not None:
@@ -355,52 +432,14 @@ def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: flo
                                       y=found_site.y, radius=radius,
                                       note=found_site.note)
 
+    scorer = site_scorer(annotate=annotate, weights=weights,
+                         annot_weights=annot_weights, templates=templates,
+                         marks=marks)
+    annotate = scorer["annotate"]
     path = chart_for(date, hour, images_dir)
-    image = Image.open(path).convert("RGB")
-    image = mask_stamp_box(fit_to_canonical(autocrop_to_content(image), CANONICAL_SIZE),
-                           DEFAULT_STAMP_BOX)
-
-    # **描き込みと重みは必ず組にする。**注釈付き画像で学習した重みに素の
-    # 天気図を渡すと、モデルは見たことのない絵を受け取ることになる
-    used_weights = weights
-    if annotate:
-        ok, missing = annotation_available(annot_weights, templates)
-        if not ok:
-            print("注釈方式は使えません(見つからないもの: "
-                  + ", ".join(os.path.basename(m) for m in missing) + ")。"
-                  "素の天気図の方式で続けます。")
-            annotate = False
-        else:
-            marked_path = make_annotated(path, templates=templates, marks=marks,
-                                         quiet=True)
-            image = Image.open(marked_path).convert("RGB")
-            used_weights = annot_weights
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model, meta = _load_model(str(used_weights), device)
-    gradcam = GradCAM(model)
-    transform = get_transforms(train=False, image_size=meta["image_size"])
-    tensor = transform(image).unsqueeze(0).to(device)
-    probs = _probabilities(model, tensor, str(used_weights))
-
-    if mode not in ("proximity", "circle"):
-        raise ValueError(f"mode は 'proximity' か 'circle' です: {mode!r}")
-
-    rows = []
-    for index, label in enumerate(LABELS):
-        cam = gradcam.generate(tensor, index)
-        if mode == "proximity":
-            mass = attention_proximity(cam, found_site, scale)
-            lift = proximity_lift(cam, found_site, scale)
-        else:
-            mass = attention_mass(cam, found_site)
-            lift = attention_lift(cam, found_site)
-        prob = float(probs[index])
-        rows.append({
-            "label": label, "prob": prob, "mass": mass, "lift": lift,
-            "score": prob * (mass ** attention_weight),
-            "cam": cam,
-        })
+    image, rows = score_chart(path, found_site, scorer,
+                              mode=mode, scale=scale,
+                              attention_weight=attention_weight, keep_cam=True)
 
     before = sorted(rows, key=lambda r: -r["prob"])
     after = sorted(rows, key=lambda r: -r["score"])
@@ -457,3 +496,124 @@ def rerank_by_site(date, hour: int = 0, site="komatsu", *, attention_weight: flo
           "広がるため不利に働きます。")
 
     return [(r["label"], r["prob"], r["mass"], r["score"]) for r in after]
+
+
+def rerank_dates(dates, site="komatsu", hour: int = 0, *, attention_weight: float = 1.0,
+                 mode: str = "proximity", scale=None, radius=None,
+                 annotate: bool = True, date_column: str = "発生日",
+                 images_dir=PROCESSED_DIR, sites_path=None,
+                 weights=DEFAULT_WEIGHTS, annot_weights=ANNOT_WEIGHTS,
+                 templates=TEMPLATES_DIR, marks=MARKS_DIR,
+                 out=None, progress_every: int = 10):
+    """日付の一覧をまとめて採点し、順位の入れ替わりを表にする。
+
+    `dates` は日付の並びか、日付の入ったCSVのパス。
+    戻り値は1日1行の DataFrame。`out` を渡すとCSVに書き出す。
+
+    **モデルは1回だけ読み込む。**167日ぶんを1日ずつ読み直すと、その時間で
+    大半を使ってしまう。
+    """
+    import time
+
+    import pandas as pd
+
+    from src.labels import LABEL_JA
+    from src.sites import get_site
+
+    found_site = get_site(site, sites_path) if isinstance(site, str) else site
+    if radius is not None:
+        found_site = type(found_site)(name=found_site.name, x=found_site.x,
+                                      y=found_site.y, radius=radius,
+                                      note=found_site.note)
+
+    if isinstance(dates, (str, Path)):
+        table = pd.read_csv(dates)
+        if date_column not in table.columns:
+            raise SystemExit(
+                f"列 '{date_column}' がありません。列: {list(table.columns)}")
+        parsed = pd.to_datetime(table[date_column], errors="coerce").dropna()
+        wanted = [d.strftime("%Y-%m-%d") for d in parsed]
+    else:
+        wanted = [str(d) for d in dates]
+
+    scorer = site_scorer(annotate=annotate, weights=weights,
+                         annot_weights=annot_weights, templates=templates,
+                         marks=marks)
+    used_scale = found_site.radius if scale is None else scale
+    print(f"地点: {found_site.name}(中心 {found_site.x}, {found_site.y})")
+    how = (f"距離で重み付け exp(-(距離/{used_scale})^2)" if mode == "proximity"
+           else f"円(半径 {found_site.radius})の中だけ")
+    print(f"熱の測り方: {how}")
+    print(f"点数 = 確信度 × (熱の割合 ** {attention_weight})")
+    print(f"重み: {'注釈付き' if scorer['annotate'] else '素'}")
+    print(f"対象: {len(wanted)}日\n")
+
+    rows, missing = [], []
+    started = time.time()
+    for done, date in enumerate(wanted, start=1):
+        try:
+            path = chart_for(date, hour, images_dir)
+        except SystemExit:
+            missing.append(date)
+            continue
+        _image, scored = score_chart(path, found_site, scorer, mode=mode,
+                                     scale=scale, attention_weight=attention_weight)
+        before = max(scored, key=lambda r: r["prob"])
+        after = max(scored, key=lambda r: r["score"])
+        rows.append({
+            date_column: date,
+            "元の1位": LABEL_JA[before["label"]],
+            "元の確信度": round(before["prob"], 4),
+            "元の1位の集中度": round(before["lift"], 3),
+            "新しい1位": LABEL_JA[after["label"]],
+            "新しい1位の確信度": round(after["prob"], 4),
+            "新しい1位の集中度": round(after["lift"], 3),
+            "点数": round(after["score"], 5),
+            "入れ替わった": before["label"] != after["label"],
+            "filename": Path(path).name,
+        })
+        if done % progress_every == 0 or done == len(wanted):
+            rate = (time.time() - started) / done
+            print(f"  {done}/{len(wanted)}  {rate:.1f}秒/枚  "
+                  f"残り{rate * (len(wanted) - done) / 60:.0f}分", flush=True)
+
+    if missing:
+        print(f"\n天気図が無い日: {len(missing)}日(集計から外しました)")
+    if not rows:
+        raise SystemExit("採点できた日がありません")
+
+    result = pd.DataFrame(rows)
+    changed = int(result["入れ替わった"].sum())
+    print(f"\n{'=' * 56}\n1位が入れ替わった日: {changed}日 / {len(result)}日"
+          f"({changed / len(result) * 100:.1f}%)\n{'=' * 56}")
+
+    print("\n  1位のラベルの内訳")
+    print(f"  {'ラベル':<24}{'元':>6}{'新':>6}{'差':>7}")
+    print("  " + "-" * 44)
+    before_counts = result["元の1位"].value_counts()
+    after_counts = result["新しい1位"].value_counts()
+    for label in sorted(set(before_counts.index) | set(after_counts.index),
+                        key=lambda l: -int(before_counts.get(l, 0))):
+        b = int(before_counts.get(label, 0))
+        a = int(after_counts.get(label, 0))
+        print(f"  {label:<24}{b:>6}{a:>6}{a - b:>+7}")
+
+    moved = result[result["入れ替わった"]]
+    if len(moved):
+        print("\n  入れ替わりの内訳(多い順)")
+        pairs = moved.groupby(["元の1位", "新しい1位"]).size().sort_values(ascending=False)
+        for (old, new), count in pairs.head(10).items():
+            print(f"    {old} -> {new}  {count}日")
+
+    print("\n  ※集中度(lift)は、1なら画像全体を一様に見ているのと同じ、"
+          "1より大きいほど地点の近くに集中している。")
+    print("  ※冬型・前線のように広域の配置で決まるラベルは、根拠が日本全体に"
+          "広がるため不利に働きます。")
+
+    if out:
+        out_path = Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        # Excelでそのまま開けるようBOM付きUTF-8で書く
+        result.to_csv(out_path, index=False, encoding="utf-8-sig")
+        print(f"\n書き出しました: {out_path}")
+    return result
