@@ -96,6 +96,10 @@ def main():
                         help="--join 側の日付の列名。既定は --date-column と同じ")
     parser.add_argument("--label-column", default="気圧配置",
                         help="--join 側の判定ラベルの列名。ラベル別の内訳に使う")
+    parser.add_argument("--reuse", default=None,
+                        help="前回の出力CSVを読み直して集計だけやり直す。"
+                        "検出をもう一度回さないので数秒で終わる。"
+                        "--join を後から足したいときに使う")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--scale", type=float, default=0.7)
     parser.add_argument("--letter-size", type=float, default=DETECTION["letter_size"])
@@ -105,8 +109,8 @@ def main():
     parser.add_argument("--angle-step", type=float, default=5.0)
     args = parser.parse_args()
 
-    if not args.date and not args.dates_csv:
-        parser.error("--date か --dates-csv のどちらかを指定してください")
+    if not args.date and not args.dates_csv and not args.reuse:
+        parser.error("--date か --dates-csv か --reuse を指定してください")
 
     site = get_site(args.site, args.sites)
     if args.radius is not None:
@@ -116,6 +120,19 @@ def main():
     if site.note:
         print(f"  {site.note}")
     print("  ★位置は scripts/site_preview.py で目視確認済みであること\n")
+
+    if args.reuse:
+        result = pd.read_csv(args.reuse)
+        needed = ["周辺の高気圧", "周辺の低気圧"]
+        missing_columns = [c for c in needed if c not in result.columns]
+        if missing_columns:
+            raise SystemExit(
+                f"{args.reuse} に列がありません: {missing_columns}\n"
+                "  site_report.py が書き出したCSVを渡してください")
+        print(f"前回の出力を読み直しました: {args.reuse}({len(result)}行)")
+        print("  検出はやり直していません。集計と突き合わせだけ行います。\n")
+        _finish(result, site, args)
+        return
 
     from src.split import index_images_by_stamp
 
@@ -176,6 +193,12 @@ def main():
     result.insert(0, args.date_column,
                   [f"{s[:4]}-{s[4:6]}-{s[6:8]}" for s in result["stamp"]])
     result = result.drop(columns=["stamp"])
+    _finish(result, site, args)
+
+
+def _finish(result, site, args):
+    """集計・突き合わせ・書き出し。検出したときと --reuse の両方から呼ぶ。"""
+    import pandas as pd
 
     if args.join:
         other = pd.read_csv(args.join)
