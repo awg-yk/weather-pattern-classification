@@ -123,3 +123,70 @@ def test_charts_without_a_record_are_reported_not_skipped_silently(tmp_path):
         cwd=ROOT, capture_output=True, text=True)
     assert done.returncode == 0, done.stdout + done.stderr
     assert "1枚" in done.stdout and "検出の記録に無い" in done.stdout
+
+
+# ---- 座標を集める側(annotate_charts --dump-only) ----
+
+def test_dump_only_needs_somewhere_to_write():
+    """座標を書き出さない --dump-only は、何も残さずに終わるだけ。断る。"""
+    done = subprocess.run(
+        [sys.executable, "-m", "scripts.annotate_charts",
+         "--in-dir", str(ROOT / "data" / "templates"), "--dump-only"],
+        cwd=ROOT, capture_output=True, text=True)
+    assert done.returncode != 0
+    assert "--dump-detections" in done.stderr
+
+
+def test_the_normal_mode_still_needs_an_output_folder():
+    done = subprocess.run(
+        [sys.executable, "-m", "scripts.annotate_charts",
+         "--in-dir", str(ROOT / "data" / "templates")],
+        cwd=ROOT, capture_output=True, text=True)
+    assert done.returncode != 0
+    assert "--out-dir" in done.stderr
+
+
+def test_dump_only_collects_coordinates_even_when_the_images_already_exist(tmp_path):
+    """**ここで実際に詰まった。**注釈付き画像が揃っているフォルダを --out-dir に
+    指すと「すべて済んでいます」で即座に終わり、座標が1件も残らなかった。
+    --dump-only では、再開の判定を画像ではなく記録の中身で行う。"""
+    charts = tmp_path / "in"
+    for stamp in ("2023010100", "2023010112"):
+        _chart(charts, stamp)
+
+    # 「注釈付き画像は全部ある」状態を作る
+    annotated = tmp_path / "annot"
+    annotated.mkdir()
+    for path in charts.iterdir():
+        (annotated / path.name).write_bytes(path.read_bytes())
+
+    dump = tmp_path / "detections.json"
+    done = subprocess.run(
+        [sys.executable, "-m", "scripts.annotate_charts",
+         "--in-dir", str(charts), "--out-dir", str(annotated), "--no-fronts",
+         "--dump-only", "--dump-detections", str(dump), "--workers", "1"],
+        cwd=ROOT, capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert dump.exists(), "座標が残っていない"
+    assert len(json.loads(dump.read_text(encoding="utf-8"))) == 2
+
+    # 画像は書き足していないこと
+    assert len(list(annotated.iterdir())) == 2
+
+
+def test_dump_only_resumes_from_what_is_already_recorded(tmp_path):
+    charts = tmp_path / "in"
+    for stamp in ("2023010100", "2023010112"):
+        _chart(charts, stamp)
+    dump = tmp_path / "detections.json"
+
+    for _ in range(2):
+        done = subprocess.run(
+            [sys.executable, "-m", "scripts.annotate_charts",
+             "--in-dir", str(charts), "--no-fronts", "--dump-only",
+             "--dump-detections", str(dump), "--workers", "1"],
+            cwd=ROOT, capture_output=True, text=True)
+        assert done.returncode == 0, done.stdout + done.stderr
+
+    assert "すべての座標が" in done.stdout, "2回目に済んでいると言っていない"
+    assert len(json.loads(dump.read_text(encoding="utf-8"))) == 2

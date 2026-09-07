@@ -47,11 +47,10 @@
 
 検出はこの一連の処理で一番重いので、**座標を書き出して使い回す。**
 
-    :: 1. 検出して座標を残す(30分ほど。--out-dir は既存のものでよい)
+    :: 1. 検出して座標を残す(30分ほど)。**--dump-only を必ず付ける**
     python -m scripts.annotate_charts --in-dir data\processed\all ^
-        --out-dir data\processed\all_annot --years 2023 2024 2025 ^
-        --no-fronts --marks data\marks ^
-        --dump-detections data\detections.json --workers 4
+        --years 2023 2024 2025 --no-fronts --marks data\marks ^
+        --dump-only --dump-detections data\detections.json --workers 4
 
     :: 2. 位置だけ嘘の枠を描く(数分)
     python -m scripts.shuffle_annotations --in-dir data\processed\all ^
@@ -70,8 +69,11 @@
     python -m scripts.report_metrics --run runs\new_shuffled ^
         --compare runs\new_annot --name "嘘の枠" --compare-name "正しい枠"
 
-**手順1の --out-dir は既にある `all_annot` を指してよい。**書き出し済みの
-ファイルは飛ばすので、実質「検出して座標を残すだけ」になる。
+**手順1では `--dump-only` を必ず付ける。**これが無いと、`--out-dir` に
+既存の `all_annot` を指したとき「すべて済んでいます」で即座に終わり、
+**座標が1件も残らない**(実際にこれで詰まった)。`--dump-only` なら画像は
+書き出さず、再開の判定も記録の中身で行うので、既に注釈付き画像があっても
+座標だけを取り直せる。`--out-dir` も要らない。
 
 ## 揃えること
 

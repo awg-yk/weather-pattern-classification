@@ -208,12 +208,13 @@ def _run_one(job) -> tuple:
         _WORKER["mark_radius"], _WORKER["letter_threshold"],
         overlay_dir=None, want_masks=True,
     )
-    rgb = np.array(Image.open(path).convert("RGB"))
-    marked = draw_annotations(rgb, report, detections,
-                              boxes=_WORKER["boxes"], fronts=_WORKER["fronts"],
-                              thickness=_WORKER["thickness"])
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    Image.fromarray(marked).save(out_path)
+    if not _WORKER.get("dump_only"):
+        rgb = np.array(Image.open(path).convert("RGB"))
+        marked = draw_annotations(rgb, report, detections,
+                                  boxes=_WORKER["boxes"], fronts=_WORKER["fronts"],
+                                  thickness=_WORKER["thickness"])
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(marked).save(out_path)
     return (Path(path).name, len(detections.highs), len(detections.lows),
             len(detections.edge_highs) + len(detections.edge_lows),
             # **座標も返す。**検出はこの処理で一番重い。あとで「位置だけ嘘の枠」を
@@ -227,11 +228,17 @@ def _run_one(job) -> tuple:
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--in-dir", required=True)
-    parser.add_argument("--out-dir", required=True,
-                        help="注釈付き画像の書き出し先。ファイル名は元のまま")
+    parser.add_argument("--out-dir", default=None,
+                        help="注釈付き画像の書き出し先。ファイル名は元のまま。"
+                             "--dump-only のときは要らない")
     parser.add_argument("--templates", default="data/templates")
     parser.add_argument("--marks", default=None)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--dump-only", action="store_true",
+                        help="画像を書き出さず、検出した座標だけを集める。"
+                             "**--dump-detections と組で使う。**既に注釈付き画像が"
+                             "あるフォルダを --out-dir に指すと『すべて済んでいます』で"
+                             "終わってしまい、座標が残らない。それを避けるため")
     parser.add_argument("--dump-detections", default=None,
                         help="検出した座標をJSONに書き出す。検出はこの処理で一番"
                              "重いので、対照実験(位置だけ嘘の枠)を作るときに"
@@ -258,6 +265,13 @@ def main():
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     args = parser.parse_args()
 
+    if args.dump_only and not args.dump_detections:
+        parser.error("--dump-only は --dump-detections と組で使ってください"
+                     "(座標を書き出さないと、何も残りません)")
+    if not args.dump_only and not args.out_dir:
+        parser.error("--out-dir を指定してください"
+                     "(座標だけが欲しいなら --dump-only --dump-detections <path>)")
+
     paths = sorted(p for p in Path(args.in_dir).iterdir()
                    if p.suffix.lower() in IMAGE_SUFFIXES)
     if args.years:
@@ -283,16 +297,40 @@ def main():
     if not paths:
         raise SystemExit(f"画像が見つかりません: {args.in_dir}")
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    # 途中で止めても続きから。**サイズ0のファイルは書きかけとみなして作り直す**
-    todo = [p for p in paths
-            if not (out_dir / p.name).exists() or (out_dir / p.name).stat().st_size == 0]
-    if len(todo) < len(paths):
-        print(f"{len(paths) - len(todo)}件は書き出し済み。残り{len(todo)}件から再開する。")
-    if not todo:
-        print("すべて済んでいます。作り直すには --out-dir の中身を消してください。")
-        return
+    if args.dump_only:
+        # **画像は書かない。**再開の判定も、画像の有無ではなく
+        # 座標が既に記録に入っているかで見る。ここを画像で見ると、
+        # 注釈付き画像が揃っているフォルダを指したときに1枚も処理されず、
+        # 座標が空のまま終わる(実際にそれで詰まった)
+        out_dir = Path(args.out_dir) if args.out_dir else Path(args.in_dir)
+        already = set()
+        dump_path = Path(args.dump_detections)
+        if dump_path.exists():
+            import json
+
+            already = set(json.loads(dump_path.read_text(encoding="utf-8")))
+        todo = [p for p in paths if p.name not in already]
+        if already:
+            print(f"{len(paths) - len(todo)}件は座標を記録済み。"
+                  f"残り{len(todo)}件から再開する。")
+        if not todo:
+            print(f"すべての座標が {dump_path} にあります。"
+                  "取り直すにはそのファイルを消してください。")
+            return
+        print("画像は書き出しません(--dump-only)。座標だけを集めます。")
+    else:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # 途中で止めても続きから。**サイズ0のファイルは書きかけとみなして作り直す**
+        todo = [p for p in paths
+                if not (out_dir / p.name).exists()
+                or (out_dir / p.name).stat().st_size == 0]
+        if len(todo) < len(paths):
+            print(f"{len(paths) - len(todo)}件は書き出し済み。"
+                  f"残り{len(todo)}件から再開する。")
+        if not todo:
+            print("すべて済んでいます。作り直すには --out-dir の中身を消してください。")
+            return
 
     if args.letter_size == "auto":
         # **並列の子には数値で配る。**フォルダ内の天気図は同じ大きさなので、
@@ -309,7 +347,7 @@ def main():
     jobs = [(str(p), str(out_dir / p.name), args.threshold,
              args.angle_range, args.angle_step) for p in todo]
     options = {"boxes": not args.no_boxes, "fronts": not args.no_fronts,
-               "thickness": args.thickness}
+               "thickness": args.thickness, "dump_only": args.dump_only}
 
     started, done, highs, lows, edges = time(), 0, 0, 0, 0
     detections_by_name = {}
@@ -330,7 +368,8 @@ def main():
                 print(f"  {done}/{len(todo)}  {rate:.1f}秒/枚  "
                       f"残り{rate * (len(todo) - done) / 60:.0f}分", flush=True)
 
-    print(f"\n書き出しました: {out_dir.resolve()}")
+    if not args.dump_only:
+        print(f"\n書き出しました: {out_dir.resolve()}")
 
     if args.dump_detections:
         import json
@@ -355,6 +394,14 @@ def main():
         print("★--marks を指定していません。等圧線に横切られた H/L は、"
               "中心の×との裏書きが無いと拾えません。")
         print("  data\\marks を渡すと拾える数が増えます(実測で 高2.65 / 低3.40)。")
+    if args.dump_only:
+        print("\n画像は書き出していません。次はこの座標を使って"
+              "「位置だけ嘘の枠」を描きます:")
+        print(f"  python -m scripts.shuffle_annotations --in-dir {args.in_dir} "
+              f"--detections {args.dump_detections} "
+              "--out-dir data\\processed\\all_shuffled --years 2023 2024 2025")
+        return
+
     print("\n**まず数枚を目で見ること。**枠が本物の高低気圧に付いているか、")
     print("前線の塗りが実際の前線と合っているかを確かめてから学習に回す。")
     print("\n学習側の変更は要らない。--data-dir をこの出力に向けるだけ:")
