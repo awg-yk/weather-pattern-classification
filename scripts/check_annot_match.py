@@ -62,6 +62,9 @@ def main():
                         help="いまの設定で取った座標(data\\detections.json)")
     parser.add_argument("--limit", type=int, default=40, help="調べる枚数")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--diagnose", action="store_true",
+                        help="食い違った画像について、色の付いた画素数まで出す。"
+                             "**枠が本当に無いのか、数え方が悪いのか**を切り分ける")
     args = parser.parse_args()
 
     found_all = json.loads(Path(args.detections).read_text(encoding="utf-8"))
@@ -104,6 +107,25 @@ def main():
               f"  検出 高{in_json[0]}/低{in_json[1]}")
     if len(mismatched) > 5:
         print(f"    ... 他{len(mismatched) - 5}枚")
+
+    if args.diagnose and mismatched:
+        # **枠が本当に無いのか、数え方が悪いのかを切り分ける。**
+        # 画素が0なら描かれていない。画素はあるのに数が合わないなら、
+        # かたまりの数え方(重なりを1つにしている等)の問題
+        print("\n  --- 色の付いた画素数(0なら本当に描かれていない) ---")
+        for name, in_image, in_json in mismatched[:5]:
+            rgb = np.array(Image.open(annot_dir / name).convert("RGB"))
+            counts = []
+            for label, color in (("緑(高)", HIGH_COLOR), ("橙(低)", LOW_COLOR)):
+                close = (np.abs(rgb.astype(np.int16)
+                                - np.array(color, dtype=np.int16)).max(axis=2)
+                         <= TOLERANCE)
+                counts.append(f"{label} {int(close.sum())}画素")
+            print(f"    {name}  " + " / ".join(counts))
+        print("\n  橙が0画素なら、その画像には低気圧の枠が描かれていません"
+              "(検出設定が違う)。")
+        print("  橙があるのに数が合わないなら、数え方の問題です"
+              "(枠が重なって1つに数えられている)。")
 
     print()
     if not mismatched:
