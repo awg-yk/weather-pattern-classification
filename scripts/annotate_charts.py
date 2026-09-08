@@ -55,6 +55,7 @@ from scripts.build_features import (
 from src.chartfeatures import MARK_LETTER_RADIUS
 from src.chartscale import (auto_letter_size, letter_size_arg,
                             sizes_around)
+from src.meridian import MAX_DEVIATION
 
 # 描き込みの色(RGB)。**天気図に既にある色帯と重ならないものを選ぶ。**
 #
@@ -134,6 +135,29 @@ def draw_annotations(rgb: np.ndarray, report: dict, detections,
     return out
 
 
+def resolve_meridian(meridian, templates_dir) -> tuple:
+    """`meridian` の指定を (Meridian, テンプレートの傾き) にほどく。
+
+    None ならどちらも None を返し、検出は**1画素も変わらない**。
+    文字列や Path なら当てはめの結果を読む。"auto" は
+    `data/meridian.json` があれば使い、無ければ黙って使わない。
+    """
+    from src.meridian import DEFAULT_MERIDIAN_PATH, Meridian, template_tilts
+
+    if meridian is None or meridian is False:
+        return None, None
+    if meridian in (True, "auto"):
+        if not Path(DEFAULT_MERIDIAN_PATH).exists():
+            return None, None
+        meridian = DEFAULT_MERIDIAN_PATH
+    if not isinstance(meridian, Meridian):
+        meridian = Meridian.load(meridian)
+    # 傾きは**縮めていない**テンプレートで測る。縮めると縦棒が潰れて
+    # 測りが荒くなる(角度そのものは倍率で変わらない)
+    return meridian, template_tilts(load_templates_scaled(Path(templates_dir), 1.0,
+                                                          quiet=True))
+
+
 def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
                  scale: float = 0.7, letter_size=1.0,
                  mark_scale: float = 1.0,
@@ -142,7 +166,9 @@ def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
                  letter_threshold: float = LETTER_THRESHOLD,
                  angle_range: float = 60.0, angle_step: float = 5.0,
                  boxes: bool = True, fronts: bool = False,
-                 thickness: int = 3) -> tuple:
+                 thickness: int = 3, meridian=None,
+                 refine_span: float = 3.0, refine_step: float = 0.5,
+                 max_deviation=None) -> tuple:
     """1枚を注釈付きにして返す。`(注釈付き画像, 検出結果)`。
 
     `scripts/predict.py` から使う。学習に使った画像と**同じ描き方**にする
@@ -174,10 +200,13 @@ def annotate_one(rgb: np.ndarray, templates_dir, marks_dir=None, *,
         )
     marks = (load_templates_scaled(Path(marks_dir), mark_scale, quiet=True)
              if marks_dir and Path(marks_dir).exists() else {})
+    found, tilts = resolve_meridian(meridian, templates_dir)
     detections, report = analyse_chart(
         rgb, letters, marks, scale, threshold, angle_range, angle_step,
         mark_scale, mark_radius, letter_threshold,
         overlay_dir=None, want_masks=fronts, letter_sizes=sizes,
+        meridian=found, tilts=tilts, refine_span=refine_span,
+        refine_step=refine_step, max_deviation=max_deviation,
     )
     marked = draw_annotations(rgb, report, detections,
                               boxes=boxes, fronts=fronts, thickness=thickness)
@@ -196,8 +225,12 @@ def _init_worker(template_dir, mark_dir, scale, letter_size, mark_scale,
                                                scale * letter_size, quiet=True)
     _WORKER["marks"] = (load_templates_scaled(Path(mark_dir), mark_scale, quiet=True)
                         if mark_dir else {})
+    # 経線の当てはめは全員が同じものを使う。傾きの測り直しは12枚で0.14秒
+    # なので、親から送らずに子で測って構わない
+    found, tilts = resolve_meridian(options.get("meridian"), template_dir)
     _WORKER.update(scale=scale, mark_scale=mark_scale, mark_radius=mark_radius,
-                   letter_threshold=letter_threshold, **options)
+                   letter_threshold=letter_threshold, meridian_fit=found,
+                   tilts=tilts, **options)
 
 
 def _run_one(job) -> tuple:
@@ -207,6 +240,10 @@ def _run_one(job) -> tuple:
         threshold, angle_range, angle_step, _WORKER["mark_scale"],
         _WORKER["mark_radius"], _WORKER["letter_threshold"],
         overlay_dir=None, want_masks=True,
+        meridian=_WORKER.get("meridian_fit"), tilts=_WORKER.get("tilts"),
+        refine_span=_WORKER.get("refine_span", 3.0),
+        refine_step=_WORKER.get("refine_step", 0.5),
+        max_deviation=_WORKER.get("max_deviation"),
     )
     if not _WORKER.get("dump_only"):
         rgb = np.array(Image.open(path).convert("RGB"))
@@ -258,6 +295,18 @@ def main():
     parser.add_argument("--letter-threshold", type=float, default=LETTER_THRESHOLD)
     parser.add_argument("--angle-range", type=float, default=60.0)
     parser.add_argument("--angle-step", type=float, default=5.0)
+    parser.add_argument("--meridian", default=None,
+                        help="経線の当てはめ(data/meridian.json)を使って検出を"
+                             "絞り込む。'auto' で、あれば使う。既定は使わない ― "
+                             "使うと検出が変わるので、学習済みの重みと"
+                             "描き方がずれる")
+    parser.add_argument("--refine-span", type=float, default=3.0,
+                        help="--meridian のとき、予測した角度の前後を何度振るか")
+    parser.add_argument("--refine-step", type=float, default=0.5,
+                        help="--meridian のときの角度の刻み")
+    parser.add_argument("--max-deviation", type=float, default=None,
+                        help="--meridian のとき、予測から何度ずれたら捨てるか"
+                             f"(既定 {MAX_DEVIATION:.0f}度)")
     parser.add_argument("--thickness", type=int, default=3,
                         help="線の太さ。224x224に縮めても残る太さが要る")
     parser.add_argument("--no-boxes", action="store_true", help="高低気圧の枠を描かない")
@@ -347,7 +396,10 @@ def main():
     jobs = [(str(p), str(out_dir / p.name), args.threshold,
              args.angle_range, args.angle_step) for p in todo]
     options = {"boxes": not args.no_boxes, "fronts": not args.no_fronts,
-               "thickness": args.thickness, "dump_only": args.dump_only}
+               "thickness": args.thickness, "dump_only": args.dump_only,
+               "meridian": args.meridian, "refine_span": args.refine_span,
+               "refine_step": args.refine_step,
+               "max_deviation": args.max_deviation}
 
     started, done, highs, lows, edges = time(), 0, 0, 0, 0
     detections_by_name = {}

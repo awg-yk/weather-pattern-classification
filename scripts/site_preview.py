@@ -46,6 +46,9 @@ def main():
                              "data/sites.csv に書き写すために使う")
     parser.add_argument("--grid-step", type=float, default=0.05,
                         help="目盛りの間隔(相対座標)")
+    parser.add_argument("--meridian", default=None,
+                        help="経線の当てはめ(data/meridian.json)を使って検出を"
+                             "絞り込む。'auto' で、あれば使う。--detect と組で使う")
     parser.add_argument("--out", default=None, help="既定は reports/site_<地点>.png")
     args = parser.parse_args()
 
@@ -85,7 +88,7 @@ def main():
             np.array(image), str(TEMPLATES_DIR), marks,
             letter_size=DETECTION["letter_size"],
             threshold=DETECTION["detect_threshold"],
-            boxes=False, fronts=False,
+            boxes=False, fronts=False, meridian=args.meridian,
         )
         found = summarize(detections, site)
         image = draw_detections(image, detections, site)

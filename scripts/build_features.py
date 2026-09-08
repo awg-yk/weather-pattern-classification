@@ -96,6 +96,7 @@ from src.chartsymbols import (
     stationary_mask,
 )
 from src.chartscale import auto_letter_size, letter_size_arg
+from src.meridian import COARSE_THRESHOLD, MAX_DEVIATION, refine_hits
 from src.regions import load_regions
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg")
@@ -187,12 +188,22 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
                   mark_radius: float = MARK_LETTER_RADIUS,
                   letter_threshold: float = LETTER_THRESHOLD,
                   overlay_dir=None, want_masks: bool = False,
-                  letter_sizes: tuple = (1.0,)) -> tuple:
+                  letter_sizes: tuple = (1.0,),
+                  meridian=None, tilts: dict | None = None,
+                  refine_span: float = 3.0, refine_step: float = 0.5,
+                  max_deviation: float | None = None) -> tuple:
     """1枚から検出結果を取り出す。位置はすべて相対座標(0〜1)。
 
     文字と印で倍率を変えられる。**印は文字よりずっと小さい**(印は約31x31、
     H/L の文字は約95x117)ので、文字に効く 0.7 は印には粗すぎる
     (印は22x22になり、丸と×の細部が潰れる)。既定では印は原寸で当てる。
+
+    `meridian` を渡すと、**記号の傾きが経線で決まる**ことを使って検出を
+    絞り込む(`src/meridian.py`)。粗いしきい値まで拾ってから、その場所で
+    期待される角度の前後だけを細かく振って測り直し、予測とかけ離れた傾きで
+    当たったものは捨てる。合成天気図では、しきい値0.45で誤検出5個が混じって
+    いたものが0個になり、記号4個はすべて残った。既定は None で、渡さなければ
+    1画素も変わらない(記録済みの実行結果が再現できなくなるのを防ぐ)。
 
     `want_masks=True` にすると、前線の画素マスクも返り値に含める
     (`scripts/annotate_charts.py` が天気図に描き込むのに使う)。既定で外して
@@ -222,9 +233,20 @@ def analyse_chart(path: Path, letters: dict, marks: dict, scale: float,
         # cx / cy は画像の幅・高さで割った相対座標なので、倍率が違っても比べられる
         # letter_sizes は、推定した倍率のまわりを少しだけ振るためのもの
         # (src/chartscale.py)。印には振らない ― 印の大きさは実測で揃っている
-        hits = match_templates(shrink(ink, image_scale), templates,
-                               threshold=at, angles=angles,
+        image = shrink(ink, image_scale)
+        # 経線で絞るときは、粗いしきい値まで拾ってから測り直す。5度刻みの
+        # 探索では刻みの真ん中に落ちた記号が 0.505 まで下がるので、ここで
+        # 拾っておかないと測り直す機会そのものが無くなる
+        use_meridian = meridian is not None and templates is letters
+        coarse = min(at, COARSE_THRESHOLD) if use_meridian else at
+        hits = match_templates(image, templates,
+                               threshold=coarse, angles=angles,
                                sizes=letter_sizes if templates is letters else (1.0,))
+        if use_meridian:
+            hits = refine_hits(image, hits, templates, tilts, meridian,
+                               threshold=at, span=refine_span, step=refine_step,
+                               max_deviation=(MAX_DEVIATION if max_deviation is None
+                                              else max_deviation))
         grouped: dict = {}
         for hit in hits:
             grouped.setdefault(symbol_of(hit.label), []).append(

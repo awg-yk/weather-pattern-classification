@@ -100,7 +100,7 @@ def annotation_available(annot_weights=ANNOT_WEIGHTS, templates=TEMPLATES_DIR):
 
 def make_annotated(image_path, out_path=None, *, templates=TEMPLATES_DIR,
                    marks=MARKS_DIR, letter_size=None, detect_threshold=None,
-                   quiet=False):
+                   quiet=False, meridian=None):
     """検出した枠を描き込んだ画像を作り、そのパスを返す。
 
     **描き方は学習に使ったものと揃える。**同梱の重みは枠のみ(前線の縁取り
@@ -120,7 +120,7 @@ def make_annotated(image_path, out_path=None, *, templates=TEMPLATES_DIR,
         np.array(image), templates,
         marks if marks and os.path.exists(marks) else None,
         letter_size=letter_size, threshold=detect_threshold,
-        boxes=True, fronts=False,
+        boxes=True, fronts=False, meridian=meridian,
     )
     # **入力の隣には置かない。**data/processed/all に書くと、学習に使う
     # フォルダに派生画像が混ざり、次の学習で拾われかねない
@@ -214,8 +214,13 @@ def classify_date(date, hour: int = 0, threshold=None, annotate: bool = True,
 
 
 def detect_on(image, *, templates=TEMPLATES_DIR, marks=MARKS_DIR,
-              letter_size=None, detect_threshold=None):
-    """前処理済みの画像1枚から検出結果だけを取り出す(描き込みはしない)。"""
+              letter_size=None, detect_threshold=None, meridian=None):
+    """前処理済みの画像1枚から検出結果だけを取り出す(描き込みはしない)。
+
+    `meridian` に `data/meridian.json` か "auto" を渡すと、**記号の傾きが
+    経線で決まる**ことを使って検出を絞り込む(`src/meridian.py`)。既定は
+    None で、渡さなければ結果は1画素も変わらない。
+    """
     from scripts.annotate_charts import annotate_one
 
     letter_size = DETECTION["letter_size"] if letter_size is None else letter_size
@@ -225,14 +230,14 @@ def detect_on(image, *, templates=TEMPLATES_DIR, marks=MARKS_DIR,
         np.array(image), str(templates),
         str(marks) if marks and os.path.exists(marks) else None,
         letter_size=letter_size, threshold=detect_threshold,
-        boxes=False, fronts=False,
+        boxes=False, fronts=False, meridian=meridian,
     )
     return detections
 
 
 def show_site(date, hour: int = 0, site="komatsu", *, radius=None, grid=False,
               images_dir=PROCESSED_DIR, sites_path=None, figsize=(9, 9),
-              letter_size=None, detect_threshold=None):
+              letter_size=None, detect_threshold=None, meridian=None):
     """日付と地点を指定して、円と検出結果を描いた天気図をその場に表示する。
 
     円の内側の系は色付き(高=緑、低=赤)、外側は灰色で描く。
@@ -262,7 +267,7 @@ def show_site(date, hour: int = 0, site="komatsu", *, radius=None, grid=False,
                            DEFAULT_STAMP_BOX)
 
     detections = detect_on(image, letter_size=letter_size,
-                           detect_threshold=detect_threshold)
+                           detect_threshold=detect_threshold, meridian=meridian)
     found = summarize(detections, found_site)
 
     if grid:
